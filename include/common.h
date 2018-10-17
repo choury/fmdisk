@@ -1,4 +1,3 @@
-
 #ifndef COMMON_H__
 #define COMMON_H__
 
@@ -10,4 +9,6 @@
 #define METAPATH     "/" METANAME
 
 #define MAXFILE       100000
+
+int fm_main(int argc, char *argv[]);
 #endif
