@@ -11,5 +11,14 @@
 #define MAXFILE       100000
 #define PATHLEN       1024
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int fm_main(int argc, char *argv[]);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif
