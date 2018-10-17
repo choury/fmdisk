@@ -1,7 +1,6 @@
+#include "fmdisk.h"
 #include "dir.h"
 #include "cache.h"
-#include "stub_api.h"
-#include "common.h"
 
 #include <assert.h>
 

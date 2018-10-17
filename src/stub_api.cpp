@@ -1,4 +1,4 @@
-#include "stub_api.h"
+#include "fmdisk.h"
 
 int fm_prepare(){
     return 0;

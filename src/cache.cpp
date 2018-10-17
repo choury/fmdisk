@@ -1,9 +1,8 @@
+#include "fmdisk.h"
 #include "cache.h"
 #include "dir.h"
 #include "file.h"
-#include "stub_api.h"
 #include "threadpool.h"
-#include "common.h"
 
 #include <string.h>
 #include <assert.h>

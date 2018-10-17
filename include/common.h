@@ -6,9 +6,10 @@
 #define THREADS        50
 
 #define METANAME      "meta.json"
-#define METAPATH     "/" METANAME
+#define METAPATH      "/" METANAME
 
 #define MAXFILE       100000
+#define PATHLEN       1024
 
 int fm_main(int argc, char *argv[]);
 #endif

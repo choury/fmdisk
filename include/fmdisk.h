@@ -7,9 +7,9 @@
 #include <string>
 #include <unistd.h>
 
+#include "common.h"
 #include "utils.h"
 
-#define PATHLEN        1024
 
 int fm_prepare();
 int fm_statfs(const char* path, struct statvfs* sf);
