@@ -25,7 +25,7 @@ build
 * make
 * gcc, g++(需支持c++11)
 * 并且安装以下软件包:
-libcurl4 libcurl4-openssl json-c libfuse2 libssl 和相应的dev包（如果有）
+json-c libfuse2 和相应的dev包（如果有）
 
 编译方式：
 ```

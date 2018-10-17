@@ -1,6 +1,6 @@
 add_library(fmdisk STATIC main.c cache.cpp utils.cpp fuse.cpp threadpool.cpp dir.cpp file.cpp)
 set_target_properties(fmdisk PROPERTIES OUTPUT_NAME "fmdisk")
-target_link_libraries(fmdisk json-c fuse ssl crypto pthread curl)
+target_link_libraries(fmdisk json-c fuse pthread)
 
 add_executable(fmcheck  check.cpp stub_api.cpp)
 target_link_libraries(fmcheck fmdisk)
