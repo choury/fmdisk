@@ -1,0 +1,8 @@
+build/***
+
+*~
+*.swp
+*.out
+.browse.VC.*
+*.user
+
