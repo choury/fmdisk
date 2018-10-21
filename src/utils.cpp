@@ -218,6 +218,11 @@ string decodepath(const string& path){
     }
 }
 
+filemeta initfilemeta(const filekey& key){
+    return filemeta{key,
+        0, 0, 0, 0, 0, 0, 0};
+}
+
 
 buffstruct::buffstruct(char* buf, size_t len):buf(buf),len(len) {
     offset = 0;

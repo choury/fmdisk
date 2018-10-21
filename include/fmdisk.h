@@ -2,8 +2,7 @@
 #define STUB_API_H__
 #include <sys/stat.h>
 #include <sys/statvfs.h>
-#include <map>
-#include <set>
+#include <vector>
 #include <string>
 #include <unistd.h>
 
@@ -12,16 +11,40 @@
 
 
 int fm_prepare();
-int fm_statfs(const char* path, struct statvfs* sf);
-int fm_download(const char* path, size_t startp, size_t len, buffstruct& bs);
-int fm_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]);
-int fm_list(const char* path, std::map<std::string, struct stat>& stmap);
-int fm_getattr(const char* path, struct stat* st);
-int fm_mkdir(const char* path, struct stat* st);
-int fm_delete(const char* path);
-int fm_batchdelete(std::set<std::string> flist);
-int fm_rename(const char* oldname, const char* newname);
+
+int fm_statfs(struct statvfs* sf);
+
+int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs);
+
+//upload `file` in `fileat`, return key in `file`
+int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool overwrite);
+
+//list files in `file`, if only key got, set flags of METE_KEY_ONLY in `flist`
+int fm_list(const filekey& file, std::vector<struct filemeta>& flist);
+
+//NOTE: EXCEPT root dir(the private_key will be null),
+// `meta.key` should be same as `file` (not alloc new private_key)
+int fm_getattr(const filekey& file, struct filemeta& meta);
+
+//mkdir in `fileat`, return key in `file`
+int fm_mkdir(const filekey& fileat, struct filekey& file);
+
+//NOTE: don't free the memory of `file.private_key`, although fmdisk
+//will not use it after delete and call fm_release_private_key later.
+int fm_delete(const filekey& file);
+
+//NOTE: delete file in flist and RELEASE private_key in it.
+int fm_batchdelete(std::vector<struct filekey> flist);
+
+//move `oldfile` to `fileat` with new name of `newfile`, new key return in `newfile`
+//NOTE: should not free the memory of `oldfile.private_key`, fmdisk will call fm_release_private_key later.
+int fm_rename(const filekey& oldfile, const filekey& fileat, filekey& newfile);
+
+//free the memory of private_key in filekey
+void fm_release_private_key(void* private_key);
+
 const char* fm_getsecret();
+
 const char* fm_getcachepath();
 
 #define HANDLE_EAGAIN(x) ({      \

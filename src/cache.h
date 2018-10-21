@@ -2,32 +2,40 @@
 #define CACHE_H__
 
 #include "locker.h"
+#include "fmdisk.h"
 
 #include <sys/stat.h>
 #include <time.h>
 
 #include <map>
 
+#define ENTRY_INITED_F    (1<<0)
+#define ENTRY_CHUNCED_F   (1<<1)
+#define ENTRY_DELETED_F   (1<<2)
+#define ENTRY_REASEWAIT_F (1<<3)
+#define ENTRY_CREATE_F    (1<<4)
+#define FILE_ENCODE_F  (1<<5)
+#define FILE_DIRTY_F   (1<<6)
+#define DIR_PULLED_F   (1<<7)
+
+
 using std::string;
 
 class dir_t;
 class file_t;
+struct filemeta;
 
 class entry_t: locker {
     pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
     entry_t* parent;
-    string name;
+    struct filekey fk;
     mode_t mode;
     union{
         dir_t* dir = nullptr;
         file_t* file;
     };
     time_t ctime = 0;
-#define ENTRY_INITED    1
-#define ENTRY_CHUNCED   2
-#define ENTRY_DELETED   4
-#define ENTRY_REASEWAIT 16
     uint32_t flags = 0;
     uint32_t opened = 0;
     void init_wait();
@@ -38,12 +46,12 @@ class entry_t: locker {
     static void clean(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
-    entry_t(entry_t* parent, string name, struct stat* st);
-    entry_t(entry_t* parent, string name);
+    entry_t(entry_t* parent, const filemeta meta);
     virtual ~entry_t();
     string getcwd();
-    string getpath();
-    int getattr(struct stat* st);
+    filekey getkey();
+    filekey getmetakey();
+    struct filemeta getmeta();
     entry_t* find(string path);
     entry_t* create(string name);
     entry_t* mkdir(string name);
@@ -63,5 +71,7 @@ public:
 
 int cache_prepare();
 entry_t* cache_root();
+filekey basename(const filekey& file);
+filekey decodepath(const filekey& file);
 
 #endif

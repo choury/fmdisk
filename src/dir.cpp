@@ -21,31 +21,27 @@ dir_t::~dir_t(){
 // Must wlock before call this function
 void dir_t::pull() {
     entry_t* entry = entrys["."];
-    std::string path = entry->getpath();
-    std::map<std::string, struct stat> smap;
-    int ret = HANDLE_EAGAIN(fm_list(path.c_str(), smap));
+    std::vector<filemeta> flist;
+    int ret = HANDLE_EAGAIN(fm_list(entry->getkey(), flist));
     if(ret != 0){
         throw "fm_list IO Error";
     }
-    for(auto i: smap){
-        std::string bname = basename(i.first);
-        if(endwith(bname, ".def") && S_ISDIR(i.second.st_mode)){
-            std::string dname = decodepath(bname);
-            entrys[dname] = new entry_t(entry, dname);
-        }else{
-            i.second.st_ino = 0;
-            entrys[bname] = new entry_t(entry, bname, &i.second);
+    for(auto i: flist){
+        string bname = basename(i.key.path);
+        if(endwith(bname, ".def") && S_ISDIR(i.mode)){
+            bname = decodepath(bname);
         }
+        entrys[bname] = new entry_t(entry, i);
     }
-    flags |= DIR_PULLED;
+    flags |= DIR_PULLED_F;
 }
 
 entry_t* dir_t::find(std::string path) {
     auto_wlock(this);
-    if((flags & DIR_PULLED) == 0){
+    if((flags & DIR_PULLED_F) == 0){
         pull();
     }
-    assert(flags & DIR_PULLED);
+    assert(flags & DIR_PULLED_F);
     if(entrys.count(path)){
         return entrys[path];
     }else{
@@ -55,15 +51,17 @@ entry_t* dir_t::find(std::string path) {
 
 const std::map<string, entry_t*>& dir_t::get_entrys(){
     auto_wlock(this);
-    if((flags & DIR_PULLED) == 0){
+    if((flags & DIR_PULLED_F) == 0){
         pull();
     }
-    assert(flags & DIR_PULLED);
+    assert(flags & DIR_PULLED_F);
+#if  0
     for(auto i: entrys){
         if(i.second == nullptr){
             entrys[i.first] = new entry_t(entrys["."], i.first);
         }
     }
+#endif
     //at least '.' and '..'
     assert(entrys.size() >= 2);
     return entrys;

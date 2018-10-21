@@ -88,14 +88,14 @@ void start_writeback(){
     addtask((taskfunc)writeback, nullptr, 0, 0);
 }
 
-block_t::block_t(file_t* file, string name, size_t no, off_t offset, size_t size):
+block_t::block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size):
     file(file),
-    name(name),
+    fk(basename(fk)),
     no(no),
     offset(offset),
     size(size)
 {
-    if(name == "x"){
+    if(basename(fk.path) == "x"){
         flags = BLOCK_SYNC;
     }
 }
@@ -121,19 +121,23 @@ block_t::~block_t() {
     }
     pthread_mutex_unlock(&writelock);
     auto_wlock(this);
-    file->trim(name);
+    file->trim(getkey());
+}
+
+filekey block_t::getkey(){
+    filekey key = file->getkey();
+    return filekey{key.path+"/"+fk.path, fk.private_key};
 }
 
 void block_t::pull(block_t* b) {
-    string path = b->file->getpath();
     auto_wlock(b);
     if(b->flags & BLOCK_SYNC){
         return;
     }
     buffstruct bs((char*)malloc(b->size), b->size);
     //for chunk file, read from begin
-    off_t startp = b->name.size() ? 0 : b->offset;
-    int ret = HANDLE_EAGAIN(fm_download((path+"/"+b->name).c_str(), startp, b->size, bs));
+    off_t startp = b->fk.path.size() ? 0 : b->offset;
+    int ret = HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs));
     assert(bs.offset <= (size_t)b->size);
     if(ret == 0){
         b->file->putbuffer(bs.buf, b->offset, bs.offset);
@@ -144,19 +148,16 @@ void block_t::pull(block_t* b) {
 }
 
 void block_t::push(block_t* b) {
-    string path = b->file->getpath();
     auto_wlock(b);
     assert(b->flags & BLOCK_DIRTY);
     char *buff = (char*)malloc(b->size);
     size_t len = b->file->getbuffer(buff, b->offset, b->size);
-    b->file->trim(b->name);
+    b->file->trim(b->getkey());
     if(len){
         //It must be chunk file, because native file can't be written
-        char inpath[PATHLEN];
-        snprintf(inpath, sizeof(inpath)-1, "%s/%zu", path.c_str(), b->no);
-        char outpath[PATHLEN];
+        filekey file{std::to_string(b->no), 0};
 retry:
-        int ret = HANDLE_EAGAIN(fm_upload(inpath, buff, len, false, outpath));
+        int ret = HANDLE_EAGAIN(fm_upload(b->file->getkey(), file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
@@ -164,9 +165,9 @@ retry:
         if(ret != 0){
             throw "fm_upload IO Error";
         }
-        b->name = outpath + path.length() + 1;
+        b->fk = basename(file);
     }else{
-        b->name = "x";
+        b->fk = filekey{"x", 0};
     }
     b->flags &= ~BLOCK_DIRTY;
     sem_post(&dirty_sem);
@@ -229,14 +230,10 @@ void block_t::sync(){
     unrlock();
 }
 
-string block_t::getname(){
-    return name;
-}
-
 void block_t::reset(){
     auto_wlock(this);
     assert((flags & BLOCK_DIRTY) == 0);
-    if(name == "x"){
+    if(fk.path == "x"){
         flags = BLOCK_SYNC;
     }else{
         flags = 0;
@@ -267,37 +264,36 @@ static size_t GetBlkNo(size_t p, blksize_t blksize) {
     return (p - 1) / blksize;
 }
 
-file_t::file_t(entry_t *entry, const struct stat* st):
+file_t::file_t(entry_t *entry, const filemeta& meta):
     entry(entry),
-    size(st->st_size),
-    blksize(st->st_blksize),
-    mtime(st->st_mtime),
-    flags(st->st_ino)
+    size(meta.size),
+    blksize(meta.blksize),
+    mtime(meta.mtime),
+    flags(meta.flags & INTERNAL_MASK)
 {
-    if(flags & FILE_CREATE){
+    if(flags & ENTRY_CREATE_F){
     //creata new file
         assert(size == 0);
-        flags &= ~FILE_CREATE;
         inline_data = new char[INLINE_DLEN];
-        blocks[0] = new block_t(this, "x", 0, 0, blksize);
+        blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
         return;
     }
     //for the non-chunk file
     for(size_t i = 0; i <= GetBlkNo(size, blksize); i++ ){
-        blocks[i] = new block_t(this, "", i, blksize * i, blksize);
+        blocks[i] = new block_t(this, filekey{"", 0}, i, blksize * i, blksize);
     }
 }
 
-file_t::file_t(entry_t* entry, const struct stat* st, std::vector<std::string> fblocks):
+file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblocks):
     entry(entry),
-    size(st->st_size),
-    blksize(st->st_blksize),
-    mtime(st->st_mtime),
-    flags(st->st_ino)
+    size(meta.size),
+    blksize(meta.blksize),
+    mtime(meta.mtime),
+    flags(meta.flags & INTERNAL_MASK)
 {
-    if(st->st_dev){
-        inline_data = (char*)st->st_dev;
-        blocks[0] = new block_t(this, "x", 0, 0, blksize);
+    if(meta.inline_data){
+        inline_data = (char*)meta.inline_data;
+        blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
     }else{
         //zero is the first block
         assert(fblocks.size() == GetBlkNo(size, blksize)+1);
@@ -347,7 +343,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i< endc + 10 && i<= GetBlkNo(this->size, blksize); i++){
+    for(size_t i = startc; i< endc + DOWNTHREADS && i<= GetBlkNo(this->size, blksize); i++){
         blocks[i]->prefetch(false);
     }
     for(size_t i = startc; i<= endc; i++ ){
@@ -369,7 +365,7 @@ int file_t::truncate(off_t offset){
             return -1;
         }
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks[i] = new block_t(this, "x", i, blksize * i, blksize);
+            blocks[i] = new block_t(this, filekey{"x", 0}, i, blksize * i, blksize);
         }
     }
     if(oldc >= newc && inline_data == nullptr){
@@ -386,7 +382,7 @@ int file_t::truncate(off_t offset){
         inline_data = new char[INLINE_DLEN];
     }
     mtime = time(0);
-    flags |= FILE_DIRTY;
+    flags |= FILE_DIRTY_F;
     assert(fd);
     return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
 }
@@ -417,7 +413,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     __r.upgrade();
     mtime = time(0);
-    flags |= FILE_DIRTY;
+    flags |= FILE_DIRTY_F;
     return pwrite(fd, buff, size, offset);
 }
 
@@ -430,14 +426,14 @@ int file_t::sync(){
     return 0;
 }
 
-std::vector<string> file_t::getfblocks(){
+std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
     if(inline_data){
-        return std::vector<string>();
+        return std::vector<filekey>();
     }
-    std::vector<string> fblocks(blocks.size());
+    std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
-        fblocks[i.first] = i.second->getname();
+        fblocks[i.first] = i.second->getkey();
     }
     return fblocks;
 }
@@ -459,7 +455,7 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
     assert(fd);
     int ret = TEMP_FAILURE_RETRY(pread(fd, buffer, size, offset));
-    if(flags & FILE_ENCODE){
+    if(flags & FILE_ENCODE_F){
         xorcode(buffer, offset, ret, fm_getsecret());
     }
     return ret;
@@ -468,59 +464,53 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
 int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
     assert(fd);
-    if(flags & FILE_ENCODE){
+    if(flags & FILE_ENCODE_F){
         xorcode(buffer, offset, size, fm_getsecret());
     }
     return TEMP_FAILURE_RETRY(pwrite(fd, buffer, size, offset));
 }
 
-string file_t::getpath() {
+filekey file_t::getkey() {
     auto_rlock(this);
-    return entry->getpath();
+    return entry->getkey();
 }
 
-void file_t::trim(string name) {
+filemeta file_t::getmeta() {
+    auto_rlock(this);
+    filemeta meta = initfilemeta(entry->getkey());
+    meta.inline_data = (unsigned char*)inline_data;
+    meta.flags = flags;
+    meta.size = size;
+    meta.blksize = blksize;
+    meta.mtime = mtime;
+    return meta;
+}
+
+
+void file_t::trim(const filekey& file) {
+    string name = basename(file.path);
     if(name == "" || name == "x"){
         return;
     }
     auto_lock(&extraLocker);
-    droped.insert(name);
+    droped.push_back(file);
 }
 
 void file_t::post_sync() {
     wlock();
-    flags &= ~FILE_DIRTY;
+    flags &= ~FILE_DIRTY_F;
     unwlock();
-
-    string path = entry->getpath();
     auto_lock(&extraLocker);
-    if(droped.empty()){
-        return;
+    if(!droped.empty()){
+        fm_batchdelete(droped);
+        droped.clear();
     }
-    std::set<string> dlist;
-    for(auto i: droped){
-        dlist.insert(path + "/" + i);
-    }
-    droped.clear();
-    fm_batchdelete(dlist);
 }
 
-struct stat file_t::getattr() {
-    auto_rlock(this);
-    struct stat st;
-    memset(&st, 0, sizeof(st));
-    st.st_dev = (dev_t)inline_data;
-    st.st_ino = flags;
-    st.st_size = size;
-    st.st_blksize = blksize;
-    st.st_blocks = size/512 + 1;
-    st.st_mtime = mtime;
-    return st;
-}
 
 void file_t::setmtime(time_t mtime) {
     auto_wlock(this);
-    flags |= FILE_DIRTY;
+    flags |= FILE_DIRTY_F;
     this->mtime = mtime;
 }
 

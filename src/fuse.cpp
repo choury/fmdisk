@@ -1,8 +1,10 @@
 #include "fuse.h"
 #include "cache.h"
 #include "utils.h"
+#include "fmdisk.h"
 
 #include <errno.h>
+#include <string.h>
 
 
 int fm_fuse_prepare(){
@@ -54,8 +56,9 @@ int fm_fuse_getattr(const char *path, struct stat *st){
     if(entry == nullptr){
         return -ENOENT;
     }
-    entry->getattr(st);
-    return 0;
+    struct fuse_file_info fi;
+    fi.fh = (unsigned long)entry;
+    return fm_fuse_fgetattr(path, st, &fi);
 }
 
 
@@ -141,7 +144,16 @@ int fm_fuse_truncate(const char* path, off_t offset){
 
 int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     entry_t* entry = (entry_t*)fi->fh;
-    return entry->getattr(st);
+    filemeta meta = entry->getmeta();
+    memset(st, 0, sizeof(struct stat));
+    assert((meta.flags & METE_KEY_ONLY) == 0);
+    st->st_mode = meta.mode;
+    st->st_size = meta.size;
+    st->st_blksize = meta.blksize;
+    st->st_blocks = meta.size/512 +1;
+    st->st_ctime = meta.ctime;
+    st->st_mtime = meta.mtime;
+    return 0;
 }
 
 int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){

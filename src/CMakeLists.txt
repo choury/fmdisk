@@ -1,4 +1,4 @@
-add_library(fmdisk STATIC main.c cache.cpp utils.cpp fuse.cpp threadpool.cpp dir.cpp file.cpp)
+add_library(fmdisk STATIC fm_main.c cache.cpp utils.cpp fuse.cpp threadpool.cpp dir.cpp file.cpp)
 set_target_properties(fmdisk PROPERTIES OUTPUT_NAME "fmdisk")
 target_link_libraries(fmdisk json-c fuse pthread)
 

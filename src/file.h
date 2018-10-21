@@ -11,7 +11,7 @@ class entry_t;
 class file_t;
 class block_t: locker {
     file_t* file;
-    string name;
+    filekey fk;
     const size_t no;
     const off_t offset;
     const size_t size;
@@ -25,12 +25,12 @@ class block_t: locker {
     friend void prefetch();
     friend void writeback();
 public:
-    block_t(file_t* file, string name, size_t no, off_t offset, size_t size);
+    block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size);
     ~block_t();
+    filekey getkey();
     void prefetch(bool wait);
     void makedirty();
     void sync();
-    string getname();
     void reset();
 };
 
@@ -41,24 +41,21 @@ class file_t: locker {
     size_t size;
     blksize_t blksize;
     time_t   mtime;
-#define FILE_ENCODE  1
-#define FILE_DIRTY   2
-#define FILE_CREATE   4
     uint32_t flags;
     pthread_mutex_t extraLocker = PTHREAD_MUTEX_INITIALIZER;
     std::map<uint32_t, block_t*> blocks;
-    std::set<string> droped;
+    std::vector<filekey> droped;
 public:
     //for simple native file, use st.st_ino as flags
-    file_t(entry_t* entry, const struct stat* st);
+    file_t(entry_t* entry, const filemeta& meta);
     //for chunck block file
-    file_t(entry_t* entry, const struct stat* st, std::vector<string> fblocks);
+    file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblocks);
     virtual ~file_t();
 
-    string getpath();
+    filekey getkey();
+    filemeta getmeta();
     int putbuffer(void* buffer, off_t offset, size_t size);
     int getbuffer(void* buffer, off_t offset, size_t size);
-    struct stat getattr();
     void setmtime(time_t mtime);
 
     int open();
@@ -66,13 +63,14 @@ public:
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
     int sync();
-    std::vector<string> getfblocks();
+    std::vector<filekey> getfblocks();
     int release();
-    void trim(string name);
+    void trim(const filekey& fk);
     void post_sync();
 };
 
 void start_prefetch();
 void start_writeback();
+
 
 #endif

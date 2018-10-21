@@ -15,6 +15,26 @@ public:
     ~buffstruct();
 };
 
+struct filekey {
+    std::string path;
+    void* private_key;
+};
+
+#define METE_KEY_ONLY  (1<<16)
+#define INTERNAL_MASK  0xffff
+
+struct filemeta{
+    struct filekey key;
+    mode_t mode;
+    uint32_t flags;
+    size_t size;
+    blksize_t blksize;
+    time_t ctime;
+    time_t mtime;
+    unsigned char* inline_data;
+};
+
+
 std::string URLEncode(const char* str);
 std::string URLDecode(const char* str);
 size_t Base64Encode(const char *src, size_t len, char *dst);
@@ -30,4 +50,6 @@ bool endwith(const std::string& s1, const std::string& s2);
 
 size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
+
+filemeta initfilemeta(const filekey& key);
 #endif

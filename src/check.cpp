@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <iostream>
 #include <vector>
+#include <map>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -27,11 +28,11 @@ std::ostream& unlock(std::ostream& os) {
     return os;
 }
 
-int readblklist(string path, vector<string> &blks) {
+int readblklist(const filekey& meta, std::vector<filekey>& blks) {
     buffstruct bs;
-    int ret = HANDLE_EAGAIN(fm_download((path + METAPATH).c_str(), 0, 0, bs));
+    int ret = HANDLE_EAGAIN(fm_download(meta, 0, 0, bs));
     if (ret != 0) {
-        cerr<<lock<<"read meta file "<<path<<" failed: "<<ret<<endl<<unlock;
+        cerr<<lock<<"read meta file "<< meta.path<<" failed: "<<ret<<endl<<unlock;
         return ret;
     }
     json_object *json_get = json_tokener_parse(bs.buf);
@@ -53,21 +54,21 @@ int readblklist(string path, vector<string> &blks) {
     for (int i = 0; i < json_object_array_length(jblock_list); ++i) {
         json_object *block = json_object_array_get_idx(jblock_list, i);
         const char  *name = json_object_get_string(block);
-        blks.push_back(name);
+        blks.push_back(filekey{name, 0});
     }
     json_object_put(json_get);
     return 0;
 }
 
-void fixNoMeta(const string &path, const std::map<std::string, struct stat> &files) {
-    if (files.empty()) {
-        cerr <<lock<< "there is no blocks of file: " << decodepath(path) << ", so delete it" << endl<<unlock;
+void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>& flist) {
+    if (flist.empty()) {
+        cerr <<lock<< "there is no blocks of file: " << decodepath(file.path) << ", so delete it" << endl<<unlock;
         goto del;
         return;
     }
-    cerr<<lock << decodepath(path)<<" has blocks:" << endl;
-    for (auto f : files) {
-        cerr << f.first.c_str() + path.length() + 1<<endl;
+    cerr<<lock << decodepath(file.path)<<" has blocks:" << endl;
+    for (auto f : flist) {
+        cerr << f.first<<endl;
     }
     do {
         fflush(stdin);
@@ -87,25 +88,25 @@ void fixNoMeta(const string &path, const std::map<std::string, struct stat> &fil
         }
     } while (true);
 del:
-    int ret = HANDLE_EAGAIN(fm_delete(path.c_str()));
+    int ret = HANDLE_EAGAIN(fm_delete(file));
     if (ret != 0) {
-        cerr<<lock << "delete dir " << path << "failed: " << ret << endl << unlock;
+        cerr<<lock << "delete dir " << file.path << "failed: " << ret << endl << unlock;
     }
 }
 
-void fixMissBlock(const string &path, const std::map<std::string, struct stat> &files, uint64_t no) {
-    set<string> fit;
+void fixMissBlock(const filekey& file, const std::map<std::string, struct filekey>& flist, uint64_t no) {
+    std::vector<string> fit;
     string No = to_string(no);
-    for (auto i : files) {
+    for (auto i : flist) {
         if (i.first == No || startwith(i.first, No + '_')) {
-            fit.insert(i.first);
+            fit.push_back(i.first);
         }
     }
     if (fit.empty()) {
-        cerr<<lock<< decodepath(path) << "has no block fit for " << No << ", should reset it to 'x' (not implement)" << endl<<unlock;
+        cerr<<lock<< decodepath(file.path) << "has no block fit for " << No << ", should reset it to 'x' (not implement)" << endl<<unlock;
         return;
     }
-    cerr <<lock<< decodepath(path) <<"has some block fit for " << No << ", please pick one:" << endl;
+    cerr <<lock<< decodepath(file.path) <<"has some block fit for " << No << ", please pick one:" << endl;
     size_t n = 0;
     for (auto i : fit) {
         cerr << n << ". " << i << endl;
@@ -121,113 +122,119 @@ bool blockMatchNo(string block, uint64_t no) {
     return (uint64_t)stoi(block) == no;
 }
 
-void checkchunk(char *pathStr) {
-    string path = pathStr;
-    free(pathStr);
-    std::map<std::string, struct stat> files;
-    int ret  = HANDLE_EAGAIN(fm_list(path.c_str(), files));
+void checkchunk(filekey* file) {
+    std::vector<filemeta> flist;
+    int ret  = HANDLE_EAGAIN(fm_list(*file, flist));
     if (ret != 0) {
-        cerr<<lock<< "list dir "<<path<<" failed: "<<ret<<endl<<unlock;
+        delete file;
+        cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
         return;
     }
-    set<string> fs;
-    for (auto f : files) {
-        fs.insert(f.first.substr(path.length() + 1));
+    std::map<string, filekey> fs;
+    for (auto f : flist) {
+        fs[basename(f.key.path)] =  f.key;
     }
     if (fs.count(METANAME) == 0) {
-        cerr<<lock<< "file: "<<decodepath(path)<<" have no meta.json"<<endl<<unlock;
+        cerr<<lock<< "file: "<<decodepath(file->path)<<" have no meta.json"<<endl<<unlock;
         if (autofix) {
-            fixNoMeta(path, files);
+            fixNoMeta(*file, fs);
         }
+        delete file;
+        return;
+    }
+    std::vector<filekey> blks;
+    ret = readblklist(fs[METANAME], blks);
+    if (ret != 0) {
+        cerr<<lock<<"file: "<<decodepath(file->path)<<" have malformed meta.json"<<endl<<unlock;
+        if (autofix) {
+            fixNoMeta(*file, fs);
+        }
+        delete file;
         return;
     }
     fs.erase(METANAME);
-    vector<string> blks;
-    ret = readblklist(path, blks);
-    if (ret != 0) {
-        cerr<<lock<<"file: "<<decodepath(path)<<" have malformed meta.json"<<endl<<unlock;
-        if (autofix) {
-            fixNoMeta(path, files);
-        }
-        return;
-    }
     int no = 0;
     for (auto b : blks) {
         bool haswrong = false;
-        if (!blockMatchNo(b, no)) {
-            cerr<<lock<<"file: "<<decodepath(path)<<" has block "<<b<<" on No."<<no<<endl<<unlock;
+        if (!blockMatchNo(b.path, no)) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has block "<<b.path<<" on No."<<no<<endl<<unlock;
             haswrong = true;
         }
-        if (b != "x" && fs.count(b) == 0) {
-            cerr<<lock<<"file: "<<decodepath(path)<<" miss block: "<<b<<endl<<unlock;
+        if (b.path != "x" && fs.count(b.path) == 0) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<b.path<<endl<<unlock;
             haswrong = true;
         }
         if (haswrong && autofix) {
-            fixMissBlock(path, files, no);
+            fixMissBlock(*file, fs, no);
         }
         no++;
     }
-    set<string> ftrim;
+    std::vector<filekey> ftrim;
     for (auto f : fs) {
-        if (!isdigit(f[0])){
-            cerr<<lock<<"file: "<<decodepath(path)<<" has unwanted block: "<<f<<endl<<unlock;
+        if (!isdigit(f.first[0])){
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
-                ftrim.insert(path + "/" + f);
+                ftrim.push_back(f.second);
             }
             continue;
         }
-        int i = stoi(f);
+        int i = stoi(f.first);
         if(i < 0 || blks.size() <= (size_t)i){
-            cerr<<lock<<"file: "<<decodepath(path)<<" has unwanted block: "<<f<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
-                ftrim.insert(path + "/" + f);
+                ftrim.push_back(f.second);
             }
             continue;
         }
-        if (blks[i] != f) {
-            cerr<<lock<<"file: "<<decodepath(path)<<" has lagecy block: "<<f<<"/"<<blks[stoi(f)]<<endl<<unlock;
+        if (blks[i].path != f.first) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has lagecy block: "<<f.first<<"/"<<blks[i].path<<endl<<unlock;
             if (autofix) {
-                ftrim.insert(path + "/" + f);
+                ftrim.push_back(f.second);
             }
         }
     }
     if (!ftrim.empty()) {
         int ret = HANDLE_EAGAIN(fm_batchdelete(ftrim));
         if (ret != 0) {
-            cerr<<lock<< "delete lagecy block in: "<<path<<" failed"<<endl<<unlock;
+            cerr<<lock<< "delete lagecy block in: "<<file->path<<" failed"<<endl<<unlock;
         }
     }
     if (verbose) {
-        cout <<lock<< decodepath(path) << " check finish" << endl<<unlock;
+        cout <<lock<< decodepath(file->path) << " check finish" << endl<<unlock;
     }
+    delete file;
     return;
 }
 
-void checkfile(char* pathStr) {
-    string path = pathStr;
-    free(pathStr);
-    std::map<std::string, struct stat> files;
-    int ret  = HANDLE_EAGAIN(fm_list(path.c_str(), files));
+void checkfile(filekey* file) {
+    std::vector<filemeta> flist;
+    int ret  = HANDLE_EAGAIN(fm_list(*file, flist));
     if (ret != 0) {
-        cerr<<lock<< "list dir "<<path<<" failed: "<<ret<<endl<<unlock;
+        cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
+        delete file;
         return;
     }
-    for (auto f : files) {
-        if (S_ISREG(f.second.st_mode)) {
+    delete file;
+    for (auto f : flist) {
+        if (S_ISREG(f.mode)) {
             if (verbose) {
-                cout<<lock << f.first << " skip check" << endl<<unlock;
+                cout<<lock << f.key.path << " skip check" << endl<<unlock;
             }
             continue;
         }
 
-        if(endwith(f.first, ".def")){
-            addtask((taskfunc)checkchunk, strdup(f.first.c_str()), 0, 0);
+        if(endwith(f.key.path, ".def")){
+            addtask((taskfunc)checkchunk, new filekey(f.key), 0, 0);
         }else if(recursive){
-            addtask((taskfunc)checkfile, strdup(f.first.c_str()), 0, 0);
+            addtask((taskfunc)checkfile, new filekey(f.key), 0, 0);
         }
     }
 }
 
+filekey* getpath(const char* path){
+    //TODO
+    return new filekey{path, 0};
+}
 
 int main(int argc, char **argv) {
     if(fm_prepare()){
@@ -259,8 +266,13 @@ int main(int argc, char **argv) {
         path = "/";
     }
     cout << "will check path: " << path << endl;
-    creatpool(100);
-    checkfile(strdup(path));
+    creatpool(CHECKTHREADS);
+    filekey* file = getpath(path);
+    if(file == nullptr){
+        cerr<<"dir "<<path<<" not found."<<endl;
+        return -2;
+    }
+    checkfile(file);
     waittask(0);
     return 0;
 }

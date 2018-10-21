@@ -4,43 +4,43 @@ int fm_prepare(){
     return 0;
 }
 
-int fm_statfs(const char *path, struct statvfs *sf){
+int fm_statfs(struct statvfs *sf){
     return 0;
 }
 
-int fm_download(const char* path, size_t startp, size_t len, buffstruct& bs){
+int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs){
     return 0;
 }
 
-int fm_upload(const char* path, const char* input, size_t len, bool overwrite, char outpath[PATHLEN]){
+int fm_upload(const filekey& fileat, filekey& file, size_t len, bool overwrite){
     return 0;
 }
 
-int fm_list(const char* path, std::map<std::string, struct stat>& stmap){
+int fm_list(const filekey& file, std::vector<struct filemeta>& flist){
     return 0;
 }
 
-int fm_getattr(const char *path, struct stat *st){
+int fm_getattr(const filekey& file, struct filemeta& meta){
     return 0;
 }
 
-int fm_mkdir(const char *path, struct stat* st){
+int fm_mkdir(const filekey& fileat, struct filemeta& meta){
     return 0;
 }
-int fm_delete(const char *path){
+int fm_delete(const filekey& file){
     return 0;
 }
 
-int fm_batchdelete(std::set<std::string> flist){
+int fm_batchdelete(std::vector<struct filekey> flist){
     for(auto i: flist){
-        int ret = fm_delete(i.c_str());
+        int ret = fm_delete(i);
         if(ret){
             return ret;
         }
     }
     return 0;
 }
-int fm_rename(const char *oldname, const char *newname){
+int fm_rename(const filekey& oldfile, filekey& newfile){
     return 0;
 }
 

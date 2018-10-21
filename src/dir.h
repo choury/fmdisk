@@ -9,7 +9,6 @@ using std::string;
 class entry_t;
 
 class dir_t: locker {
-#define DIR_PULLED 1
     uint32_t flags = 0;
     time_t mtime;
     std::map<string, entry_t*> entrys;
