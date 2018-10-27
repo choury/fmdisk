@@ -67,7 +67,7 @@ void writeback(){
             writelist.pop_front();
         }
         for(auto i = writelist.begin(); i!= writelist.end();){
-            if((*i)->staled() >= 30){
+            if((*i)->staled() >= 10){
                 addtask((taskfunc)block_t::push, *i, 0, 0);
                 i = writelist.erase(i);
             }else{
@@ -84,7 +84,7 @@ void start_prefetch() {
 }
 
 void start_writeback(){
-    sem_init(&dirty_sem, 0, THREADS/4);
+    sem_init(&dirty_sem, 0, THREADS/2);
     addtask((taskfunc)writeback, nullptr, 0, 0);
 }
 
@@ -125,7 +125,7 @@ block_t::~block_t() {
 }
 
 filekey block_t::getkey(){
-    filekey key = file->getkey();
+    filekey key = file->getDirkey();
     return filekey{key.path+"/"+fk.path, fk.private_key};
 }
 
@@ -137,14 +137,12 @@ void block_t::pull(block_t* b) {
     buffstruct bs((char*)malloc(b->size), b->size);
     //for chunk file, read from begin
     off_t startp = b->fk.path.size() ? 0 : b->offset;
-    int ret = HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs));
-    assert(bs.offset <= (size_t)b->size);
-    if(ret == 0){
-        b->file->putbuffer(bs.buf, b->offset, bs.offset);
-        b->flags |= BLOCK_SYNC;
-    }else{
+    if(HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs))){
         throw "fm_download IO Error";
     }
+    assert(bs.offset <= (size_t)b->size);
+    b->file->putbuffer(bs.buf, b->offset, bs.offset);
+    b->flags |= BLOCK_SYNC;
 }
 
 void block_t::push(block_t* b) {
@@ -157,7 +155,7 @@ void block_t::push(block_t* b) {
         //It must be chunk file, because native file can't be written
         filekey file{std::to_string(b->no), 0};
 retry:
-        int ret = HANDLE_EAGAIN(fm_upload(b->file->getkey(), file, buff, len, false));
+        int ret = HANDLE_EAGAIN(fm_upload(b->file->getDirkey(), file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
@@ -266,31 +264,36 @@ static size_t GetBlkNo(size_t p, blksize_t blksize) {
 
 file_t::file_t(entry_t *entry, const filemeta& meta):
     entry(entry),
+    private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
     mtime(meta.mtime),
-    flags(meta.flags & INTERNAL_MASK)
+    flags(meta.flags)
 {
     if(flags & ENTRY_CREATE_F){
     //creata new file
+        assert(flags & ENTRY_CHUNCED_F);
         assert(size == 0);
         inline_data = new char[INLINE_DLEN];
+        private_key = nullptr;
         blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
         return;
     }
     //for the non-chunk file
     for(size_t i = 0; i <= GetBlkNo(size, blksize); i++ ){
-        blocks[i] = new block_t(this, filekey{"", 0}, i, blksize * i, blksize);
+        blocks[i] = new block_t(this, filekey{"", meta.key.private_key}, i, blksize * i, blksize);
     }
 }
 
 file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblocks):
     entry(entry),
+    private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
     mtime(meta.mtime),
-    flags(meta.flags & INTERNAL_MASK)
+    flags(meta.flags)
 {
+    flags |=  ENTRY_CHUNCED_F;
     if(meta.inline_data){
         inline_data = (char*)meta.inline_data;
         blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
@@ -313,6 +316,9 @@ file_t::~file_t() {
     }
     if(inline_data){
         delete[] inline_data;
+    }
+    if(flags & ENTRY_CHUNCED_F){
+        fm_release_private_key(private_key);
     }
     pthread_mutex_destroy(&extraLocker);
 }
@@ -433,7 +439,7 @@ std::vector<filekey> file_t::getfblocks(){
     }
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
-        fblocks[i.first] = i.second->getkey();
+        fblocks[i.first] = basename(i.second->getkey());
     }
     return fblocks;
 }
@@ -470,14 +476,14 @@ int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
     return TEMP_FAILURE_RETRY(pwrite(fd, buffer, size, offset));
 }
 
-filekey file_t::getkey() {
+filekey file_t::getDirkey() {
     auto_rlock(this);
     return entry->getkey();
 }
 
 filemeta file_t::getmeta() {
     auto_rlock(this);
-    filemeta meta = initfilemeta(entry->getkey());
+    filemeta meta = initfilemeta(filekey{METANAME, private_key});
     meta.inline_data = (unsigned char*)inline_data;
     meta.flags = flags;
     meta.size = size;
@@ -496,8 +502,10 @@ void file_t::trim(const filekey& file) {
     droped.push_back(file);
 }
 
-void file_t::post_sync() {
+void file_t::post_sync(const filekey& file) {
     wlock();
+    fm_release_private_key(private_key);
+    private_key = file.private_key;
     flags &= ~FILE_DIRTY_F;
     unwlock();
     auto_lock(&extraLocker);

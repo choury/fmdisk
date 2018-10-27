@@ -50,7 +50,6 @@ public:
     virtual ~entry_t();
     string getcwd();
     filekey getkey();
-    filekey getmetakey();
     struct filemeta getmeta();
     entry_t* find(string path);
     entry_t* create(string name);

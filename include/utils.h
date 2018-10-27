@@ -21,7 +21,6 @@ struct filekey {
 };
 
 #define METE_KEY_ONLY  (1<<16)
-#define INTERNAL_MASK  0xffff
 
 struct filemeta{
     struct filekey key;

@@ -22,8 +22,7 @@ dir_t::~dir_t(){
 void dir_t::pull() {
     entry_t* entry = entrys["."];
     std::vector<filemeta> flist;
-    int ret = HANDLE_EAGAIN(fm_list(entry->getkey(), flist));
-    if(ret != 0){
+    if(HANDLE_EAGAIN(fm_list(entry->getkey(), flist))){
         throw "fm_list IO Error";
     }
     for(auto i: flist){

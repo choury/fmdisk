@@ -51,12 +51,14 @@ entry_t* cache_root() {
     start_prefetch();
     start_writeback();
     struct filemeta meta = initfilemeta(filekey{"/", 0});
-    HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta));
+    if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
+        throw "getattr of root failed";
+    }
     return new entry_t(nullptr, meta);
 }
 
 int entry_t::statfs(const char*, struct statvfs* sf) {
-    return fm_statfs(sf);
+    return HANDLE_EAGAIN(fm_statfs(sf));
 }
 
 #if 0
@@ -90,7 +92,7 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
     fk(basename(meta.key)),
     mode(meta.mode),
     ctime(meta.ctime),
-    flags(meta.flags & INTERNAL_MASK)
+    flags(meta.flags)
 {
     assert((flags & ENTRY_INITED_F) == 0);
     if(endwith(fk.path, ".def") && S_ISDIR(meta.mode) && (flags & ENTRY_CREATE_F) == 0){
@@ -101,18 +103,18 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         return;
     }
     if(meta.flags & METE_KEY_ONLY){
-        //TODO: handle it.
-        assert(0);
+        addtask((taskfunc)pull, this, 0, 0);
+        return;
     }
     if(flags & ENTRY_CHUNCED_F){
         fk = decodepath(fk);
     }
-    flags |= ENTRY_INITED_F;
     if(S_ISDIR(mode)){
         dir = new dir_t(this, parent, meta.mtime);
     }else{
         file = new file_t(this, meta);
     }
+    flags |= ENTRY_INITED_F;
 }
 
 entry_t::~entry_t() {
@@ -136,68 +138,101 @@ void entry_t::init_wait() {
 }
 
 void entry_t::pull(entry_t* entry) {
-    assert(entry->flags & ENTRY_CHUNCED_F);
-    buffstruct bs;
-    int ret = HANDLE_EAGAIN(fm_download(entry->getmetakey(), 0, 0, bs));
-    if(ret != 0){
-        throw "fm_download IO Error";
-    }
-    json_object *json_get = json_tokener_parse(bs.buf);
-    if(json_get ==  nullptr){
-        throw "Json parse error";
-    }
-    struct filemeta meta = initfilemeta(entry->getkey());
-    json_object* jctime;
-    ret = json_object_object_get_ex(json_get, "ctime", &jctime);
-    assert(ret);
-    entry->ctime = json_object_get_int64(jctime);
+    if(entry->flags & ENTRY_CHUNCED_F){
+        filekey metakey{METANAME, 0};
+        if(HANDLE_EAGAIN(fm_getattrat(entry->getkey(), metakey))){
+            throw "fm_getattr IO Error";
+        }
+        buffstruct bs;
+        if(HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs))){
+            throw "fm_download IO Error";
+        }
+        json_object *json_get = json_tokener_parse(bs.buf);
+        if(json_get ==  nullptr){
+            throw "Json parse error";
+        }
+        struct filemeta meta = initfilemeta(metakey);
+        json_object* jctime;
+        int ret = json_object_object_get_ex(json_get, "ctime", &jctime);
+        assert(ret);
+        entry->ctime = json_object_get_int64(jctime);
 
-    json_object* jmtime;
-    ret = json_object_object_get_ex(json_get, "mtime", &jmtime);
-    assert(ret);
-    meta.mtime = json_object_get_int64(jmtime);
+        json_object* jmtime;
+        ret = json_object_object_get_ex(json_get, "mtime", &jmtime);
+        assert(ret);
+        meta.mtime = json_object_get_int64(jmtime);
 
-    json_object* jsize;
-    ret = json_object_object_get_ex(json_get, "size", &jsize);
-    assert(ret);
-    meta.size = json_object_get_int64(jsize);
+        json_object* jsize;
+        ret = json_object_object_get_ex(json_get, "size", &jsize);
+        assert(ret);
+        meta.size = json_object_get_int64(jsize);
 
-    json_object *jencoding;
-    ret = json_object_object_get_ex(json_get, "encoding", &jencoding);
-    assert(ret);
-    const char* encoding = json_object_get_string(jencoding);
-    if(strcasecmp(encoding, "xor") == 0){
-        meta.flags = FILE_ENCODE_F;
+        json_object *jencoding;
+        ret = json_object_object_get_ex(json_get, "encoding", &jencoding);
+        assert(ret);
+        const char* encoding = json_object_get_string(jencoding);
+        if(strcasecmp(encoding, "xor") == 0){
+            meta.flags = FILE_ENCODE_F;
+        }else{
+            assert(strcasecmp(encoding, "none") == 0);
+        }
+
+        json_object *jblksize;
+        ret = json_object_object_get_ex(json_get, "blksize", &jblksize);
+        assert(ret);
+        meta.blksize = json_object_get_int64(jblksize);
+
+        std::vector<filekey> fblocks;
+        json_object* jblocks;
+        if(json_object_object_get_ex(json_get, "blocks", &jblocks)){
+            fblocks.reserve(json_object_array_length(jblocks));
+            for(int i=0; i < json_object_array_length(jblocks); i++){
+                json_object *jblock = json_object_array_get_idx(jblocks, i);
+                json_object *jname;
+                ret = json_object_object_get_ex(jblock, "name", &jname);
+                assert(ret);
+                json_object *jkey;
+                ret = json_object_object_get_ex(jblock, "key", &jkey);
+                assert(ret);
+                const char* name = json_object_get_string(jname);
+                const char* private_key = json_object_get_string(jkey);
+                fblocks.push_back(filekey{name, fm_get_private_key(private_key)});
+            }
+        }
+
+        json_object *jblock_list;
+        if(json_object_object_get_ex(json_get, "block_list", &jblock_list)){
+            fblocks.reserve(json_object_array_length(jblock_list));
+            for(int i=0; i < json_object_array_length(jblock_list); i++){
+                json_object *block = json_object_array_get_idx(jblock_list, i);
+                const char* name = json_object_get_string(block);
+                fblocks.push_back(filekey{name, 0});
+            }
+        }
+
+        json_object *jinline_data;
+        ret = json_object_object_get_ex(json_get, "inline_data", &jinline_data);
+        if(ret){
+            char* inline_data = new char[INLINE_DLEN];
+            Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), inline_data);
+            meta.inline_data = (unsigned char*)inline_data;
+        }
+        json_object_put(json_get);
+        entry->file = new file_t(entry, meta, fblocks);
     }else{
-        assert(strcasecmp(encoding, "none") == 0);
+        assert(entry->flags & METE_KEY_ONLY);
+        struct filemeta meta = initfilemeta(entry->getkey());
+        if(HANDLE_EAGAIN(fm_getattr(meta.key, meta))){
+            throw "fm_getattr IO Error";
+        }
+        entry->ctime = meta.ctime;
+        if(S_ISDIR(meta.mode)){
+            entry->dir = new dir_t(entry, entry->parent, meta.mtime);
+        }else{
+            entry->file = new file_t(entry, meta);
+        }
     }
 
-    json_object *jblksize;
-    ret = json_object_object_get_ex(json_get, "blksize", &jblksize);
-    assert(ret);
-    meta.blksize = json_object_get_int64(jblksize);
-
-    json_object *jblock_list;
-    ret = json_object_object_get_ex(json_get, "block_list", &jblock_list);
-    assert(ret);
-
-    std::vector<filekey> fblocks;
-    fblocks.reserve(json_object_array_length(jblock_list));
-    for(int i=0; i < json_object_array_length(jblock_list); i++){
-        json_object *block = json_object_array_get_idx(jblock_list, i);
-        const char* name = json_object_get_string(block);
-        fblocks.push_back(filekey{name, 0});
-    }
-
-    json_object *jinline_data;
-    ret = json_object_object_get_ex(json_get, "inline_data", &jinline_data);
-    if(ret){
-        char* inline_data = new char[INLINE_DLEN];
-        Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), inline_data);
-        meta.inline_data = (unsigned char*)inline_data;
-    }
-    json_object_put(json_get);
-    entry->file = new file_t(entry, meta, fblocks);
     entry->flags |= ENTRY_INITED_F;
     pthread_cond_broadcast(&entry->init_cond);
 }
@@ -225,17 +260,6 @@ filekey entry_t::getkey() {
     string path;
     if(flags & ENTRY_CHUNCED_F){
         path = encodepath(getcwd());
-    }else{
-        path = getcwd();
-    }
-    return filekey{path, fk.private_key};
-}
-
-filekey entry_t::getmetakey(){
-    auto_rlock(this);
-    string path;
-    if(flags & ENTRY_CHUNCED_F){
-        path = encodepath(getcwd()) + METAPATH;
     }else{
         path = getcwd();
     }
@@ -296,8 +320,7 @@ entry_t* entry_t::create(string name){
     }
     assert(S_ISDIR(mode));
     struct filemeta meta = initfilemeta(filekey{encodepath(name), 0});
-    int ret = HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key));
-    if(ret){
+    if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
         return nullptr;
     }
 
@@ -322,8 +345,7 @@ entry_t* entry_t::mkdir(string name) {
     auto_rlock(this);
     assert(S_ISDIR(mode));
     struct filemeta meta = initfilemeta(filekey{name, 0});
-    int ret = HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key));
-    if(ret){
+    if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
         return nullptr;
     }
 
@@ -408,25 +430,26 @@ int entry_t::sync(int datasync){
             delete[] inline_data;
         }
 
-        json_object *jblock_list = json_object_new_array();
+        json_object *jblocks = json_object_new_array();
         auto fblocks = file->getfblocks();
         for(auto block: fblocks){
-            json_object_array_add(jblock_list, json_object_new_string(block.path.c_str()));
+            json_object *jblock = json_object_new_object();
+            json_object_object_add(jblock, "name", json_object_new_string(block.path.c_str()));
+            json_object_object_add(jblock, "key", json_object_new_string(fm_private_key_tostring(block.private_key).c_str()));
+            json_object_array_add(jblocks, jblock);
         }
 
-        json_object_object_add(jobj, "block_list", jblock_list);
+        json_object_object_add(jobj, "blocks", jblocks);
         const char *jstring = json_object_to_json_string(jobj);
 
-        struct filekey fk{METANAME, 0};
 retry:
-        int ret = HANDLE_EAGAIN(fm_upload(getkey(), fk, jstring, strlen(jstring), true));
+        int ret = HANDLE_EAGAIN(fm_upload(getkey(), meta.key, jstring, strlen(jstring), true));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
         assert(ret == 0);
         json_object_put(jobj);
-        file->post_sync();
-        this->fk.private_key = fk.private_key;
+        file->post_sync(meta.key);
     }
     return 0;
 }
@@ -472,9 +495,8 @@ int entry_t::move(entry_t* newparent, string name) {
     if(newparent->dir->size() >= MAXFILE){
         return -ENOSPC;
     }
-    filekey oldfile = getkey();
     filekey newfile{(flags & ENTRY_CHUNCED_F)?encodepath(name):name, 0};
-    int ret =  HANDLE_EAGAIN(fm_rename(oldfile, newparent->getkey(), newfile));
+    int ret = HANDLE_EAGAIN(fm_rename(parent->getkey(), getkey(), newparent->getkey(), newfile));
     if(ret){
         return ret;
     }

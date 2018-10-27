@@ -37,6 +37,7 @@ public:
 class file_t: locker {
     entry_t* entry;
     int fd = 0;
+    void* private_key = nullptr; //for meta.json
     char* inline_data = nullptr;
     size_t size;
     blksize_t blksize;
@@ -52,7 +53,7 @@ public:
     file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblocks);
     virtual ~file_t();
 
-    filekey getkey();
+    filekey getDirkey();
     filemeta getmeta();
     int putbuffer(void* buffer, off_t offset, size_t size);
     int getbuffer(void* buffer, off_t offset, size_t size);
@@ -66,7 +67,7 @@ public:
     std::vector<filekey> getfblocks();
     int release();
     void trim(const filekey& fk);
-    void post_sync();
+    void post_sync(const filekey& fk);
 };
 
 void start_prefetch();

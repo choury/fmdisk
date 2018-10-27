@@ -26,6 +26,9 @@ int fm_list(const filekey& file, std::vector<struct filemeta>& flist);
 // `meta.key` should be same as `file` (not alloc new private_key)
 int fm_getattr(const filekey& file, struct filemeta& meta);
 
+// Get key of `file` in dir `fileat`
+int fm_getattrat(const filekey& fileat, struct filekey& file);
+
 //mkdir in `fileat`, return key in `file`
 int fm_mkdir(const filekey& fileat, struct filekey& file);
 
@@ -36,12 +39,15 @@ int fm_delete(const filekey& file);
 //NOTE: delete file in flist and RELEASE private_key in it.
 int fm_batchdelete(std::vector<struct filekey> flist);
 
-//move `oldfile` to `fileat` with new name of `newfile`, new key return in `newfile`
+//move `file` at `oldat` to `newat` with new name of `newfile`, new key return in `newfile`
 //NOTE: should not free the memory of `oldfile.private_key`, fmdisk will call fm_release_private_key later.
-int fm_rename(const filekey& oldfile, const filekey& fileat, filekey& newfile);
+int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
 //free the memory of private_key in filekey
 void fm_release_private_key(void* private_key);
+
+std::string fm_private_key_tostring(const void* private_key);
+void* fm_get_private_key(const char* private_key_str);
 
 const char* fm_getsecret();
 
@@ -49,15 +55,17 @@ const char* fm_getcachepath();
 
 #define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \
-  while(true){                    \
+  auto _retry = 0;                \
+  while(true && _retry<20){       \
     _result = (x);                \
-    if(_result != 0               \
-  && (errno == EAGAIN ||          \
-      errno == ETIMEDOUT ||       \
-      errno == EBUSY))            \
-      sleep(1);                   \
-    else                          \
-      break;                      \
+    _retry++;                     \
+    if(_result &&                 \
+      (errno == EAGAIN ||         \
+       errno == ETIMEDOUT));      \
+    else if(_result &&            \
+        errno == EBUSY)           \
+        sleep(1<<(_retry-1));     \
+    else break;                   \
   }                               \
   _result;                        \
 })
