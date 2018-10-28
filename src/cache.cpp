@@ -126,7 +126,6 @@ entry_t::~entry_t() {
     }else{
         delete file;
     }
-    fm_release_private_key(fk.private_key);
 }
 
 void entry_t::init_wait() {
@@ -502,7 +501,6 @@ int entry_t::move(entry_t* newparent, string name) {
     }
     parent->erase(fk.path);
     parent = newparent;
-    fm_release_private_key(fk.private_key);
     fk = filekey{name, newfile.private_key};
     parent->insert(name, this);
     return 0;

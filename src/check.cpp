@@ -28,11 +28,11 @@ std::ostream& unlock(std::ostream& os) {
     return os;
 }
 
-int readblklist(const filekey& meta, std::vector<filekey>& blks) {
+int readblklist(const filekey& metafile, std::vector<filekey>& fblocks) {
     buffstruct bs;
-    int ret = HANDLE_EAGAIN(fm_download(meta, 0, 0, bs));
+    int ret = HANDLE_EAGAIN(fm_download(metafile, 0, 0, bs));
     if (ret != 0) {
-        cerr<<lock<<"read meta file "<< meta.path<<" failed: "<<ret<<endl<<unlock;
+        cerr<<lock<<"read meta file "<< metafile.path<<" failed: "<<ret<<endl<<unlock;
         return ret;
     }
     json_object *json_get = json_tokener_parse(bs.buf);
@@ -41,23 +41,85 @@ int readblklist(const filekey& meta, std::vector<filekey>& blks) {
         return ret;
     }
 
+    bool inline_data_found = false;
+    bool blocks_found = false;
+    bool block_list_found = false;
     json_object *jsize;
-    json_object_object_get_ex(json_get, "size", &jsize);
+    if(json_object_object_get_ex(json_get, "size", &jsize) == 0){
+        cerr<<lock<<"no size found in meta.json: "<< bs.buf <<endl <<unlock;
+        ret = 2;
+        goto json_err;
+    }
 
     json_object *jblksize;
-    json_object_object_get_ex(json_get, "blksize", &jblksize);
+    if(json_object_object_get_ex(json_get, "blksize", &jblksize) == 0){
+        cerr<<lock<<"no blksize found in meta.json: "<< bs.buf <<endl <<unlock;
+        ret = 2;
+        goto json_err;
+    }
 
+    json_object *jinline_data;
+    if(json_object_object_get_ex(json_get, "inline_data", &jinline_data)){
+        inline_data_found = true;
+    }
+
+    json_object* jblocks;
+    if(json_object_object_get_ex(json_get, "blocks", &jblocks)){
+        blocks_found = true;
+        fblocks.reserve(json_object_array_length(jblocks));
+        for(int i=0; i < json_object_array_length(jblocks); i++){
+            json_object *jblock = json_object_array_get_idx(jblocks, i);
+            json_object *jname;
+            if(json_object_object_get_ex(jblock, "name", &jname) == 0){
+                cerr<<lock<<"no name found in blocks: "<< bs.buf <<endl <<unlock;
+                ret = 3;
+                goto json_err;
+            }
+            json_object *jkey;
+            if(json_object_object_get_ex(jblock, "key", &jkey) == 0){
+                cerr<<lock<<"no key found in blocks: "<< bs.buf <<endl <<unlock;
+                ret = 3;
+                goto json_err;
+            }
+            const char* name = json_object_get_string(jname);
+            const char* private_key = json_object_get_string(jkey);
+            fblocks.push_back(filekey{name, fm_get_private_key(private_key)});
+        }
+    }
 
     json_object *jblock_list;
-    json_object_object_get_ex(json_get, "block_list", &jblock_list);
-    blks.reserve(json_object_array_length(jblock_list));
-    for (int i = 0; i < json_object_array_length(jblock_list); ++i) {
-        json_object *block = json_object_array_get_idx(jblock_list, i);
-        const char  *name = json_object_get_string(block);
-        blks.push_back(filekey{name, 0});
+    if(json_object_object_get_ex(json_get, "block_list", &jblock_list)){
+        block_list_found = true;
+        fblocks.reserve(json_object_array_length(jblock_list));
+        for(int i=0; i < json_object_array_length(jblock_list); i++){
+            json_object *block = json_object_array_get_idx(jblock_list, i);
+            const char* name = json_object_get_string(block);
+            fblocks.push_back(filekey{name, 0});
+        }
     }
+
+    if(inline_data_found & (blocks_found || block_list_found)){
+        cerr<<lock<<"get inline_data and blocks/block_list: "<< bs.buf <<endl <<unlock;
+        ret = 4;
+        goto json_err;
+    }
+    if(blocks_found && block_list_found){
+        cerr<<lock<<"get blocks and block_list together: "<< bs.buf <<endl <<unlock;
+        ret = 5;
+        goto json_err;
+    }
+
+    if(json_object_get_int64(jsize) && !blocks_found && !block_list_found){
+        cerr<<lock<<"get none of blocks and block_list: "<< bs.buf <<endl <<unlock;
+        ret = 6;
+        goto json_err;
+    }
+
     json_object_put(json_get);
     return 0;
+json_err:
+    json_object_put(json_get);
+    return ret;
 }
 
 void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>& flist) {
@@ -231,9 +293,21 @@ void checkfile(filekey* file) {
     }
 }
 
-filekey* getpath(const char* path){
-    //TODO
-    return new filekey{path, 0};
+filekey getpath(const char* path){
+    string dname = dirname(path);
+    if(dname == "/"){
+        return filekey{"/", 0};
+    }else{
+        filekey fileat = getpath(dname.c_str());
+        if(fileat.path == ""){
+            return fileat;
+        }
+        filekey file{basename(path), 0};
+        if(HANDLE_EAGAIN(fm_getattrat(fileat, file))){
+            return filekey{"", 0};
+        }
+        return file;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -267,12 +341,12 @@ int main(int argc, char **argv) {
     }
     cout << "will check path: " << path << endl;
     creatpool(CHECKTHREADS);
-    filekey* file = getpath(path);
-    if(file == nullptr){
+    filekey file = getpath(path);
+    if(file.path == ""){
         cerr<<"dir "<<path<<" not found."<<endl;
         return -2;
     }
-    checkfile(file);
+    checkfile(new filekey{file});
     waittask(0);
     return 0;
 }

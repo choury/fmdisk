@@ -2,6 +2,7 @@
 #define UTILS_H__
 
 #include <string>
+#include <memory>
 
 class buffstruct {
     bool const_buff = false;
@@ -17,7 +18,7 @@ public:
 
 struct filekey {
     std::string path;
-    void* private_key;
+    std::shared_ptr<void> private_key;
 };
 
 #define METE_KEY_ONLY  (1<<16)

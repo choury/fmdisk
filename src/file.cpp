@@ -317,9 +317,6 @@ file_t::~file_t() {
     if(inline_data){
         delete[] inline_data;
     }
-    if(flags & ENTRY_CHUNCED_F){
-        fm_release_private_key(private_key);
-    }
     pthread_mutex_destroy(&extraLocker);
 }
 
@@ -504,7 +501,6 @@ void file_t::trim(const filekey& file) {
 
 void file_t::post_sync(const filekey& file) {
     wlock();
-    fm_release_private_key(private_key);
     private_key = file.private_key;
     flags &= ~FILE_DIRTY_F;
     unwlock();

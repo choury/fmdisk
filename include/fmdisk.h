@@ -43,11 +43,8 @@ int fm_batchdelete(std::vector<struct filekey> flist);
 //NOTE: should not free the memory of `oldfile.private_key`, fmdisk will call fm_release_private_key later.
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
-//free the memory of private_key in filekey
-void fm_release_private_key(void* private_key);
-
-std::string fm_private_key_tostring(const void* private_key);
-void* fm_get_private_key(const char* private_key_str);
+std::string fm_private_key_tostring(std::shared_ptr<void> private_key);
+std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
 
 const char* fm_getsecret();
 

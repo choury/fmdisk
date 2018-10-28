@@ -4,10 +4,6 @@ int fm_prepare(){
     return 0;
 }
 
-int fm_statfs(struct statvfs *sf){
-    return 0;
-}
-
 int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs){
     return 0;
 }
@@ -24,9 +20,11 @@ int fm_getattr(const filekey& file, struct filemeta& meta){
     return 0;
 }
 
-int fm_mkdir(const filekey& fileat, struct filemeta& meta){
+int fm_getattrat(const filekey& fileat, struct filekey& file) {
     return 0;
 }
+
+
 int fm_delete(const filekey& file){
     return 0;
 }
@@ -40,14 +38,12 @@ int fm_batchdelete(std::vector<struct filekey> flist){
     }
     return 0;
 }
+
 int fm_rename(const filekey& oldfile, filekey& newfile){
     return 0;
 }
 
-const char* fm_getsecret(){
-    return "FM_STUB";
+std::shared_ptr<void> fm_get_private_key(const char* private_key_str){
+    return std::shared_ptr<void>(nullptr, [](void*){});
 }
 
-const char* fm_getcachepath(){
-    return "/tmp";
-}
