@@ -45,6 +45,7 @@ std::string dirname(const std::string& path);
 std::string basename(const std::string& path);
 std::string encodepath(const std::string& path);
 std::string decodepath(const std::string& path);
+std::string pathjoin(const std::string& dir, const std::string& name);
 bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);
 

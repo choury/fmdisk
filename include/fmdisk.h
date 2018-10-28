@@ -22,8 +22,7 @@ int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len
 //list files in `file`, if only key got, set flags of METE_KEY_ONLY in `flist`
 int fm_list(const filekey& file, std::vector<struct filemeta>& flist);
 
-//NOTE: EXCEPT root dir(the private_key will be null),
-// `meta.key` should be same as `file` (not alloc new private_key)
+// get meta info of `file`
 int fm_getattr(const filekey& file, struct filemeta& meta);
 
 // Get key of `file` in dir `fileat`
@@ -32,15 +31,12 @@ int fm_getattrat(const filekey& fileat, struct filekey& file);
 //mkdir in `fileat`, return key in `file`
 int fm_mkdir(const filekey& fileat, struct filekey& file);
 
-//NOTE: don't free the memory of `file.private_key`, although fmdisk
-//will not use it after delete and call fm_release_private_key later.
 int fm_delete(const filekey& file);
 
-//NOTE: delete file in flist and RELEASE private_key in it.
+//delete file in `flist`
 int fm_batchdelete(std::vector<struct filekey> flist);
 
 //move `file` at `oldat` to `newat` with new name of `newfile`, new key return in `newfile`
-//NOTE: should not free the memory of `oldfile.private_key`, fmdisk will call fm_release_private_key later.
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
 std::string fm_private_key_tostring(std::shared_ptr<void> private_key);

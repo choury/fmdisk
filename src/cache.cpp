@@ -270,11 +270,7 @@ string entry_t::getcwd() {
     if(parent == nullptr){
         return "/";
     }
-    if(S_ISDIR(mode)){
-        return parent->getcwd() + fk.path + "/";
-    }else{
-        return parent->getcwd() + fk.path;
-    }
+    return pathjoin(parent->getcwd(), fk.path);
 }
 
 filemeta entry_t::getmeta() {

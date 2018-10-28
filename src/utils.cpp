@@ -218,6 +218,14 @@ string decodepath(const string& path){
     }
 }
 
+string pathjoin(const string& dir, const string& name){
+    if(endwith(dir, "/")){
+        return dir + name;
+    }else{
+        return dir +'/'+ name;
+    }
+}
+
 filemeta initfilemeta(const filekey& key){
     return filemeta{key,
         0, 0, 0, 0, 0, 0, 0};

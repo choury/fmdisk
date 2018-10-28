@@ -65,9 +65,9 @@ int readblklist(const filekey& metafile, std::vector<filekey>& fblocks) {
 
     json_object* jblocks;
     if(json_object_object_get_ex(json_get, "blocks", &jblocks)){
-        blocks_found = true;
         fblocks.reserve(json_object_array_length(jblocks));
         for(int i=0; i < json_object_array_length(jblocks); i++){
+            blocks_found = true;
             json_object *jblock = json_object_array_get_idx(jblocks, i);
             json_object *jname;
             if(json_object_object_get_ex(jblock, "name", &jname) == 0){
@@ -89,9 +89,9 @@ int readblklist(const filekey& metafile, std::vector<filekey>& fblocks) {
 
     json_object *jblock_list;
     if(json_object_object_get_ex(json_get, "block_list", &jblock_list)){
-        block_list_found = true;
         fblocks.reserve(json_object_array_length(jblock_list));
         for(int i=0; i < json_object_array_length(jblock_list); i++){
+            block_list_found = true;
             json_object *block = json_object_array_get_idx(jblock_list, i);
             const char* name = json_object_get_string(block);
             fblocks.push_back(filekey{name, 0});
@@ -109,8 +109,8 @@ int readblklist(const filekey& metafile, std::vector<filekey>& fblocks) {
         goto json_err;
     }
 
-    if(json_object_get_int64(jsize) && !blocks_found && !block_list_found){
-        cerr<<lock<<"get none of blocks and block_list: "<< bs.buf <<endl <<unlock;
+    if(json_object_get_int64(jsize) && !inline_data_found && !blocks_found && !block_list_found){
+        cerr<<lock<<"get none of inline_data/blocks/block_list: "<< bs.buf <<endl <<unlock;
         ret = 6;
         goto json_err;
     }
@@ -165,7 +165,9 @@ void fixMissBlock(const filekey& file, const std::map<std::string, struct fileke
         }
     }
     if (fit.empty()) {
-        cerr<<lock<< decodepath(file.path) << "has no block fit for " << No << ", should reset it to 'x' (not implement)" << endl<<unlock;
+        cerr<<lock
+        <<decodepath(file.path) << "has no block fit for " << No << ", should reset it to 'x' (not implement)"
+        <<endl<<unlock;
         return;
     }
     cerr <<lock<< decodepath(file.path) <<"has some block fit for " << No << ", please pick one:" << endl;
@@ -249,7 +251,7 @@ void checkchunk(filekey* file) {
             continue;
         }
         if (blks[i].path != f.first) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has lagecy block: "<<f.first<<"/"<<blks[i].path<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has lagecy block: "<<pathjoin(f.first, blks[i].path)<<endl<<unlock;
             if (autofix) {
                 ftrim.push_back(f.second);
             }

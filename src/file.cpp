@@ -126,7 +126,7 @@ block_t::~block_t() {
 
 filekey block_t::getkey(){
     filekey key = file->getDirkey();
-    return filekey{key.path+"/"+fk.path, fk.private_key};
+    return filekey{pathjoin(key.path, fk.path), fk.private_key};
 }
 
 void block_t::pull(block_t* b) {
