@@ -293,12 +293,11 @@ void checkfile(filekey* file) {
     }
 }
 
-filekey getpath(const char* path){
-    string dname = dirname(path);
-    if(dname == "/"){
+filekey getpath(string path){
+    if(path == "/" || path == "."){
         return filekey{"/", 0};
     }else{
-        filekey fileat = getpath(dname.c_str());
+        filekey fileat = getpath(dirname(path));
         if(fileat.path == ""){
             return fileat;
         }

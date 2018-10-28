@@ -1,9 +1,8 @@
-#include <pthread.h>
-#include <semaphore.h>
-
 #ifndef __THREADPOOL_H__
 #define __THREADPOOL_H__
 
+#include <pthread.h>
+#include <semaphore.h>
 
 //TODO 没有销毁线程池的操作……
 

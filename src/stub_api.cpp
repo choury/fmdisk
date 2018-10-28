@@ -4,28 +4,28 @@ int fm_prepare(){
     return 0;
 }
 
-int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs){
+int fm_download(const filekey&, size_t, size_t, buffstruct&){
     return 0;
 }
 
-int fm_upload(const filekey& fileat, filekey& file, size_t len, bool overwrite){
+int fm_upload(const filekey&, filekey&, size_t, bool){
     return 0;
 }
 
-int fm_list(const filekey& file, std::vector<struct filemeta>& flist){
+int fm_list(const filekey&, std::vector<struct filemeta>&){
     return 0;
 }
 
-int fm_getattr(const filekey& file, struct filemeta& meta){
+int fm_getattr(const filekey&, struct filemeta&){
     return 0;
 }
 
-int fm_getattrat(const filekey& fileat, struct filekey& file) {
+int fm_getattrat(const filekey&, struct filekey&) {
     return 0;
 }
 
 
-int fm_delete(const filekey& file){
+int fm_delete(const filekey&){
     return 0;
 }
 
@@ -39,11 +39,6 @@ int fm_batchdelete(std::vector<struct filekey> flist){
     return 0;
 }
 
-int fm_rename(const filekey& oldfile, filekey& newfile){
-    return 0;
-}
-
-std::shared_ptr<void> fm_get_private_key(const char* private_key_str){
+std::shared_ptr<void> fm_get_private_key(const char*){
     return std::shared_ptr<void>(nullptr, [](void*){});
 }
-
