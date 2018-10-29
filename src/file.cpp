@@ -18,6 +18,8 @@ sem_t dirty_sem;
 pthread_mutex_t writelock = PTHREAD_MUTEX_INITIALIZER;
 std::list<block_t*> writelist;
 
+static_assert(BLOCKLEN > INLINE_DLEN);
+
 static bool findinqueue(std::list<block_t*>& list, block_t* b){
     for(auto i: list){
         if(i == b){
@@ -295,6 +297,7 @@ file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblock
 {
     flags |=  ENTRY_CHUNCED_F;
     if(meta.inline_data){
+        assert(meta.size < (size_t)meta.blksize);
         inline_data = (char*)meta.inline_data;
         blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
     }else{
@@ -370,6 +373,7 @@ int file_t::truncate(off_t offset){
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks[i] = new block_t(this, filekey{"x", 0}, i, blksize * i, blksize);
         }
+
     }
     if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
@@ -381,6 +385,10 @@ int file_t::truncate(off_t offset){
         blocks[newc]->makedirty();
     }
     size = offset;
+    if(inline_data && (size > (off_t)INLINE_DLEN)){
+        delete[] inline_data;
+        inline_data = nullptr;
+    }
     if(size == 0 && inline_data == nullptr){
         inline_data = new char[INLINE_DLEN];
     }
@@ -398,7 +406,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             return ret;
         }
     }
-    if(inline_data && this->size < INLINE_DLEN){
+    assert((!inline_data) || (inline_data && this->size < INLINE_DLEN));
+    if(inline_data){
+        __r.upgrade();
         memcpy(inline_data + offset, buff, size);
     }else{
         size_t startc = GetBlkNo(offset, blksize);
@@ -409,12 +419,8 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         for(size_t i =  startc; i <= endc; i++){
             blocks[i]->makedirty();
         }
-        if(inline_data){
-            delete[] inline_data;
-            inline_data = nullptr;
-        }
+        __r.upgrade();
     }
-    __r.upgrade();
     mtime = time(0);
     flags |= FILE_DIRTY_F;
     return pwrite(fd, buff, size, offset);
@@ -458,6 +464,16 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
     assert(fd);
     int ret = TEMP_FAILURE_RETRY(pread(fd, buffer, size, offset));
+    bool allzero = true;
+    for(size_t i = 0; i < size; i++){
+        if(((char*)buffer)[i]){
+            allzero = false;
+            break;
+        }
+    }
+    if(allzero){
+        return 0;
+    }
     if(flags & FILE_ENCODE_F){
         xorcode(buffer, offset, ret, fm_getsecret());
     }
