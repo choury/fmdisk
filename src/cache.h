@@ -41,6 +41,7 @@ class entry_t: locker {
     void init_wait();
     void erase(string name);
     void insert(string name, entry_t* entry);
+    string getcwd();
     static void pull(entry_t* entry);
     static void push(entry_t* entry);
     static void clean(entry_t* entry);
@@ -48,7 +49,6 @@ public:
     static int statfs(const char* path, struct statvfs *sf);
     entry_t(entry_t* parent, const filemeta meta);
     virtual ~entry_t();
-    string getcwd();
     filekey getkey();
     struct filemeta getmeta();
     entry_t* find(string path);

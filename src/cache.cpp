@@ -519,6 +519,7 @@ int entry_t::unlink() {
         return ret;
     }
     parent->erase(fk.path);
+    parent = nullptr;
     flags |= ENTRY_DELETED_F;
     if(flags & ENTRY_REASEWAIT_F){
         //delete this in clean

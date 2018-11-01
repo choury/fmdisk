@@ -167,6 +167,7 @@ retry:
         }
         b->fk = basename(file);
     }else{
+        free(buff);
         b->fk = filekey{"x", 0};
     }
     b->flags &= ~BLOCK_DIRTY;
@@ -257,7 +258,7 @@ static int tempfile() {
 }
 
 //计算某位置在哪个块中,从0开始计数,分界点算在前一个块中
-static size_t GetBlkNo(size_t p, blksize_t blksize) {
+inline size_t GetBlkNo(size_t p, blksize_t blksize) {
     assert(blksize);
     if (p == 0)
         return 0;
@@ -359,7 +360,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
 }
 
 int file_t::truncate(off_t offset){
-    auto_wlock(this);
+    auto_rlock(this);
     if((size_t)offset == size){
         return 0;
     }
@@ -370,19 +371,20 @@ int file_t::truncate(off_t offset){
             errno = EFBIG;
             return -1;
         }
+        __r.upgrade();
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks[i] = new block_t(this, filekey{"x", 0}, i, blksize * i, blksize);
         }
-
-    }
-    if(oldc >= newc && inline_data == nullptr){
+    }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
+        blocks[newc]->makedirty();
+        __r.upgrade();
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
             blocks.erase(i);
         }
-        //FIXME: 这里有可能会导致死锁，dirty队列中全部为本文件的block的时候
-        blocks[newc]->makedirty();
+    }else{
+        __r.upgrade();
     }
     size = offset;
     if(inline_data && (size > (off_t)INLINE_DLEN)){
