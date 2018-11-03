@@ -2,6 +2,7 @@
 #include "file.h"
 #include "cache.h"
 #include "threadpool.h"
+#include "defer.h"
 
 #include <string.h>
 #include <assert.h>
@@ -359,8 +360,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     return pread(fd, buff, size, offset);
 }
 
-int file_t::truncate(off_t offset){
-    auto_rlock(this);
+int file_t::truncate_rlocked(off_t offset){
     if((size_t)offset == size){
         return 0;
     }
@@ -371,21 +371,22 @@ int file_t::truncate(off_t offset){
             errno = EFBIG;
             return -1;
         }
-        __r.upgrade();
+        upgrade();
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks[i] = new block_t(this, filekey{"x", 0}, i, blksize * i, blksize);
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
         blocks[newc]->makedirty();
-        __r.upgrade();
+        upgrade();
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
             blocks.erase(i);
         }
     }else{
-        __r.upgrade();
+        upgrade();
     }
+    defer(&file_t::downgrade, dynamic_cast<locker*>(this));
     size = offset;
     if(inline_data && (size > (off_t)INLINE_DLEN)){
         delete[] inline_data;
@@ -400,10 +401,15 @@ int file_t::truncate(off_t offset){
     return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
 }
 
+int file_t::truncate(off_t offset){
+    auto_rlock(this);
+    return truncate_rlocked(offset);
+}
+
 int file_t::write(const void* buff, off_t offset, size_t size) {
     auto_rlock(this);
     if((size_t)offset + size > this->size){
-        int ret = truncate(offset + size);
+        int ret = truncate_rlocked(offset + size);
         if(ret < 0){
             return ret;
         }

@@ -48,6 +48,7 @@ void lock_upgrade(int i, locker* l){
     sleep(3);
     l->upgrade();
     cout<<"upgrade in upgrade: "<<i<<endl;
+    sleep(3);
     l->unwlock();
     cout<<"wlock unlocked in upgrade: "<<i<<endl;
 }
@@ -71,9 +72,41 @@ void test2(){
     u2.join();
 }
 
+void lock_downgrade(int i, locker* l){
+    l->rlock();
+    cout<<"rlock in downgrade: "<<i<<endl;
+    sleep(3);
+    l->upgrade();
+    cout<<"upgrade in downgrade: "<<i<<endl;
+    sleep(3);
+    l->downgrade();
+    cout<<"downgrade in downgrade: "<<i<<endl;
+    sleep(3);
+    l->unrlock();
+    cout<<"wlock unlocked in upgrade: "<<i<<endl;
+}
+
+void test3(){
+    locker l;
+    thread d1(lock_downgrade, 1, &l);
+    sleep(4);
+    cout<<"rlock in test3: "<<l.rlock()<<endl;
+    d1.join();
+    l.unrlock();
+    cout<<"unrlock in test3"<<endl;
+    cout<<"---------------"<<endl;
+    thread d2(lock_downgrade, 2, &l);
+    sleep(2);
+    cout<<"wlock in test3: "<<l.wlock()<<endl;
+    d2.join();
+    l.unwlock();
+    cout<<"unwlock in test3"<<endl;
+}
 
 int main(){
     test1();
     cout<<"================"<<endl;
     test2();
+    cout<<"================"<<endl;
+    test3();
 }

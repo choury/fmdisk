@@ -46,6 +46,7 @@ class file_t: locker {
     pthread_mutex_t extraLocker = PTHREAD_MUTEX_INITIALIZER;
     std::map<uint32_t, block_t*> blocks;
     std::vector<filekey> droped;
+    int truncate_rlocked(off_t offset);
 public:
     //for simple native file, use st.st_ino as flags
     file_t(entry_t* entry, const filemeta& meta);

@@ -95,6 +95,16 @@ public:
         pthread_mutex_unlock(&lock);
         return 0;
     }
+    virtual void downgrade(){
+        pthread_t self = pthread_self();
+        pthread_mutex_lock(&lock);
+        assert(writer == self);
+        assert(reader.count(self) == 0);
+        reader.insert(self);
+        writer = 0;
+        pthread_cond_signal(&cond);
+        pthread_mutex_unlock(&lock);
+    }
     virtual void unrlock(){
         pthread_mutex_lock(&lock);
         assert(reader.count(pthread_self()));
