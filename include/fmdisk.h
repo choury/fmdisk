@@ -49,7 +49,7 @@ const char* fm_getcachepath();
 #define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \
   auto _retry = 0;                \
-  while(true && _retry<20){       \
+  while(true){                    \
     _result = (x);                \
     _retry++;                     \
     if(_result &&                 \

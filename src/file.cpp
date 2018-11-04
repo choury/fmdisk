@@ -11,84 +11,36 @@
 
 #include <list>
 
-sem_t read_sem;
-pthread_mutex_t readlock = PTHREAD_MUTEX_INITIALIZER;
-std::list<block_t*> readlist;
-
 sem_t dirty_sem;
-pthread_mutex_t writelock = PTHREAD_MUTEX_INITIALIZER;
-std::list<block_t*> writelist;
+std::list<block_t*> dblocks;
+pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static_assert(BLOCKLEN > INLINE_DLEN);
 
-static bool findinqueue(std::list<block_t*>& list, block_t* b){
-    for(auto i: list){
-        if(i == b){
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool liftorpush(std::list<block_t*>& list, block_t* b){
-    bool found = false;
-    for(auto i = list.begin(); i != list.end(); i++ ){
-        if(*i == b){
-            found = true;
-            list.erase(i);
-            break;
-        }
-    }
-    list.push_back(b);
-    return found;
-}
-
-void prefetch() {
+void writeback_thread(){
+    sem_init(&dirty_sem, 0, UPLOADTHREADS/2);
     while(true){
-        sem_wait(&read_sem);
-        pthread_mutex_lock(&readlock);
-        if(readlist.empty()){
-            pthread_mutex_unlock(&readlock);
+        usleep(100000);
+        pthread_mutex_lock(&dblocks_lock);
+        if(dblocks.empty()){
+            pthread_mutex_unlock(&dblocks_lock);
             continue;
+        }else if(taskinqueu(upool) == 0){
+            addtask(upool, (taskfunc)block_t::push, dblocks.front(), 0);
+            dblocks.pop_front();
+            sem_post(&dirty_sem);
         }
-        addtask((taskfunc)block_t::pull, readlist.front(), 0, 0);
-        readlist.pop_front();
-        pthread_mutex_unlock(&readlock);
-    }
-}
-
-void writeback(){
-    while(true){
-        sleep(1);
-        pthread_mutex_lock(&writelock);
-        if(writelist.empty()){
-            pthread_mutex_unlock(&writelock);
-            continue;
-        }
-        while(writelist.size() >= THREADS/2){
-            addtask((taskfunc)block_t::push, writelist.front(), 0, 0);
-            writelist.pop_front();
-        }
-        for(auto i = writelist.begin(); i!= writelist.end();){
+        for(auto i = dblocks.begin(); i!= dblocks.end();){
             if((*i)->staled() >= 10){
-                addtask((taskfunc)block_t::push, *i, 0, 0);
-                i = writelist.erase(i);
+                addtask(upool, (taskfunc)block_t::push, *i, 0);
+                i = dblocks.erase(i);
+                sem_post(&dirty_sem);
             }else{
                 break;
             }
         }
-        pthread_mutex_unlock(&writelock);
+        pthread_mutex_unlock(&dblocks_lock);
     }
-}
-
-void start_prefetch() {
-    sem_init(&read_sem, 0, 0);
-    addtask((taskfunc)prefetch, nullptr, 0, 0);
-}
-
-void start_writeback(){
-    sem_init(&dirty_sem, 0, THREADS/2);
-    addtask((taskfunc)writeback, nullptr, 0, 0);
 }
 
 block_t::block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size):
@@ -104,25 +56,16 @@ block_t::block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size)
 }
 
 block_t::~block_t() {
-    pthread_mutex_lock(&readlock);
-    for(auto i =  readlist.begin(); i != readlist.end(); ){
-        if(*i == this){
-            i = readlist.erase(i);
-        }else{
-            i++;
-        }
-    }
-    pthread_mutex_unlock(&readlock);
-    pthread_mutex_lock(&writelock);
-    for(auto i = writelist.begin(); i != writelist.end();){
+    pthread_mutex_lock(&dblocks_lock);
+    for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
-            i = writelist.erase(i);
+            i = dblocks.erase(i);
             sem_post(&dirty_sem);
         }else{
             i++;
         }
     }
-    pthread_mutex_unlock(&writelock);
+    pthread_mutex_unlock(&dblocks_lock);
     auto_wlock(this);
     file->trim(getkey());
 }
@@ -150,7 +93,9 @@ void block_t::pull(block_t* b) {
 
 void block_t::push(block_t* b) {
     auto_wlock(b);
-    assert(b->flags & BLOCK_DIRTY);
+    if((b->flags & BLOCK_DIRTY) == 0){
+        return;
+    }
     char *buff = (char*)malloc(b->size);
     size_t len = b->file->getbuffer(buff, b->offset, b->size);
     b->file->trim(b->getkey());
@@ -172,7 +117,6 @@ retry:
         b->fk = filekey{"x", 0};
     }
     b->flags &= ~BLOCK_DIRTY;
-    sem_post(&dirty_sem);
 }
 
 void block_t::prefetch(bool wait) {
@@ -188,21 +132,25 @@ void block_t::prefetch(bool wait) {
         return;
     }
     unrlock();
-    pthread_mutex_lock(&readlock);
-    if(!findinqueue(readlist, this) && readlist.size() <= THREADS/4){
-        readlist.push_back(this);
-        sem_post(&read_sem);
+    if(taskinqueu(dpool) < DOWNLOADTHREADS){
+        addtask(dpool, (taskfunc)block_t::pull, this, 0);
     }
-    pthread_mutex_unlock(&readlock);
 }
 
 void block_t::makedirty() {
     wlock();
     atime = time(0);
-    pthread_mutex_lock(&writelock);
-    bool found = liftorpush(writelist, this);
-    pthread_mutex_unlock(&writelock);
-    assert((found && (flags & BLOCK_DIRTY)) || (!found && (flags & BLOCK_DIRTY)==0));
+    pthread_mutex_lock(&dblocks_lock);
+    bool found = false;
+    for(auto i = dblocks.begin(); i != dblocks.end(); i++ ){
+        if(*i == this){
+            found = true;
+            dblocks.erase(i);
+            break;
+        }
+    }
+    dblocks.push_back(this);
+    pthread_mutex_unlock(&dblocks_lock);
     flags |=  BLOCK_DIRTY;
     unwlock();
     if(!found){
@@ -211,25 +159,18 @@ void block_t::makedirty() {
 }
 
 void block_t::sync(){
-    pthread_mutex_lock(&writelock);
-    for(auto i = writelist.begin(); i != writelist.end();){
+    pthread_mutex_lock(&dblocks_lock);
+    for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
-            addtask((taskfunc)block_t::push, this, 0, 0);
-            i = writelist.erase(i);
+            i = dblocks.erase(i);
+            sem_post(&dirty_sem);
             break;
         }else{
             i++;
         }
     }
-    pthread_mutex_unlock(&writelock);
-    rlock();
-    while(flags & BLOCK_DIRTY){
-        //TODO notify by thread_cond
-        unrlock();
-        sleep(1);
-        rlock();
-    }
-    unrlock();
+    pthread_mutex_unlock(&dblocks_lock);
+    push(this);
 }
 
 void block_t::reset(){
@@ -351,7 +292,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i< endc + DOWNTHREADS && i<= GetBlkNo(this->size, blksize); i++){
+    for(size_t i = startc; i< endc + DOWNLOADTHREADS && i<= GetBlkNo(this->size, blksize); i++){
         blocks[i]->prefetch(false);
     }
     for(size_t i = startc; i<= endc; i++ ){

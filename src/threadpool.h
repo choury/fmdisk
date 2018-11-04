@@ -10,18 +10,21 @@
 extern "C" {
 #endif
 
-typedef unsigned long int task_t;               //任务id
+typedef unsigned long int task_id;                 //任务id
 typedef void *(*taskfunc)(void *);
+struct thrdpool;
 
-void creatpool(int threadnum);                          //创建线程池，参数是线程数
+struct thrdpool* creatpool(int threadnum);        //创建线程池，参数是线程数
+
 
 //增加一个任务，执行task函数，参数为param
-
 #define NEEDRET     1
-#define WAIT        2
-task_t addtask(taskfunc task, void* param, uint flags, unsigned int delaySec);
-void* waittask(task_t id);                              //等待并取回结果，必须对每个needretval=1的任务执行，不然会导致类似"僵尸进程"的东西
-int taskisdoing(task_t id);         //这是一个非阻塞接口，用来查询某任务是否在队列或者被执行
+task_id addtask(struct thrdpool* pool, taskfunc func, void* param, uint flags);
+
+//等待并取回结果，必须对每个needretval=1的任务执行，不然会导致类似"僵尸进程"的东西
+int waittask(struct thrdpool* pool, task_id id, void** result);
+
+int taskinqueu(struct thrdpool* pool);
 
 #ifdef  __cplusplus
 }

@@ -22,8 +22,7 @@ class block_t: locker {
     int staled();
     static void pull(block_t* b);
     static void push(block_t* b);
-    friend void prefetch();
-    friend void writeback();
+    friend void writeback_thread();
 public:
     block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size);
     ~block_t();
@@ -71,8 +70,7 @@ public:
     void post_sync(const filekey& fk);
 };
 
-void start_prefetch();
-void start_writeback();
 
+void writeback_thread();
 
 #endif

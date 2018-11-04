@@ -15,6 +15,7 @@ using namespace std;
 static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
+static thrdpool *pool;
 
 static mutex console_lock;
 
@@ -288,9 +289,9 @@ void checkfile(filekey* file) {
         }
 
         if(endwith(f.key.path, ".def")){
-            addtask((taskfunc)checkchunk, new filekey(f.key), 0, 0);
+            addtask(pool, (taskfunc)checkchunk, new filekey(f.key), 0);
         }else if(recursive){
-            addtask((taskfunc)checkfile, new filekey(f.key), 0, 0);
+            addtask(pool, (taskfunc)checkfile, new filekey(f.key), 0);
         }
     }
 }
@@ -341,13 +342,14 @@ int main(int argc, char **argv) {
         path = "/";
     }
     cout << "will check path: " << path << endl;
-    creatpool(CHECKTHREADS);
+    pool = creatpool(CHECKTHREADS);
     filekey file = getpath(path);
     if(file.path == ""){
         cerr<<"dir "<<path<<" not found."<<endl;
         return -2;
     }
     checkfile(new filekey{file});
-    waittask(0);
+    void* result;
+    waittask(pool, 0, &result);
     return 0;
 }

@@ -68,6 +68,10 @@ public:
     int rmdir();
 };
 
+struct thrdpool;
+extern thrdpool* upool;
+extern thrdpool* dpool;
+
 int cache_prepare();
 entry_t* cache_root();
 filekey basename(const filekey& file);

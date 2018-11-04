@@ -32,10 +32,8 @@ void test1(){
     l.unrlock();
     l.unwlock();
     cout<<"---------------"<<endl;
-    thread  rt1(lock_read, 1, &l);
-    rt1.detach();
-    thread  rt2(lock_read, 2, &l);
-    rt2.detach();
+    thread(lock_read, 1, &l).detach();
+    thread(lock_read, 2, &l).detach();
     thread  wt1(lock_write, 1, &l);
     thread  wt2(lock_write, 2, &l);
     wt1.join();

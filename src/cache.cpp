@@ -2,11 +2,15 @@
 #include "dir.h"
 #include "file.h"
 #include "threadpool.h"
+#include "defer.h"
 
 #include <string.h>
 #include <assert.h>
 #include <json-c/json.h>
+#include <thread>
 
+thrdpool* upool;
+thrdpool* dpool;
 
 static string childname(const string& path) {
     size_t pos = path.find_first_of("/");
@@ -43,13 +47,13 @@ filekey decodepath(const filekey& file) {
 
 
 int cache_prepare() {
+    upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
+    dpool = creatpool(DOWNLOADTHREADS);
+    addtask(upool, (taskfunc)writeback_thread, 0, 0);
     return fm_prepare();
 }
 
 entry_t* cache_root() {
-    creatpool(THREADS);
-    start_prefetch();
-    start_writeback();
     struct filemeta meta = initfilemeta(filekey{"/", 0});
     if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
         throw "getattr of root failed";
@@ -99,11 +103,11 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         fk = decodepath(fk);
         mode = S_IFREG | 0666;
         flags |= ENTRY_CHUNCED_F;
-        addtask((taskfunc)pull, this, 0, 0);
+        addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
     if(meta.flags & METE_KEY_ONLY){
-        addtask((taskfunc)pull, this, 0, 0);
+        addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
     if(flags & ENTRY_CHUNCED_F){
@@ -463,7 +467,7 @@ int entry_t::release() {
         }
         flags |= ENTRY_REASEWAIT_F;
     }
-    addtask(taskfunc(clean), this, 0, 60);
+    delay(60, clean, this);
     return 0;
 }
 
