@@ -13,6 +13,7 @@ struct task_t {
     taskfunc     func;
     void*        param;
     unsigned int flags;
+    timespec     until;
 };
 
 struct val_t{
@@ -66,52 +67,6 @@ void* dotask(thrdpool* pool) {                                //执行任务
     return NULL;
 }
 
-#if 0
-//调度线程，按照先进先出的队列来调度
-void sched() {
-    int i;
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 1e5;
-    ts.tv_nsec = 0;
-    while (1) {
-        sem_timedwait(&tasksum, &ts);             //等待addtask的信号
-        sem_wait(&trdsum);                        //等待一个空闲进程
-
-        struct timespec now;
-        clock_gettime(CLOCK_REALTIME, &now);
-        ts.tv_sec = now.tv_sec + 1e5;
-
-        pthread_mutex_lock(&poollock);
-        for(i = 0; i < pool.num; ++i) {
-            if (pool.tsk[i] == 0)break;        //找到空闲进程号
-        }
-        tasknode* task = nullptr;
-        for(auto i = pool.tasks.begin(); i != pool.tasks.end();){
-            auto tv_sec = (*i)->until.tv_sec;
-            if(task == nullptr && tv_sec <= now.tv_sec){
-                task = *i;
-                i = pool.tasks.erase(i);
-                continue;
-            }
-            if(tv_sec < ts.tv_sec){
-                ts.tv_sec = tv_sec;
-            }
-            i++;
-        }
-        if(task){
-            pool.tsk[i] = task;              //分配任务
-        }
-        pthread_mutex_unlock(&poollock);
-        if(task){
-            sem_post(&task->wait);
-            sem_post(pool.wait + i);
-        }else{
-            sem_post(&trdsum);
-        }
-    }
-}
-#endif
 
 
 thrdpool* creatpool(int threadnum) {
@@ -207,4 +162,95 @@ int taskinqueu(struct thrdpool* pool){
     tasks = pool->tasks.size();
     pthread_mutex_unlock(&pool->lock);
     return tasks;
+}
+
+#include <list>
+#include <thread>
+#include <atomic>
+
+sem_t delay_task;
+std::atomic<bool> delay_task_stop(false);
+pthread_mutex_t delay_task_lock = PTHREAD_MUTEX_INITIALIZER;
+std::list<task_t*> delay_tasks;
+
+//调度线程，按照先进先出的队列来调度
+void do_delay_task() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 30;
+    while(!delay_task_stop) {
+        sem_timedwait(&delay_task, &ts);             //等待addtask的信号
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        ts.tv_sec = now.tv_sec + 30;
+
+        pthread_mutex_lock(&delay_task_lock);
+        task_t* task = nullptr;
+        for(auto i = delay_tasks.begin(); i != delay_tasks.end();){
+            auto tv_sec = (*i)->until.tv_sec;
+            if(task == nullptr && tv_sec <= now.tv_sec){
+                task = *i;
+                i = delay_tasks.erase(i);
+                continue;
+            }
+            if(tv_sec < ts.tv_sec){
+                ts.tv_sec = tv_sec;
+            }
+            i++;
+        }
+        pthread_mutex_unlock(&delay_task_lock);
+        if(task){
+            task->func(task->param);
+            free(task);
+        }
+    }
+    pthread_mutex_lock(&delay_task_lock);
+    for(auto i: delay_tasks){
+        i->func(i->param);
+        delete i;
+    }
+    delay_tasks.clear();
+    pthread_mutex_unlock(&delay_task_lock);
+}
+
+
+std::thread* delay_thread;
+
+static void start_delay_thread() __attribute__((constructor));
+static void stop_delay_thread() __attribute__((destructor));
+
+static void start_delay_thread(){
+    sem_init(&delay_task, 0 ,0);
+    delay_thread = new std::thread(do_delay_task);
+}
+
+static void stop_delay_thread() {
+    delay_task_stop.store(true);
+    delay_thread->join();
+    delete delay_thread;
+    sem_destroy(&delay_task);
+    pthread_mutex_destroy(&delay_task_lock);
+}
+
+
+void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
+    task_t* task = nullptr;
+    pthread_mutex_lock(&delay_task_lock);
+    for(auto i = delay_tasks.begin(); i != delay_tasks.end();){
+        if((*i)->func == func && (*i)->param == param){
+            task = *i;
+            delay_tasks.erase(i);
+            break;
+        }
+    }
+    if(task == nullptr){
+        task = (task_t*)malloc(sizeof(task_t));
+        task->func = func;
+        task->param = param;
+    }
+    clock_gettime(CLOCK_REALTIME, &task->until);
+    task->until.tv_sec += delaySec;
+    delay_tasks.emplace_back(task);
+    pthread_mutex_unlock(&delay_task_lock);
+    sem_post(&delay_task);
 }

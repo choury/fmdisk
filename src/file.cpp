@@ -221,12 +221,12 @@ file_t::file_t(entry_t *entry, const filemeta& meta):
         assert(size == 0);
         inline_data = new char[INLINE_DLEN];
         private_key = nullptr;
-        blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
+        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize));
         return;
     }
     //for the non-chunk file
     for(size_t i = 0; i <= GetBlkNo(size, blksize); i++ ){
-        blocks[i] = new block_t(this, filekey{"", meta.key.private_key}, i, blksize * i, blksize);
+        blocks.emplace(i, new block_t(this, filekey{"", meta.key.private_key}, i, blksize * i, blksize));
     }
 }
 
@@ -242,13 +242,13 @@ file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblock
     if(meta.inline_data){
         assert(meta.size < (size_t)meta.blksize);
         inline_data = (char*)meta.inline_data;
-        blocks[0] = new block_t(this, filekey{"x", 0}, 0, 0, blksize);
+        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize));
     }else{
         //zero is the first block
         assert(fblocks.size() == GetBlkNo(size, blksize)+1);
     }
     for(size_t i = 0; i < fblocks.size(); i++ ){
-        blocks[i] = new block_t(this, fblocks[i], i, blksize * i, blksize);
+        blocks.emplace(i, new block_t(this, fblocks[i], i, blksize * i, blksize));
     }
 }
 
@@ -314,7 +314,7 @@ int file_t::truncate_rlocked(off_t offset){
         }
         upgrade();
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks[i] = new block_t(this, filekey{"x", 0}, i, blksize * i, blksize);
+            blocks.emplace(i, new block_t(this, filekey{"x", 0}, i, blksize * i, blksize));
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
@@ -461,7 +461,7 @@ void file_t::trim(const filekey& file) {
         return;
     }
     auto_lock(&extraLocker);
-    droped.push_back(file);
+    droped.emplace_back(file);
 }
 
 void file_t::post_sync(const filekey& file) {

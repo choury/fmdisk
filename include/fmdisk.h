@@ -39,6 +39,9 @@ int fm_batchdelete(std::vector<struct filekey> flist);
 //move `file` at `oldat` to `newat` with new name of `newfile`, new key return in `newfile`
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
+//optional, return -EACCES if not supported.
+int fm_utime(const filekey& file, const struct timespec  tv[2]);
+
 std::string fm_private_key_tostring(std::shared_ptr<void> private_key);
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
 

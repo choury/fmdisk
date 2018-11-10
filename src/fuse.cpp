@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <string.h>
+#include <attr/xattr.h>
 
 
 int fm_fuse_prepare(){
@@ -200,5 +201,21 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
 }
 
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
-    return -ENOTSUP;
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    entry_t* entry = (entry_t*)root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    if(strcmp(name, "user.underlay_path")){
+        return -ENOATTR;
+    }
+    string underlay_path = entry->getkey().path;
+    if(len == 0){
+        return underlay_path.length();
+    }
+    if(underlay_path.length() >= len){
+        return -ERANGE;
+    }
+    strcpy(value, underlay_path.c_str());
+    return underlay_path.length();
 }

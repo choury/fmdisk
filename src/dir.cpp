@@ -6,8 +6,8 @@
 
 
 dir_t::dir_t(entry_t* entry, entry_t* parent, time_t mtime): mtime(mtime){
-    entrys["."] = entry;
-    entrys[".."] = parent ? parent: entry;
+    entrys.emplace(".", entry);
+    entrys.emplace("..", parent ? parent: entry);
 }
 
 dir_t::~dir_t(){
@@ -30,7 +30,7 @@ void dir_t::pull() {
         if(endwith(bname, ".def") && S_ISDIR(i.mode)){
             bname = decodepath(bname);
         }
-        entrys[bname] = new entry_t(entry, i);
+        entrys.emplace(bname, new entry_t(entry, i));
     }
     flags |= DIR_PULLED_F;
 }
@@ -57,7 +57,7 @@ const std::map<string, entry_t*>& dir_t::get_entrys(){
 #if  0
     for(auto i: entrys){
         if(i.second == nullptr){
-            entrys[i.first] = new entry_t(entrys["."], i.first);
+            entrys.emplace(i.first, new entry_t(entrys["."], i.first));
         }
     }
 #endif
@@ -79,6 +79,11 @@ void dir_t::erase(std::string name) {
     assert(entrys.count(name));
     entrys.erase(name);
     mtime = time(0);
+}
+
+void dir_t::setmtime(time_t mtime) {
+    auto_wlock(this);
+    this->mtime = mtime;
 }
 
 

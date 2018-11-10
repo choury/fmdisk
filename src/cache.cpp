@@ -467,18 +467,25 @@ int entry_t::release() {
         }
         flags |= ENTRY_REASEWAIT_F;
     }
-    delay(60, clean, this);
+    add_delay_job((taskfunc)clean, this, 60);
     return 0;
 }
 
 int entry_t::utime(const struct timespec  tv[2]) {
     auto_rlock(this);
+    int ret = 0;
     if((flags & ENTRY_CHUNCED_F) == 0){
-        return -EACCES;
+        ret = fm_utime(getkey(), tv);
     }
-    file->setmtime(tv[1].tv_sec);
-    sync(0);
-    return 0;
+    if(ret == 0){
+        if(S_ISDIR(mode)){
+            dir->setmtime(tv[1].tv_sec);
+        }else{
+            file->setmtime(tv[1].tv_sec);
+        }
+        sync(0);
+    }
+    return ret;
 }
 
 

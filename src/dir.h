@@ -20,6 +20,7 @@ public:
     const std::map<string, entry_t*>& get_entrys();
     entry_t* insert(std::string name, entry_t* entry);
     void erase(std::string name);
+    void setmtime(time_t mtime);
     time_t getmtime();
     size_t size();
 };
