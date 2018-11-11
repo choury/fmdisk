@@ -15,7 +15,7 @@ sem_t dirty_sem;
 std::list<block_t*> dblocks;
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static_assert(BLOCKLEN > INLINE_DLEN);
+static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
 void writeback_thread(){
     sem_init(&dirty_sem, 0, UPLOADTHREADS/2);

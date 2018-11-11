@@ -44,8 +44,8 @@ struct filemeta{
 };
 
 
-std::string URLEncode(const char* str);
-std::string URLDecode(const char* str);
+std::string URLEncode(const std::string& str);
+std::string URLDecode(const std::string& str);
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);
 
@@ -55,7 +55,14 @@ std::string dirname(const std::string& path);
 std::string basename(const std::string& path);
 std::string encodepath(const std::string& path);
 std::string decodepath(const std::string& path);
+
 std::string pathjoin(const std::string& dir, const std::string& name);
+
+template <typename... T>
+std::string pathjoin(const std::string& dir, const std::string& name, const T&... others){
+    return pathjoin(dir, pathjoin(name, others...));
+}
+
 bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);
 

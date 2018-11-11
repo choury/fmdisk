@@ -21,15 +21,9 @@ static int hex2num(char c) {
     return '0';
 }
 
-string URLEncode(const char* s) {
-    int strSize=strlen(s);
-    const unsigned char *str = (const unsigned char*)s;
-
-    if ((str==NULL) || (strSize==0) ) {
-        return NULL;
-    }
+string URLEncode(const string& str) {
     string result;
-    for (int i=0; i<strSize; ++i) {
+    for (size_t i=0; i<str.size(); ++i) {
         unsigned char ch = str[i];
         if (((ch>='A') && (ch<='Z')) ||
             ((ch>='a') && (ch<='z')) ||
@@ -45,26 +39,20 @@ string URLEncode(const char* s) {
             result += tmp;
         }
     }
-
     return result;
 }
 
 
-string URLDecode(const char* str) {
-    int strSize = strlen(str);
-    if ((str==NULL) || (strSize<=0) ) {
-        return 0;
-    }
-
+string URLDecode(const string& str) {
     string result;
-    for (int i=0; i<strSize; ++i) {
+    for (size_t i=0; i<str.size(); ++i) {
         char ch = str[i];
         switch (ch) {
         case '+':
             result += ' ';
             break;
         case '%':
-            if (i+2<strSize) {
+            if (i+2<str.size()) {
                 char ch1 = hex2num(str[i+1]);//高4位
                 char ch2 = hex2num(str[i+2]);//低4位
                 if ((ch1!='0') && (ch2!='0'))
