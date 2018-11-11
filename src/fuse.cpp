@@ -5,7 +5,6 @@
 
 #include <errno.h>
 #include <string.h>
-#include <attr/xattr.h>
 
 
 int fm_fuse_prepare(){
@@ -208,7 +207,7 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
         return -ENOENT;
     }
     if(strcmp(name, "user.underlay_path")){
-        return -ENOATTR;
+        return -ENODATA;
     }
     string underlay_path = entry->getkey().path;
     if(len == 0){
