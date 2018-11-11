@@ -8,7 +8,7 @@ int fm_download(const filekey&, size_t, size_t, buffstruct&){
     return 0;
 }
 
-int fm_upload(const filekey&, filekey&, size_t, bool){
+int fm_upload(const filekey&, filekey&, const char*, size_t, bool){
     return 0;
 }
 
@@ -42,3 +42,8 @@ int fm_batchdelete(std::vector<struct filekey> flist){
 std::shared_ptr<void> fm_get_private_key(const char*){
     return std::shared_ptr<void>(nullptr, [](void*){});
 }
+
+std::string fm_private_key_tostring(std::shared_ptr<void>) {
+    return "";
+}
+

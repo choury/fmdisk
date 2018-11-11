@@ -3,6 +3,7 @@
 
 #include <string>
 #include <memory>
+#include <vector>
 
 class buffstruct {
     bool const_buff = false;
@@ -21,7 +22,15 @@ struct filekey {
     std::shared_ptr<void> private_key;
 };
 
-#define METE_KEY_ONLY  (1<<16)
+#define ENTRY_INITED_F    (1<<0)
+#define ENTRY_CHUNCED_F   (1<<1)
+#define ENTRY_DELETED_F   (1<<2)
+#define ENTRY_REASEWAIT_F (1<<3)
+#define ENTRY_CREATE_F    (1<<4)
+#define FILE_ENCODE_F     (1<<5)
+#define FILE_DIRTY_F      (1<<6)
+#define DIR_PULLED_F      (1<<7)
+#define METE_KEY_ONLY_F   (1<<16)
 
 struct filemeta{
     struct filekey key;
@@ -39,6 +48,7 @@ std::string URLEncode(const char* str);
 std::string URLDecode(const char* str);
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);
+
 void xorcode(void* buf, size_t offset, size_t len, const char* key);
 
 std::string dirname(const std::string& path);
@@ -53,4 +63,7 @@ size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 
 filemeta initfilemeta(const filekey& key);
+
+int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks);
+int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks);
 #endif

@@ -1,4 +1,5 @@
 #include "fmdisk.h"
+#include "defer.h"
 #include "threadpool.h"
 #include <unistd.h>
 #include <iostream>
@@ -29,107 +30,14 @@ std::ostream& unlock(std::ostream& os) {
     return os;
 }
 
-int readblklist(const filekey& metafile, std::vector<filekey>& fblocks) {
-    buffstruct bs;
-    int ret = HANDLE_EAGAIN(fm_download(metafile, 0, 0, bs));
-    if (ret != 0) {
-        cerr<<lock<<"read meta file "<< metafile.path<<" failed: "<<ret<<endl<<unlock;
-        return ret;
-    }
-    json_object *json_get = json_tokener_parse(bs.buf);
-    if (json_get == NULL) {
-        cerr<<lock<<"json_tokener_parse filed: " << bs.buf << endl <<unlock;
-        return ret;
-    }
-
-    bool inline_data_found = false;
-    bool blocks_found = false;
-    bool block_list_found = false;
-    json_object *jsize;
-    if(json_object_object_get_ex(json_get, "size", &jsize) == 0){
-        cerr<<lock<<"no size found in meta.json: "<< bs.buf <<endl <<unlock;
-        ret = 2;
-        goto json_err;
-    }
-
-    json_object *jblksize;
-    if(json_object_object_get_ex(json_get, "blksize", &jblksize) == 0){
-        cerr<<lock<<"no blksize found in meta.json: "<< bs.buf <<endl <<unlock;
-        ret = 2;
-        goto json_err;
-    }
-
-    json_object *jinline_data;
-    if(json_object_object_get_ex(json_get, "inline_data", &jinline_data)){
-        inline_data_found = true;
-    }
-
-    json_object* jblocks;
-    if(json_object_object_get_ex(json_get, "blocks", &jblocks)){
-        fblocks.reserve(json_object_array_length(jblocks));
-        for(int i=0; i < json_object_array_length(jblocks); i++){
-            blocks_found = true;
-            json_object *jblock = json_object_array_get_idx(jblocks, i);
-            json_object *jname;
-            if(json_object_object_get_ex(jblock, "name", &jname) == 0){
-                cerr<<lock<<"no name found in blocks: "<< bs.buf <<endl <<unlock;
-                ret = 3;
-                goto json_err;
-            }
-            json_object *jkey;
-            if(json_object_object_get_ex(jblock, "key", &jkey) == 0){
-                cerr<<lock<<"no key found in blocks: "<< bs.buf <<endl <<unlock;
-                ret = 3;
-                goto json_err;
-            }
-            const char* name = json_object_get_string(jname);
-            const char* private_key = json_object_get_string(jkey);
-            fblocks.push_back(filekey{name, fm_get_private_key(private_key)});
-        }
-    }
-
-    json_object *jblock_list;
-    if(json_object_object_get_ex(json_get, "block_list", &jblock_list)){
-        fblocks.reserve(json_object_array_length(jblock_list));
-        for(int i=0; i < json_object_array_length(jblock_list); i++){
-            block_list_found = true;
-            json_object *block = json_object_array_get_idx(jblock_list, i);
-            const char* name = json_object_get_string(block);
-            fblocks.push_back(filekey{name, 0});
-        }
-    }
-
-    if(inline_data_found & (blocks_found || block_list_found)){
-        cerr<<lock<<"get inline_data and blocks/block_list: "<< bs.buf <<endl <<unlock;
-        ret = 4;
-        goto json_err;
-    }
-    if(blocks_found && block_list_found){
-        cerr<<lock<<"get blocks and block_list together: "<< bs.buf <<endl <<unlock;
-        ret = 5;
-        goto json_err;
-    }
-
-    if(json_object_get_int64(jsize) && !inline_data_found && !blocks_found && !block_list_found){
-        cerr<<lock<<"get none of inline_data/blocks/block_list: "<< bs.buf <<endl <<unlock;
-        ret = 6;
-        goto json_err;
-    }
-
-    json_object_put(json_get);
-    return 0;
-json_err:
-    json_object_put(json_get);
-    return ret;
-}
-
 void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>& flist) {
+    cerr << lock;
+    defer([]{cerr<<unlock;});
     if (flist.empty()) {
-        cerr <<lock<< "there is no blocks of file: " << decodepath(file.path) << ", so delete it" << endl<<unlock;
+        cerr << "there is no blocks of file: " << decodepath(file.path) << ", so delete it" << endl;
         goto del;
-        return;
     }
-    cerr<<lock << decodepath(file.path)<<" has blocks:" << endl;
+    cerr << decodepath(file.path)<<" has blocks:" << endl;
     for (auto f : flist) {
         cerr << f.first<<endl;
     }
@@ -143,7 +51,6 @@ void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>&
             cin.ignore(numeric_limits<streamsize>::max(), '\n');
             continue;
         }
-        cerr<<unlock;
         if (a == 'I') {
             return;
         } else {
@@ -153,31 +60,38 @@ void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>&
 del:
     int ret = HANDLE_EAGAIN(fm_delete(file));
     if (ret != 0) {
-        cerr<<lock << "delete dir " << file.path << "failed: " << ret << endl << unlock;
+        cerr << "delete dir " << file.path << "failed: " << ret << endl;
     }
 }
 
-void fixMissBlock(const filekey& file, const std::map<std::string, struct filekey>& flist, uint64_t no) {
-    std::vector<string> fit;
+filekey fixMissBlock(const filekey& file, const std::map<std::string, struct filekey>& flist, uint64_t no) {
+    cerr << lock;
+    defer([]{cerr<<unlock;});
+    std::vector<filekey> fit;
     string No = to_string(no);
     for (auto i : flist) {
         if (i.first == No || startwith(i.first, No + '_')) {
-            fit.push_back(i.first);
+            fit.push_back(filekey{basename(i.second.path), i.second.private_key});
         }
     }
+    filemeta meta{file};
     if (fit.empty()) {
-        cerr<<lock
-        <<decodepath(file.path) << "has no block fit for " << No << ", should reset it to 'x' (not implement)"
-        <<endl<<unlock;
-        return;
+        cout<<decodepath(file.path) << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
+        return filekey{"x"};
     }
-    cerr <<lock<< decodepath(file.path) <<"has some block fit for " << No << ", please pick one:" << endl;
     size_t n = 0;
-    for (auto i : fit) {
-        cerr << n << ". " << i << endl;
+pick:
+    cerr << decodepath(file.path) <<" has some block fit for " << No << ", please pick one:" << endl;
+    for(size_t i = 0; i < fit.size(); i++) {
+        cerr << i << " -> " << fit[i].path << endl;
     }
-    getchar();
-    cerr << "not implement now" << endl<<unlock;
+    cout<<"? ";
+    cin>>n;
+    if(n >= fit.size()){
+        goto pick;
+    }
+    cerr << fit[n].path << " is selected." << endl;
+    return fit[n];
 }
 
 bool blockMatchNo(string block, uint64_t no) {
@@ -188,10 +102,10 @@ bool blockMatchNo(string block, uint64_t no) {
 }
 
 void checkchunk(filekey* file) {
+    defer([file]{delete file;});
     std::vector<filemeta> flist;
     int ret  = HANDLE_EAGAIN(fm_list(*file, flist));
     if (ret != 0) {
-        delete file;
         cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
         return;
     }
@@ -204,35 +118,53 @@ void checkchunk(filekey* file) {
         if (autofix) {
             fixNoMeta(*file, fs);
         }
-        delete file;
         return;
     }
+    filemeta meta;
     std::vector<filekey> blks;
-    ret = readblklist(fs[METANAME], blks);
+    ret = downlod_meta(*file, meta, blks);
+    defer1([&meta]{delete meta.inline_data;});
+    if(ret == 0){
+        if(meta.inline_data && blks.size()){
+            cerr<<lock<<"get inline_data and blocks/block_list: "<< meta.key.path <<endl <<unlock;
+            ret = 4;
+        }
+
+        if(meta.size && !meta.inline_data && blks.empty()){
+            cerr<<lock<<"get none of inline_data/blocks/block_list: "<< meta.key.path <<endl <<unlock;
+            ret = 6;
+        }
+    }
     if (ret != 0) {
         cerr<<lock<<"file: "<<decodepath(file->path)<<" have malformed meta.json"<<endl<<unlock;
         if (autofix) {
             fixNoMeta(*file, fs);
         }
-        delete file;
         return;
     }
     fs.erase(METANAME);
-    int no = 0;
-    for (auto b : blks) {
+    bool fixed = false;
+    for(size_t i = 0; i < blks.size(); i++) {
         bool haswrong = false;
-        if (!blockMatchNo(b.path, no)) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has block "<<b.path<<" on No."<<no<<endl<<unlock;
+        if (!blockMatchNo(blks[i].path, i)) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" has block "<<blks[i].path<<" on No."<<i<<endl<<unlock;
             haswrong = true;
         }
-        if (b.path != "x" && fs.count(b.path) == 0) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<b.path<<endl<<unlock;
+        if (blks[i].path != "x" && fs.count(blks[i].path) == 0) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<blks[i].path<<endl<<unlock;
             haswrong = true;
         }
         if (haswrong && autofix) {
-            fixMissBlock(*file, fs, no);
+            fixed = true;
+            blks[i] = fixMissBlock(*file, fs, i);
         }
-        no++;
+    }
+    if(fixed){
+        ret = upload_meta(*file, meta, blks);
+        if (ret != 0) {
+            cerr<<lock<< "upload meta "<<meta.key.path<<" failed: "<<ret<<endl<<unlock;
+            return;
+        }
     }
     std::vector<filekey> ftrim;
     for (auto f : fs) {
@@ -267,19 +199,18 @@ void checkchunk(filekey* file) {
     if (verbose) {
         cout <<lock<< decodepath(file->path) << " check finish" << endl<<unlock;
     }
-    delete file;
     return;
 }
 
-void checkfile(filekey* file) {
+void checkdir(filekey* file) {
+    defer([file]{delete file;});
+
     std::vector<filemeta> flist;
     int ret  = HANDLE_EAGAIN(fm_list(*file, flist));
     if (ret != 0) {
         cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
-        delete file;
         return;
     }
-    delete file;
     for (auto f : flist) {
         if (S_ISREG(f.mode)) {
             if (verbose) {
@@ -291,24 +222,26 @@ void checkfile(filekey* file) {
         if(endwith(f.key.path, ".def")){
             addtask(pool, (taskfunc)checkchunk, new filekey(f.key), 0);
         }else if(recursive){
-            addtask(pool, (taskfunc)checkfile, new filekey(f.key), 0);
+            addtask(pool, (taskfunc)checkdir, new filekey(f.key), 0);
         }
     }
 }
 
-filekey getpath(string path){
+filekey* getpath(string path){
     if(path == "/" || path == "."){
-        return filekey{"/", 0};
+        return new filekey{"/", 0};
     }else{
-        filekey fileat = getpath(dirname(path));
-        if(fileat.path == ""){
+        filekey* fileat = getpath(dirname(path));
+        if(fileat == nullptr){
             return fileat;
         }
         filekey file{basename(path), 0};
-        if(HANDLE_EAGAIN(fm_getattrat(fileat, file))){
-            return filekey{"", 0};
+        if(HANDLE_EAGAIN(fm_getattrat(*fileat, file))){
+            delete fileat;
+            return nullptr;
         }
-        return file;
+        delete fileat;
+        return new filekey{file};
     }
 }
 
@@ -318,8 +251,12 @@ int main(int argc, char **argv) {
         return -1;
     }
     char ch;
-    while ((ch = getopt(argc, argv, "vfr")) != -1)
+    bool isfile = false;
+    while ((ch = getopt(argc, argv, "evfr")) != -1)
         switch (ch) {
+        case 'e':
+            cout<< "treat it as file"<<endl;
+            isfile = true;
         case 'v':
             cout << "verbose mode" << endl;
             verbose = true;
@@ -343,12 +280,21 @@ int main(int argc, char **argv) {
     }
     cout << "will check path: " << path << endl;
     pool = creatpool(CHECKTHREADS);
-    filekey file = getpath(path);
-    if(file.path == ""){
-        cerr<<"dir "<<path<<" not found."<<endl;
+    filekey* file = nullptr;
+    if(isfile){
+        file = getpath(encodepath(path));
+    }else{
+        file = getpath(path);
+    }
+    if(file == nullptr){
+        cerr<<"dir/file "<<path<<" not found."<<endl;
         return -2;
     }
-    checkfile(new filekey{file});
+    if(isfile){
+        checkchunk(file);
+    }else{
+        checkdir(file);
+    }
     void* result;
     waittask(pool, 0, &result);
     return 0;

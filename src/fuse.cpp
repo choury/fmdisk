@@ -21,6 +21,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
 }
 
 void fm_fuse_destroy(void* root){
+    cache_deinit();
     delete (entry_t*)root;
 }
 
@@ -147,7 +148,7 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     entry_t* entry = (entry_t*)fi->fh;
     filemeta meta = entry->getmeta();
     memset(st, 0, sizeof(struct stat));
-    assert((meta.flags & METE_KEY_ONLY) == 0);
+    assert((meta.flags & METE_KEY_ONLY_F) == 0);
     st->st_mode = meta.mode;
     st->st_size = meta.size;
     st->st_blksize = meta.blksize;

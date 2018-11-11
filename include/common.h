@@ -5,7 +5,7 @@
 #define INLINE_DLEN    (uint64_t)0x1000            //inline data limit (4K)
 #define UPLOADTHREADS  10
 #define DOWNLOADTHREADS    5
-#define CHECKTHREADS   10
+#define CHECKTHREADS   20
 
 #define METANAME      "meta.json"
 #define METAPATH      "/" METANAME

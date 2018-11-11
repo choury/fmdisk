@@ -9,14 +9,6 @@
 
 #include <map>
 
-#define ENTRY_INITED_F    (1<<0)
-#define ENTRY_CHUNCED_F   (1<<1)
-#define ENTRY_DELETED_F   (1<<2)
-#define ENTRY_REASEWAIT_F (1<<3)
-#define ENTRY_CREATE_F    (1<<4)
-#define FILE_ENCODE_F  (1<<5)
-#define FILE_DIRTY_F   (1<<6)
-#define DIR_PULLED_F   (1<<7)
 
 
 using std::string;
@@ -73,6 +65,7 @@ extern thrdpool* upool;
 extern thrdpool* dpool;
 
 int cache_prepare();
+void cache_deinit();
 entry_t* cache_root();
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);

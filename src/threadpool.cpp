@@ -174,15 +174,15 @@ pthread_mutex_t delay_task_lock = PTHREAD_MUTEX_INITIALIZER;
 std::list<task_t*> delay_tasks;
 
 //调度线程，按照先进先出的队列来调度
-void do_delay_task() {
+static void do_delay_task() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 30;
+    ts.tv_sec += 10;
     while(!delay_task_stop) {
         sem_timedwait(&delay_task, &ts);             //等待addtask的信号
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
-        ts.tv_sec = now.tv_sec + 30;
+        ts.tv_sec = now.tv_sec + 10;
 
         pthread_mutex_lock(&delay_task_lock);
         task_t* task = nullptr;
@@ -216,15 +216,12 @@ void do_delay_task() {
 
 std::thread* delay_thread;
 
-static void start_delay_thread() __attribute__((constructor));
-static void stop_delay_thread() __attribute__((destructor));
-
-static void start_delay_thread(){
+void start_delay_thread(){
     sem_init(&delay_task, 0 ,0);
     delay_thread = new std::thread(do_delay_task);
 }
 
-static void stop_delay_thread() {
+void stop_delay_thread() {
     delay_task_stop.store(true);
     delay_thread->join();
     delete delay_thread;
@@ -236,7 +233,7 @@ static void stop_delay_thread() {
 void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
     task_t* task = nullptr;
     pthread_mutex_lock(&delay_task_lock);
-    for(auto i = delay_tasks.begin(); i != delay_tasks.end();){
+    for(auto i = delay_tasks.begin(); i != delay_tasks.end(); i++){
         if((*i)->func == func && (*i)->param == param){
             task = *i;
             delay_tasks.erase(i);
