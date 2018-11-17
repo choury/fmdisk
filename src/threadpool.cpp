@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <assert.h>
+#include <sys/resource.h>
 #include <unordered_map>
 #include <queue>
 
@@ -69,7 +70,12 @@ void* dotask(thrdpool* pool) {                                //执行任务
 
 
 
-thrdpool* creatpool(int threadnum) {
+thrdpool* creatpool(size_t threadnum) {
+    struct rlimit limit;
+    if(getrlimit(RLIMIT_NOFILE, &limit) == 0){
+        limit.rlim_cur += 1024 * threadnum;
+        setrlimit(RLIMIT_NOFILE, &limit);
+    }
     thrdpool* pool = new thrdpool;
     pool->num = threadnum;
     pool->doing = 0;
@@ -81,7 +87,7 @@ thrdpool* creatpool(int threadnum) {
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 20*1024*1024);               //设置20M的栈
     pthread_mutex_init(&pool->lock, NULL);
-    for (long i = 0; i < threadnum; ++i) {
+    for (size_t i = 0; i < threadnum; ++i) {
         pthread_create(pool->id + i, &attr, (taskfunc)dotask, pool);
     }
     pthread_attr_destroy(&attr);

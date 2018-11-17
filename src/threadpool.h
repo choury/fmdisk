@@ -14,7 +14,7 @@ typedef unsigned long int task_id;                 //任务id
 typedef void *(*taskfunc)(void *);
 struct thrdpool;
 
-struct thrdpool* creatpool(int threadnum);        //创建线程池，参数是线程数
+struct thrdpool* creatpool(size_t threadnum);        //创建线程池，参数是线程数
 
 
 //增加一个任务，执行task函数，参数为param

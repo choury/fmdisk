@@ -39,8 +39,9 @@ void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>&
     }
     cerr << decodepath(file.path)<<" has blocks:" << endl;
     for (auto f : flist) {
-        cerr << f.first<<endl;
+        cerr << f.first<<" ";
     }
+    cerr<<endl;
     do {
         fflush(stdin);
         cerr << "delete this file or ignore it([D]elete/[I]gnore) I?";
