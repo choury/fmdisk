@@ -375,7 +375,7 @@ int entry_t::utime(const struct timespec  tv[2]) {
     auto_rlock(this);
     int ret = 0;
     if((flags & ENTRY_CHUNCED_F) == 0){
-        ret = fm_utime(getkey(), tv);
+        ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
     }
     if(ret == 0){
         if(S_ISDIR(mode)){
