@@ -38,6 +38,7 @@ struct filemeta{
     uint32_t flags;
     size_t size;
     blksize_t blksize;
+    blkcnt_t blocks;
     time_t ctime;
     time_t mtime;
     unsigned char* inline_data;

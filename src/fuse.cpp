@@ -151,7 +151,7 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     st->st_mode = meta.mode;
     st->st_size = meta.size;
     st->st_blksize = meta.blksize;
-    st->st_blocks = meta.size/512 +1;
+    st->st_blocks = (meta.blocks * meta.blksize)/512;
     st->st_ctime = meta.ctime;
     st->st_mtime = meta.mtime;
     return 0;
@@ -197,7 +197,7 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
 }
 
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
-    return -ENOTSUP;
+    return -EOPNOTSUPP;
 }
 
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){

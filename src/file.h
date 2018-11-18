@@ -31,6 +31,7 @@ public:
     void makedirty();
     void sync();
     void reset();
+    bool zero();
 };
 
 class file_t: locker {

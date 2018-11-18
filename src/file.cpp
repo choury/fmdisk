@@ -183,6 +183,11 @@ void block_t::reset(){
     }
 }
 
+bool block_t::zero() {
+    return fk.path == "x";
+}
+
+
 int block_t::staled(){
     auto_rlock(this);
     return time(0) - atime;
@@ -451,6 +456,13 @@ filemeta file_t::getmeta() {
     meta.size = size;
     meta.blksize = blksize;
     meta.mtime = mtime;
+    meta.blocks = 1; //at least for meta.json
+    for(auto i: blocks){
+        if(i.second->zero()){
+            continue;
+        }
+        meta.blocks ++ ;
+    }
     return meta;
 }
 

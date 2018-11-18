@@ -146,6 +146,7 @@ void entry_t::init_wait() {
 }
 
 void entry_t::pull(entry_t* entry) {
+    assert(entry->file == nullptr);
     if(entry->flags & ENTRY_CHUNCED_F){
         struct filemeta meta;
         std::vector<filekey> fblocks;
@@ -220,11 +221,13 @@ filemeta entry_t::getmeta() {
         meta.size = fmeta.size;
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
+        meta.blocks = fmeta.blocks;
         meta.mtime = fmeta.mtime;
     }else{
         meta.size = 0;
         meta.inline_data = 0;
         meta.blksize =  0;
+        meta.blocks = 0;
         meta.mtime = dir->getmtime();
     }
     return meta;

@@ -219,7 +219,7 @@ string pathjoin(const string& dir, const string& name){
 
 filemeta initfilemeta(const filekey& key){
     return filemeta{key,
-        0, 0, 0, 0, 0, 0, 0};
+        0, 0, 0, 0, 0, 0, 0, nullptr};
 }
 
 
