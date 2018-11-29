@@ -140,6 +140,8 @@ void block_t::prefetch(bool wait) {
 void block_t::makedirty() {
     wlock();
     atime = time(0);
+    flags |=  BLOCK_DIRTY;
+    unwlock();
     pthread_mutex_lock(&dblocks_lock);
     bool found = false;
     for(auto i = dblocks.begin(); i != dblocks.end(); i++ ){
@@ -151,8 +153,6 @@ void block_t::makedirty() {
     }
     dblocks.push_back(this);
     pthread_mutex_unlock(&dblocks_lock);
-    flags |=  BLOCK_DIRTY;
-    unwlock();
     if(!found){
         sem_wait(&dirty_sem);
     }
