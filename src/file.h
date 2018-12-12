@@ -36,7 +36,7 @@ public:
 
 class file_t: locker {
     entry_t* entry;
-    int fd = 0;
+    int fd = -1;
     std::shared_ptr<void> private_key; //for meta.json
     char* inline_data = nullptr;
     size_t size;

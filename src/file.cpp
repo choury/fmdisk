@@ -200,6 +200,9 @@ static int tempfile() {
     if ((fd = mkstemp(tmpfilename)) != -1) {
         /*Unlink the temp file.*/
         unlink(tmpfilename);
+    }else{
+	fprintf(stderr, "mkstem failed: %s", strerror(errno));
+	assert(0);
     }
     return fd;
 }
@@ -262,7 +265,7 @@ file_t::~file_t() {
     for(auto i: blocks){
         delete i.second;
     }
-    if(fd){
+    if(fd >= 0){
         close(fd);
     }
     if(inline_data){
@@ -273,11 +276,11 @@ file_t::~file_t() {
 
 int file_t::open(){
     auto_wlock(this);
-    if(fd){
+    if(fd >= 0){
         return 0;
     }
     fd = tempfile();
-    if(fd > 0){
+    if(fd >= 0){
         TEMP_FAILURE_RETRY(ftruncate(fd, size));
     }
     return fd;
@@ -334,7 +337,7 @@ int file_t::truncate_rlocked(off_t offset){
     }
     defer(&file_t::downgrade, dynamic_cast<locker*>(this));
     size = offset;
-    if(inline_data && (size > (off_t)INLINE_DLEN)){
+    if(inline_data && (size >= (off_t)INLINE_DLEN)){
         delete[] inline_data;
         inline_data = nullptr;
     }
@@ -343,7 +346,7 @@ int file_t::truncate_rlocked(off_t offset){
     }
     mtime = time(0);
     flags |= FILE_DIRTY_F;
-    assert(fd);
+    assert(fd >= 0);
     return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
 }
 
@@ -377,6 +380,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     mtime = time(0);
     flags |= FILE_DIRTY_F;
+    assert(fd >= 0);
     return pwrite(fd, buff, size, offset);
 }
 
@@ -407,16 +411,16 @@ int file_t::release(){
         i.second->reset();
     }
     __r.upgrade();
-    if(fd){
+    if(fd >= 0){
         close(fd);
     }
-    fd = 0;
+    fd = -1;
     return 0;
 }
 
 int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
-    assert(fd);
+    assert(fd >= 0);
     int ret = TEMP_FAILURE_RETRY(pread(fd, buffer, size, offset));
     bool allzero = true;
     for(size_t i = 0; i < size; i++){
@@ -436,7 +440,7 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
 
 int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
-    assert(fd);
+    assert(fd >= 0);
     if(flags & FILE_ENCODE_F){
         xorcode(buffer, offset, size, fm_getsecret());
     }

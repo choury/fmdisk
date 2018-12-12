@@ -293,10 +293,10 @@ entry_t* entry_t::mkdir(string name) {
 
 int entry_t::open() {
     auto_wlock(this);
-    opened++;
     if(S_ISREG(mode) && file->open() < 0){
         return -errno;
     }
+    opened++;
     return 0;
 }
 
