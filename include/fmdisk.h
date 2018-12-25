@@ -60,7 +60,7 @@ const char* fm_getcachepath();
        errno == ETIMEDOUT));      \
     else if(_result &&            \
         errno == EBUSY)           \
-        sleep(1<<(_retry-1));     \
+        sleep(1);                 \
     else break;                   \
   }                               \
   _result;                        \

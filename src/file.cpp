@@ -87,8 +87,9 @@ void block_t::pull(block_t* b) {
         throw "fm_download IO Error";
     }
     assert(bs.offset <= (size_t)b->size);
-    b->file->putbuffer(bs.buf, b->offset, bs.offset);
-    b->flags |= BLOCK_SYNC;
+    if(b->file->putbuffer(bs.buf, b->offset, bs.offset) >= 0){
+        b->flags |= BLOCK_SYNC;
+    }
 }
 
 void block_t::push(block_t* b) {
@@ -98,6 +99,9 @@ void block_t::push(block_t* b) {
     }
     char *buff = (char*)malloc(b->size);
     size_t len = b->file->getbuffer(buff, b->offset, b->size);
+    if(len < 0){
+        return;
+    }
     b->file->trim(b->getkey());
     if(len){
         //It must be chunk file, because native file can't be written
@@ -420,7 +424,9 @@ int file_t::release(){
 
 int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
-    assert(fd >= 0);
+    if(fd < 0){
+        return -1;
+    }
     int ret = TEMP_FAILURE_RETRY(pread(fd, buffer, size, offset));
     bool allzero = true;
     for(size_t i = 0; i < size; i++){
@@ -440,7 +446,9 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
 
 int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
     auto_rlock(this);
-    assert(fd >= 0);
+    if(fd < 0){
+        return -1;
+    }
     if(flags & FILE_ENCODE_F){
         xorcode(buffer, offset, size, fm_getsecret());
     }
