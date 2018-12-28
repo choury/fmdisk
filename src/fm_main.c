@@ -1,11 +1,10 @@
-#define FUSE_USE_VERSION 26
-
 #include "fuse.h"
 #include <stdio.h>
 
 struct fuse_operations fm_oper = {
     .init       = fm_fuse_init,
     .destroy    = fm_fuse_destroy,
+    .access     = fm_fuse_access,
     .getattr    = fm_fuse_getattr,
     .fgetattr   = fm_fuse_fgetattr,
     .opendir    = fm_fuse_opendir,
@@ -28,8 +27,10 @@ struct fuse_operations fm_oper = {
     .utimens    = fm_fuse_utimens,
     .getxattr   = fm_fuse_getxattr,
     .setxattr   = fm_fuse_setxattr,
+#ifndef __APPLE__
     .flag_nullpath_ok = 1,
     .flag_nopath = 1,
+#endif
 };
 
 int fm_main(int argc, char *argv[]) {

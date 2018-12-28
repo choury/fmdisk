@@ -47,3 +47,6 @@ std::string fm_private_key_tostring(std::shared_ptr<void>) {
     return "";
 }
 
+const char* fm_getcachepath(){
+    return "/tmp";
+}

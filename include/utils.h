@@ -30,7 +30,7 @@ struct filekey {
 #define FILE_ENCODE_F     (1<<5)
 #define FILE_DIRTY_F      (1<<6)
 #define DIR_PULLED_F      (1<<7)
-#define METE_KEY_ONLY_F   (1<<16)
+#define META_KEY_ONLY_F   (1<<16)
 
 struct filemeta{
     struct filekey key;
@@ -72,6 +72,10 @@ size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 
 filemeta initfilemeta(const filekey& key);
 
+struct json_object;
+json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks);
+int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblocks);
+int download_meta(const filekey& file, filemeta& meta);
 int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks);
 int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks);
 #endif

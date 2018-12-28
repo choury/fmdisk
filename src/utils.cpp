@@ -2,10 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <json-c/json.h>
 
 #include "utils.h"
+#include "sqlite.h"
 #include "fmdisk.h"
 
 using std::string;
@@ -279,38 +281,32 @@ size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
     return len;
 }
 
-int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
-    filekey metakey{METANAME, 0};
-    int ret;
-    if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
-        return ret;
-    }
-    buffstruct bs;
-    if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
-        return ret;
-    }
-    json_object *json_get = json_tokener_parse(bs.buf);
-    if(json_get ==  nullptr){
-        throw "Json parse error";
-    }
-    meta = initfilemeta(metakey);
+
+int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblocks){
     json_object* jctime;
-    ret = json_object_object_get_ex(json_get, "ctime", &jctime);
+    int ret = json_object_object_get_ex(jobj, "ctime", &jctime);
     assert(ret);
     meta.ctime = json_object_get_int64(jctime);
 
     json_object* jmtime;
-    ret = json_object_object_get_ex(json_get, "mtime", &jmtime);
+    ret = json_object_object_get_ex(jobj, "mtime", &jmtime);
     assert(ret);
     meta.mtime = json_object_get_int64(jmtime);
 
     json_object* jsize;
-    ret = json_object_object_get_ex(json_get, "size", &jsize);
+    ret = json_object_object_get_ex(jobj, "size", &jsize);
     assert(ret);
     meta.size = json_object_get_int64(jsize);
 
+    json_object* jmode;
+    if(json_object_object_get_ex(jobj, "mode", &jmode)){
+        meta.mode = json_object_get_int64(jmode);
+    }else{
+        meta.mode = S_IFREG | 0444;
+    }
+
     json_object *jencoding;
-    ret = json_object_object_get_ex(json_get, "encoding", &jencoding);
+    ret = json_object_object_get_ex(jobj, "encoding", &jencoding);
     assert(ret);
     const char* encoding = json_object_get_string(jencoding);
     if(strcasecmp(encoding, "xor") == 0){
@@ -320,12 +316,12 @@ int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fb
     }
 
     json_object *jblksize;
-    ret = json_object_object_get_ex(json_get, "blksize", &jblksize);
+    ret = json_object_object_get_ex(jobj, "blksize", &jblksize);
     assert(ret);
     meta.blksize = json_object_get_int64(jblksize);
 
     json_object* jblocks;
-    if(json_object_object_get_ex(json_get, "blocks", &jblocks)){
+    if(json_object_object_get_ex(jobj, "blocks", &jblocks)){
         fblocks.reserve(json_object_array_length(jblocks));
         for(int i=0; i < json_object_array_length(jblocks); i++){
             json_object *jblock = json_object_array_get_idx(jblocks, i);
@@ -337,34 +333,82 @@ int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fb
             assert(ret);
             const char* name = json_object_get_string(jname);
             const char* private_key = json_object_get_string(jkey);
-            fblocks.push_back(filekey{name, fm_get_private_key(private_key)});
+            fblocks.emplace_back(filekey{name, fm_get_private_key(private_key)});
         }
     }
 
     json_object *jblock_list;
-    if(json_object_object_get_ex(json_get, "block_list", &jblock_list)){
+    if(json_object_object_get_ex(jobj, "block_list", &jblock_list)){
         fblocks.reserve(json_object_array_length(jblock_list));
         for(int i=0; i < json_object_array_length(jblock_list); i++){
             json_object *block = json_object_array_get_idx(jblock_list, i);
             const char* name = json_object_get_string(block);
-            fblocks.push_back(filekey{name, 0});
+            fblocks.emplace_back(filekey{name, 0});
         }
     }
 
     json_object *jinline_data;
-    ret = json_object_object_get_ex(json_get, "inline_data", &jinline_data);
+    ret = json_object_object_get_ex(jobj, "inline_data", &jinline_data);
     if(ret){
         char* inline_data = new char[INLINE_DLEN];
         Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), inline_data);
         meta.inline_data = (unsigned char*)inline_data;
     }
+    return 0;
+}
+
+
+int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
+    filekey metakey{METANAME, 0};
+    int ret;
+    if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
+        return ret;
+    }
+    bool cached = false;
+    buffstruct bs;
+    if((ret = load_file_from_db(fileat.path, bs)) == 0){
+        if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
+            return ret;
+        }
+    }else{
+        cached = true;
+    }
+    json_object *json_get = json_tokener_parse(bs.buf);
+    if(json_get ==  nullptr){
+        throw "Json parse error";
+    }
+    if(!cached){
+        save_file_to_db(fileat.path, bs.buf);
+    }
+    meta = initfilemeta(metakey);
+    unmarshal_meta(json_get, meta, fblocks);
     json_object_put(json_get);
     return 0;
 }
 
-int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks){
+int download_meta(const filekey& file, filemeta& meta){
+    buffstruct bs;
+    if(load_file_from_db(file.path, bs)){
+        json_object *json_get = json_tokener_parse(bs.buf);
+        if(json_get ==  nullptr){
+            throw "Json parse error";
+        }
+        std::vector<filekey> ignore;
+        unmarshal_meta(json_get, meta, ignore);
+        json_object_put(json_get);
+        return 0;
+    }
+    int ret;
+    if((ret = HANDLE_EAGAIN(fm_getattr(file, meta))) == 0){
+        save_file_to_db(file.path, meta);
+    }
+    return ret;
+}
+
+json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks){
     json_object *jobj = json_object_new_object();
     json_object_object_add(jobj, "size", json_object_new_int64(meta.size));
+    json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
     json_object_object_add(jobj, "ctime", json_object_new_int64(meta.ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(meta.mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(meta.blksize));
@@ -389,6 +433,11 @@ int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey
     }
 
     json_object_object_add(jobj, "blocks", jblocks);
+    return jobj;
+}
+
+int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks){
+    json_object *jobj = marshal_meta(meta, fblocks);
     const char *jstring = json_object_to_json_string(jobj);
 
 retry:
@@ -396,7 +445,7 @@ retry:
     if(ret != 0 && errno == EEXIST){
         goto retry;
     }
+    save_file_to_db(fileat.path, jstring);
     json_object_put(jobj);
     return ret;
 }
-

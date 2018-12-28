@@ -3,10 +3,10 @@
 #include "file.h"
 #include "threadpool.h"
 #include "defer.h"
+#include "sqlite.h"
 
 #include <string.h>
 #include <assert.h>
-#include <json-c/json.h>
 #include <thread>
 
 thrdpool* upool;
@@ -44,14 +44,16 @@ filekey decodepath(const filekey& file) {
     return filekey{decodepath(file.path), file.private_key};
 }
 
-
-
 int cache_prepare() {
+    int ret = fm_prepare();
+    if(ret){
+        return ret;
+    }
     upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
     dpool = creatpool(DOWNLOADTHREADS);
     addtask(upool, (taskfunc)writeback_thread, 0, 0);
     start_delay_thread();
-    return fm_prepare();
+    return sqlinit();
 }
 
 void cache_deinit(){
@@ -70,32 +72,6 @@ int entry_t::statfs(const char*, struct statvfs* sf) {
     return HANDLE_EAGAIN(fm_statfs(sf));
 }
 
-#if 0
-entry_t::entry_t(entry_t* parent, string name, struct stat* st):
-    parent(parent),
-    name(name),
-    mode(st->st_mode),
-    ctime(st->st_ctime),
-    flags(ENTRY_INITED)
-{
-    if(S_ISDIR(mode)){
-        dir = new dir_t(this, parent, st->st_mtime);
-    }else{
-        file = new file_t(this, st);
-    }
-}
-
-entry_t::entry_t(entry_t* parent, string name):
-    parent(parent),
-    name(name),
-    mode(S_IFREG | 0666),
-    flags(ENTRY_CHUNCED)
-{
-    addtask((taskfunc)pull, this, 0, 0);
-}
-#endif
-
-
 entry_t::entry_t(entry_t* parent, filemeta meta):
     parent(parent),
     fk(basename(meta.key)),
@@ -111,7 +87,7 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
-    if(meta.flags & METE_KEY_ONLY_F){
+    if(meta.flags & META_KEY_ONLY_F){
         addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
@@ -147,28 +123,25 @@ void entry_t::init_wait() {
 
 void entry_t::pull(entry_t* entry) {
     assert(entry->file == nullptr);
+    struct filemeta meta = initfilemeta(entry->getkey());
     if(entry->flags & ENTRY_CHUNCED_F){
-        struct filemeta meta;
         std::vector<filekey> fblocks;
         if(downlod_meta(entry->getkey(), meta, fblocks)){
             throw "download_meta IO Error";
         }
-        entry->ctime = meta.ctime;
         entry->file = new file_t(entry, meta, fblocks);
     }else{
-        assert(entry->flags & METE_KEY_ONLY_F);
-        struct filemeta meta = initfilemeta(entry->getkey());
-        if(HANDLE_EAGAIN(fm_getattr(meta.key, meta))){
-            throw "fm_getattr IO Error";
+        assert(entry->flags & META_KEY_ONLY_F);
+        if(download_meta(meta.key, meta)){
+            throw "downalod_meta IO Error";
         }
-        entry->ctime = meta.ctime;
         if(S_ISDIR(meta.mode)){
             entry->dir = new dir_t(entry, entry->parent, meta.mtime);
         }else{
             entry->file = new file_t(entry, meta);
         }
     }
-
+    entry->ctime = meta.ctime;
     entry->flags |= ENTRY_INITED_F;
     pthread_cond_broadcast(&entry->init_cond);
 }
@@ -219,12 +192,14 @@ filemeta entry_t::getmeta() {
     if(!S_ISDIR(mode)){
         filemeta fmeta = file->getmeta();
         meta.size = fmeta.size;
+        meta.mode = S_IFREG | 0644;
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
         meta.blocks = fmeta.blocks;
         meta.mtime = fmeta.mtime;
     }else{
         meta.size = 0;
+        meta.mode = S_IFDIR | 0755;
         meta.inline_data = 0;
         meta.blksize =  0;
         meta.blocks = 0;

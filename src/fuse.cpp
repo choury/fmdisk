@@ -12,8 +12,10 @@ int fm_fuse_prepare(){
 }
 
 void *fm_fuse_init(struct fuse_conn_info *conn){
+#ifndef __APPLE__
     conn->capable = conn->want & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
     conn->max_background = 20;
+#endif
     conn->max_write = 1024*1024;
     conn->max_readahead = 10*1024*1024;
     return cache_root();
@@ -49,6 +51,15 @@ int fm_fuse_readdir(const char*, void *buf, fuse_fill_dir_t filler, off_t offset
 
 int fm_fuse_releasedir(const char*, struct fuse_file_info *fi){
     return fm_fuse_release(nullptr, fi);
+}
+
+int fm_fuse_access(const char* path, int mask){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    return 0;
 }
 
 int fm_fuse_getattr(const char *path, struct stat *st){
@@ -147,13 +158,15 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     entry_t* entry = (entry_t*)fi->fh;
     filemeta meta = entry->getmeta();
     memset(st, 0, sizeof(struct stat));
-    assert((meta.flags & METE_KEY_ONLY_F) == 0);
+    assert((meta.flags & META_KEY_ONLY_F) == 0);
     st->st_mode = meta.mode;
     st->st_size = meta.size;
     st->st_blksize = meta.blksize;
     st->st_blocks = (meta.blocks * meta.blksize)/512;
     st->st_ctime = meta.ctime;
     st->st_mtime = meta.mtime;
+    st->st_uid = getuid();
+    st->st_gid = getgid();
     return 0;
 }
 

@@ -1,6 +1,8 @@
 #ifndef FM_FUSE_H__
 #define FM_FUSE_H__
 
+#define FUSE_USE_VERSION 26
+
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <fuse.h>
@@ -16,6 +18,7 @@ int fm_fuse_statfs(const char *path, struct statvfs *sf);
 int fm_fuse_opendir(const char *path, struct fuse_file_info *fi);
 int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi);
 int fm_fuse_releasedir(const char* path, struct fuse_file_info *fi);
+int fm_fuse_access(const char* path, int mask);
 int fm_fuse_getattr(const char *path, struct stat *st);
 int fm_fuse_mkdir(const char *path, mode_t mode);
 int fm_fuse_unlink(const char *path);
