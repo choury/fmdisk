@@ -12,7 +12,7 @@ class dir_t: locker {
     uint32_t flags = 0;
     time_t mtime;
     std::map<string, entry_t*> entrys;
-    void pull();
+    void pull_wlocked();
 public:
     dir_t(entry_t* entry, entry_t* parent, time_t mtime);
     virtual ~dir_t();
@@ -23,6 +23,7 @@ public:
     void setmtime(time_t mtime);
     time_t getmtime();
     size_t size();
+    int drop_cache();
 };
 
 #endif

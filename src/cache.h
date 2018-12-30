@@ -18,8 +18,6 @@ class file_t;
 struct filemeta;
 
 class entry_t: locker {
-    pthread_mutex_t init_lock = PTHREAD_MUTEX_INITIALIZER;
-    pthread_cond_t  init_cond = PTHREAD_COND_INITIALIZER;
     entry_t* parent;
     struct filekey fk;
     mode_t mode;
@@ -30,11 +28,10 @@ class entry_t: locker {
     time_t ctime = 0;
     uint32_t flags = 0;
     uint32_t opened = 0;
-    void init_wait();
     void erase(string name);
     void insert(string name, entry_t* entry);
     string getcwd();
-    static void pull(entry_t* entry);
+    void pull_wlocked();
     static void push(entry_t* entry);
     static void clean(entry_t* entry);
 public:
@@ -58,6 +55,7 @@ public:
     int utime(const struct timespec tv[2]);
     int unlink();
     int rmdir();
+    int drop_cache();
 };
 
 struct thrdpool;
@@ -65,8 +63,8 @@ extern thrdpool* upool;
 extern thrdpool* dpool;
 
 int cache_prepare();
-void cache_deinit();
 entry_t* cache_root();
+void cache_destroy(entry_t* root);
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
 

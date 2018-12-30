@@ -269,9 +269,7 @@ file_t::~file_t() {
     for(auto i: blocks){
         delete i.second;
     }
-    if(fd >= 0){
-        close(fd);
-    }
+    assert(fd == -1);
     if(inline_data){
         delete[] inline_data;
     }

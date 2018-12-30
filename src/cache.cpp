@@ -56,8 +56,10 @@ int cache_prepare() {
     return sqlinit();
 }
 
-void cache_deinit(){
+void cache_destroy(entry_t* root){
+    sqldeinit();
     stop_delay_thread();
+    delete root;
 }
 
 entry_t* cache_root() {
@@ -80,15 +82,12 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
     flags(meta.flags)
 {
     assert((flags & ENTRY_INITED_F) == 0);
-    if(endwith(fk.path, ".def") && S_ISDIR(meta.mode) && (flags & ENTRY_CREATE_F) == 0){
+    if((flags & ENTRY_CHUNCED_F) && (flags & ENTRY_CREATE_F) == 0){
         fk = decodepath(fk);
         mode = S_IFREG | 0666;
-        flags |= ENTRY_CHUNCED_F;
-        addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
     if(meta.flags & META_KEY_ONLY_F){
-        addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
     if(flags & ENTRY_CHUNCED_F){
@@ -104,8 +103,8 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
 
 entry_t::~entry_t() {
     assert(opened == 0);
-    pthread_mutex_destroy(&init_lock);
-    pthread_cond_destroy(&init_cond);
+    //pthread_mutex_destroy(&init_lock);
+    //pthread_cond_destroy(&init_cond);
     if(S_ISDIR(mode)){
         delete dir;
     }else{
@@ -113,6 +112,7 @@ entry_t::~entry_t() {
     }
 }
 
+#if 0
 void entry_t::init_wait() {
     pthread_mutex_lock(&init_lock);
     while((flags & ENTRY_INITED_F) == 0){
@@ -120,32 +120,7 @@ void entry_t::init_wait() {
     }
     pthread_mutex_unlock(&init_lock);
 }
-
-void entry_t::pull(entry_t* entry) {
-    assert(entry->file == nullptr);
-    struct filemeta meta = initfilemeta(entry->getkey());
-    if(entry->flags & ENTRY_CHUNCED_F){
-        std::vector<filekey> fblocks;
-        if(downlod_meta(entry->getkey(), meta, fblocks)){
-            throw "download_meta IO Error";
-        }
-        entry->file = new file_t(entry, meta, fblocks);
-    }else{
-        assert(entry->flags & META_KEY_ONLY_F);
-        if(download_meta(meta.key, meta)){
-            throw "downalod_meta IO Error";
-        }
-        if(S_ISDIR(meta.mode)){
-            entry->dir = new dir_t(entry, entry->parent, meta.mtime);
-        }else{
-            entry->file = new file_t(entry, meta);
-        }
-    }
-    entry->ctime = meta.ctime;
-    entry->flags |= ENTRY_INITED_F;
-    pthread_cond_broadcast(&entry->init_cond);
-}
-
+#endif
 
 void entry_t::clean(entry_t* entry) {
     auto_wlock(entry);
@@ -183,10 +158,38 @@ string entry_t::getcwd() {
     return pathjoin(parent->getcwd(), fk.path);
 }
 
+void entry_t::pull_wlocked(){
+    struct filemeta meta = initfilemeta(getkey());
+    assert(file == nullptr);
+    if(flags & ENTRY_CHUNCED_F){
+        std::vector<filekey> fblocks;
+        if(downlod_meta(meta.key, meta, fblocks)){
+            throw "download_meta IO Error";
+        }
+        file = new file_t(this, meta, fblocks);
+    }else{
+        assert(flags & META_KEY_ONLY_F);
+        if(download_meta(meta.key, meta)){
+            throw "downalod_meta IO Error";
+        }
+        assert(meta.inline_data == nullptr);
+        if(S_ISDIR(meta.mode)){
+            dir = new dir_t(this, parent, meta.mtime);
+        }else{
+            file = new file_t(this, meta);
+        }
+    }
+    ctime = meta.ctime;
+    flags |= ENTRY_INITED_F;
+}
+
 filemeta entry_t::getmeta() {
-    init_wait();
-    filemeta meta{getkey()};
     auto_rlock(this);
+    if((flags & ENTRY_INITED_F) == 0){
+        __r.upgrade();
+        pull_wlocked();
+    }
+    struct filemeta meta = initfilemeta(getkey());
     meta.mode = mode;
     meta.ctime = ctime;
     if(!S_ISDIR(mode)){
@@ -213,6 +216,7 @@ entry_t* entry_t::find(string path){
     if(path == "." || path == "/"){
         return this;
     }
+    assert(S_ISDIR(mode));
     string cname = childname(path);
     entry_t* entry = dir->find(cname);
     if(entry){
@@ -243,6 +247,7 @@ entry_t* entry_t::create(string name){
 }
 
 entry_t* entry_t::mkdir(string name) {
+    auto_rlock(this);
     if(endwith(name, ".def")){
         errno = EINVAL;
         return nullptr;
@@ -251,7 +256,6 @@ entry_t* entry_t::mkdir(string name) {
         errno = ENOSPC;
         return nullptr;
     }
-    auto_rlock(this);
     assert(S_ISDIR(mode));
     struct filemeta meta = initfilemeta(filekey{name, 0});
     if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
@@ -268,6 +272,9 @@ entry_t* entry_t::mkdir(string name) {
 
 int entry_t::open() {
     auto_wlock(this);
+    if((flags & ENTRY_INITED_F) == 0){
+        pull_wlocked();
+    }
     if(S_ISREG(mode) && file->open() < 0){
         return -errno;
     }
@@ -278,17 +285,20 @@ int entry_t::open() {
 
 const std::map<string, entry_t*>& entry_t::entrys(){
     auto_rlock(this);
+    assert(opened);
     return dir->get_entrys();
 }
 
 
 int entry_t::read(void* buff, off_t offset, size_t size) {
     auto_rlock(this);
+    assert(opened);
     return file->read(buff, offset, size);
 }
 
 int entry_t::truncate(off_t offset){
     auto_rlock(this);
+    assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
     }
@@ -302,6 +312,7 @@ int entry_t::truncate(off_t offset){
 
 int entry_t::write(const void* buff, off_t offset, size_t size) {
     auto_rlock(this);
+    assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
     }
@@ -315,6 +326,7 @@ int entry_t::write(const void* buff, off_t offset, size_t size) {
 
 int entry_t::sync(int datasync){
     auto_rlock(this);
+    assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return 0;
     }
@@ -339,6 +351,7 @@ int entry_t::flush(){
 int entry_t::release() {
     {
         auto_wlock(this);
+        assert(opened);
         opened--;
         if(opened || !S_ISREG(mode)){
             return 0;
@@ -351,6 +364,10 @@ int entry_t::release() {
 
 int entry_t::utime(const struct timespec  tv[2]) {
     auto_rlock(this);
+    if((flags & ENTRY_INITED_F) == 0){
+        __r.upgrade();
+        pull_wlocked();
+    }
     int ret = 0;
     if((flags & ENTRY_CHUNCED_F) == 0){
         ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
@@ -442,4 +459,26 @@ int entry_t::rmdir() {
     __w.unlock();
     delete this;
     return 0;
+}
+
+int entry_t::drop_cache(){
+    auto_rlock(this);
+    if(opened){
+        return -EBUSY;
+    }
+    if(flags & ENTRY_REASEWAIT_F){
+        return -EAGAIN;
+    }
+    if((flags & ENTRY_INITED_F) == 0){
+        return 0;
+    }
+    if(S_ISREG(mode)){
+        __r.upgrade();
+        delete file;
+        flags |= META_KEY_ONLY_F;
+        flags &= ~ENTRY_INITED_F;
+        file = nullptr;
+        return 0;
+    }
+    return dir->drop_cache();
 }

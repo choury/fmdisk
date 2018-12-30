@@ -39,6 +39,7 @@ int sqlinit(){
             if(sqlite3_exec(cachedb, 
                 "CREATE TABLE IF NOT EXISTS files("
                 "path text PRIMARY KEY,"
+                "private_key text,"
                 "meta text)", nullptr, nullptr, &err_msg))
             {
                 fprintf(stderr, "create table files failed: %s\n", err_msg);
@@ -59,8 +60,13 @@ int sqlinit(){
     }
 }
 
-void save_file_to_db(const string& path, const char* json){
-    string sql = "replace into files (path, meta) values('" + path + "', '" + json + "')";
+void sqldeinit(){
+    sqlite3_close(cachedb);
+}
+
+void save_file_to_db(const string& path, const filekey& metakey, const char* json){
+    string sql = "replace into files (path, private_key, meta) values('"
+     + path + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ json + "')";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "insert file to db failed: %s\n", err_msg);
@@ -70,24 +76,34 @@ void save_file_to_db(const string& path, const char* json){
 
 void save_file_to_db(const string& path, const filemeta& meta){
     json_object* jobj = marshal_meta(meta, std::vector<filekey>{});
-    save_file_to_db(path, json_object_to_json_string(jobj));
+    save_file_to_db(path, meta.key, json_object_to_json_string(jobj));
     json_object_put(jobj);
 }
 
 static int files_callback(void *data, int columns, char **field, char **colum){
-    buffstruct* bs = (buffstruct*)data;
-    assert(columns = 1);
-    size_t len = strlen(field[0]);
-    bs->expand(len);
-    strcpy(bs->buf, field[0]);
-    bs->offset = len;
+    auto param = (std::pair<filekey*, buffstruct*>*)data;
+    assert(columns = 2);
+    for(int i = 0; i < columns; i++){
+        if(strcmp(colum[i], "private_key") == 0){
+            param->first->private_key = fm_get_private_key(field[i]);
+            continue;
+        }
+        if(strcmp(colum[i], "meta") == 0){
+            size_t len = strlen(field[i]);
+            param->second->expand(len);
+            strcpy(param->second->buf, field[i]);
+            param->second->offset = len;
+            continue;
+        }
+    }
     return 0;
 }
 
-int load_file_from_db(const string& path, buffstruct& bs){
-    string sql = "select meta from files where path='" + path + "'";
+int load_file_from_db(const string& path, filekey& metakey, buffstruct& bs){
+    string sql = "select private_key, meta from files where path='" + path + "'";
     char* err_msg;
-    if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &bs, &err_msg)){
+    auto data = std::make_pair<filekey*, buffstruct*>(&metakey, &bs);
+    if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &data, &err_msg)){
         fprintf(stderr, "select file from db failed: %s\n", err_msg);
         sqlite3_free(err_msg);
     }

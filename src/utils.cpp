@@ -168,7 +168,7 @@ string dirname(const string& path) {
         string path_truncate = path.substr(0, path.length()-1);
         return dirname(path_truncate);
     }
-    return path.substr(0, pos+1);
+    return path.substr(0, pos);
 }
 
 
@@ -195,7 +195,7 @@ string encodepath(const string& path){
     if(dirname(path) == "."){
         return string(dst) + ".def";
     }else{
-        return dirname(path)+ dst + ".def";
+        return pathjoin(dirname(path), string(dst) + ".def");
     }
 }
 
@@ -207,7 +207,7 @@ string decodepath(const string& path){
     if(dirname(path) == "."){
         return dst;
     }else{
-        return dirname(path) + dst;
+        return pathjoin(dirname(path),  dst);
     }
 }
 
@@ -359,14 +359,14 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
 
 
 int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
-    filekey metakey{METANAME, 0};
-    int ret;
-    if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
-        return ret;
-    }
     bool cached = false;
     buffstruct bs;
-    if((ret = load_file_from_db(fileat.path, bs)) == 0){
+    filekey metakey{METANAME, 0};
+    if(load_file_from_db(fileat.path, metakey, bs) == 0){
+        int ret;
+        if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
+            return ret;
+        }
         if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
             return ret;
         }
@@ -378,7 +378,7 @@ int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fb
         throw "Json parse error";
     }
     if(!cached){
-        save_file_to_db(fileat.path, bs.buf);
+        save_file_to_db(fileat.path, metakey, bs.buf);
     }
     meta = initfilemeta(metakey);
     unmarshal_meta(json_get, meta, fblocks);
@@ -388,7 +388,7 @@ int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fb
 
 int download_meta(const filekey& file, filemeta& meta){
     buffstruct bs;
-    if(load_file_from_db(file.path, bs)){
+    if(load_file_from_db(file.path, meta.key, bs)){
         json_object *json_get = json_tokener_parse(bs.buf);
         if(json_get ==  nullptr){
             throw "Json parse error";
@@ -445,7 +445,7 @@ retry:
     if(ret != 0 && errno == EEXIST){
         goto retry;
     }
-    save_file_to_db(fileat.path, jstring);
+    save_file_to_db(fileat.path, meta.key, jstring);
     json_object_put(jobj);
     return ret;
 }

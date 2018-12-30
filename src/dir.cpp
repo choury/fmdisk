@@ -12,6 +12,7 @@ dir_t::dir_t(entry_t* entry, entry_t* parent, time_t mtime): mtime(mtime){
 }
 
 dir_t::~dir_t(){
+    this->wlock();
     for(auto i: entrys){
         if(i.first != "." && i.first != ".."){
             delete i.second;
@@ -20,7 +21,7 @@ dir_t::~dir_t(){
 }
 
 // Must wlock before call this function
-void dir_t::pull() {
+void dir_t::pull_wlocked() {
     entry_t* entry = entrys["."];
     bool cached = false;
     std::vector<filemeta> flist;
@@ -36,8 +37,11 @@ void dir_t::pull() {
         string bname = basename(i.key.path);
         if(endwith(bname, ".def") && S_ISDIR(i.mode)){
             bname = decodepath(bname);
+            i.flags |= ENTRY_CHUNCED_F;
         }
-        entrys.emplace(bname, new entry_t(entry, i));
+        if(entrys.count(bname) == 0){
+            entrys.emplace(bname, new entry_t(entry, i));
+        }
         if(!cached){
             save_entry_to_db(entry->getkey(), i);
         }
@@ -46,11 +50,11 @@ void dir_t::pull() {
 }
 
 entry_t* dir_t::find(std::string path) {
-    auto_wlock(this);
+    auto_rlock(this);
     if((flags & DIR_PULLED_F) == 0){
-        pull();
+        __r.upgrade();
+        pull_wlocked();
     }
-    assert(flags & DIR_PULLED_F);
     if(entrys.count(path)){
         return entrys[path];
     }else{
@@ -59,18 +63,11 @@ entry_t* dir_t::find(std::string path) {
 }
 
 const std::map<string, entry_t*>& dir_t::get_entrys(){
-    auto_wlock(this);
+    auto_rlock(this);
     if((flags & DIR_PULLED_F) == 0){
-        pull();
+        __r.upgrade();
+        pull_wlocked();
     }
-    assert(flags & DIR_PULLED_F);
-#if  0
-    for(auto i: entrys){
-        if(i.second == nullptr){
-            entrys.emplace(i.first, new entry_t(entrys["."], i.first));
-        }
-    }
-#endif
     //at least '.' and '..'
     assert(entrys.size() >= 2);
     return entrys;
@@ -109,3 +106,14 @@ size_t dir_t::size() {
     return entrys.size();
 }
 
+int dir_t::drop_cache(){
+    int ret = 0;
+    auto_rlock(this);
+    for(auto i : entrys){
+        if(i.first == "." || i.first == ".."){
+            continue;
+        }
+        ret |= i.second->drop_cache();
+    }
+    return ret?-EAGAIN:0;
+}

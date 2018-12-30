@@ -22,8 +22,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
 }
 
 void fm_fuse_destroy(void* root){
-    cache_deinit();
-    delete (entry_t*)root;
+    cache_destroy((entry_t*)root);
 }
 
 int fm_fuse_statfs(const char *path, struct statvfs *sf){
@@ -210,7 +209,15 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
 }
 
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
-    return -EOPNOTSUPP;
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    entry_t* entry = (entry_t*)root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    if(strcmp(name, "user.drop_cache")){
+        return -ENODATA;
+    }
+    return entry->drop_cache();
 }
 
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
