@@ -106,14 +106,14 @@ size_t dir_t::size() {
     return entrys.size();
 }
 
-int dir_t::drop_cache(){
+int dir_t::drop_mem_cache(){
     int ret = 0;
     auto_rlock(this);
     for(auto i : entrys){
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        ret |= i.second->drop_cache();
+        ret |= i.second->drop_mem_cache();
     }
     return ret?-EAGAIN:0;
 }

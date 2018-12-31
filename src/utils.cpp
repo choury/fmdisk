@@ -161,6 +161,9 @@ string dirname(const string& path) {
     if(pos == string::npos) {
         return ".";
     }
+    if(pos == 0){
+        return "/";
+    }
     if(path.length() == 1){
         return path;
     }
@@ -186,6 +189,19 @@ bool startwith(const string& s1, const string& s2){
     if(l1 < l2)
         return 0;
     return !memcmp(s1.data(), s2.data(), l2);
+}
+
+string replaceAll(const std::string &s, const std::string &search, const std::string &replace ){
+    string str = s;
+    for(size_t pos = 0; ; pos += replace.length()) {
+        // Locate the substring to replace
+        pos = str.find( search, pos);
+        if( pos == std::string::npos) break;
+        // Replace by erasing and inserting
+        str.erase(pos, search.length());
+        str.insert(pos, replace);
+    }
+    return str;
 }
 
 string encodepath(const string& path){

@@ -168,7 +168,6 @@ void entry_t::pull_wlocked(){
         }
         file = new file_t(this, meta, fblocks);
     }else{
-        assert(flags & META_KEY_ONLY_F);
         if(download_meta(meta.key, meta)){
             throw "downalod_meta IO Error";
         }
@@ -326,7 +325,6 @@ int entry_t::write(const void* buff, off_t offset, size_t size) {
 
 int entry_t::sync(int datasync){
     auto_rlock(this);
-    assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return 0;
     }
@@ -461,7 +459,7 @@ int entry_t::rmdir() {
     return 0;
 }
 
-int entry_t::drop_cache(){
+int entry_t::drop_mem_cache(){
     auto_rlock(this);
     if(opened){
         return -EBUSY;
@@ -475,10 +473,19 @@ int entry_t::drop_cache(){
     if(S_ISREG(mode)){
         __r.upgrade();
         delete file;
-        flags |= META_KEY_ONLY_F;
         flags &= ~ENTRY_INITED_F;
         file = nullptr;
         return 0;
     }
-    return dir->drop_cache();
+    return dir->drop_mem_cache();
+}
+
+int entry_t::drop_disk_cache(){
+    auto_rlock();
+    string path = getkey().path;
+    if(S_ISREG(mode)){
+        return delete_file_from_db(path);
+    }else{
+        return delete_entry_prefix_from_db(path);
+    }
 }

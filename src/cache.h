@@ -55,7 +55,8 @@ public:
     int utime(const struct timespec tv[2]);
     int unlink();
     int rmdir();
-    int drop_cache();
+    int drop_mem_cache();
+    int drop_disk_cache();
 };
 
 struct thrdpool;

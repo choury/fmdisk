@@ -214,10 +214,13 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
     if(entry == nullptr){
         return -ENOENT;
     }
-    if(strcmp(name, "user.drop_cache")){
-        return -ENODATA;
+    if(strcmp(name, "user.drop_disk_cache") == 0){
+        return entry->drop_disk_cache();
     }
-    return entry->drop_cache();
+    if(strcmp(name, "user.drop_mem_cache") == 0){
+        return entry->drop_mem_cache();
+    }
+    return -ENODATA;
 }
 
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){

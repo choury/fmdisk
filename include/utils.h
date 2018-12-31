@@ -66,6 +66,7 @@ std::string pathjoin(const std::string& dir, const std::string& name, const T&..
 
 bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);
+std::string replaceAll(const std::string &s, const std::string &search, const std::string &replace);
 
 size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
 size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);

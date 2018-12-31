@@ -69,7 +69,7 @@ void save_file_to_db(const string& path, const filekey& metakey, const char* jso
      + path + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ json + "')";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
-        fprintf(stderr, "insert file to db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
     }
 }
@@ -104,7 +104,7 @@ int load_file_from_db(const string& path, filekey& metakey, buffstruct& bs){
     char* err_msg;
     auto data = std::make_pair<filekey*, buffstruct*>(&metakey, &bs);
     if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &data, &err_msg)){
-        fprintf(stderr, "select file from db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
     }
     return bs.offset;
@@ -114,7 +114,7 @@ int delete_file_from_db(const string& path){
     string sql = "delete from files where path='" + path + "'";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
-        fprintf(stderr, "delete file from db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
@@ -128,7 +128,7 @@ void save_entry_to_db(const filekey& fileat, const filemeta& meta){
     + "', " + std::to_string(meta.mode) + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
-        fprintf(stderr, "insert entry to db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
     }
     if(endwith(meta.key.path, ".def") && S_ISDIR(meta.mode)){
@@ -165,20 +165,45 @@ int load_entry_from_db(const string& path, std::vector<filemeta>& flist){
     string sql = "select path, private_key, mode from entrys where parent = '" + path + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), entrys_callback, &flist, &err_msg)){
-        fprintf(stderr, "select entry from db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
         flist.clear();
     }
     return flist.size();
 }
 
+static string escapSQL(const string& sql){
+    string s = replaceAll(sql, "\\", "\\\\");
+    s = replaceAll(s, "%", "\\%");
+    s = replaceAll(s, "_", "\\_");
+    s = replaceAll(s, "[", "\\[");
+    return replaceAll(s, "]", "\\]");
+}
+
+int delete_entry_prefix_from_db(const string& path){
+    string sql = "delete from entrys where parent = '" + path + "' or parent like '" + escapSQL(path) + "/%' escape '\\'";
+    char *err_msg;
+    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    sql = "delete from files where path  = '"+ path + "' or path like '" + escapSQL(path) + "/%' escape '\\'";
+    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return 0;
+}
+
 int delete_entry_from_db(const string& path){
     string sql = "delete from entrys where parent = '" + dirname(path) + "' and path= '" + basename(path) + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
-        fprintf(stderr, "delete entry from db failed: %s\n", err_msg);
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
-    return delete_file_from_db(path);
+    return delete_entry_prefix_from_db(path);
 }
