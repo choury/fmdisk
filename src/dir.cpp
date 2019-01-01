@@ -22,12 +22,12 @@ dir_t::~dir_t(){
 
 // Must wlock before call this function
 void dir_t::pull_wlocked() {
-    entry_t* entry = entrys["."];
+    entry_t* current = entrys["."];
     bool cached = false;
     std::vector<filemeta> flist;
-    if(load_entry_from_db(entry->getkey().path, flist) == 0){
+    if(load_entry_from_db(current->getkey().path, flist) == 0){
         printf("Miss from localcache\n");
-        if(HANDLE_EAGAIN(fm_list(entry->getkey(), flist))){
+        if(HANDLE_EAGAIN(fm_list(current->getkey(), flist))){
             throw "fm_list IO Error";
         }
     }else{
@@ -37,13 +37,16 @@ void dir_t::pull_wlocked() {
         string bname = basename(i.key.path);
         if(endwith(bname, ".def") && S_ISDIR(i.mode)){
             bname = decodepath(bname);
-            i.flags |= ENTRY_CHUNCED_F;
+            i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
         }
         if(entrys.count(bname) == 0){
-            entrys.emplace(bname, new entry_t(entry, i));
+            entrys.emplace(bname, new entry_t(current, i));
         }
         if(!cached){
-            save_entry_to_db(entry->getkey(), i);
+            save_entry_to_db(current->getkey(), i);
+            if((i.flags & META_KEY_ONLY_F) == 0){
+                save_file_to_db(entrys[bname]->getkey().path, i, std::vector<filekey>{});
+            }
         }
     }
     flags |= DIR_PULLED_F;
@@ -78,7 +81,7 @@ entry_t* dir_t::insert(string name, entry_t* entry){
     assert(entrys.count(name) == 0);
     assert(entrys.size() < MAXFILE);
     mtime = time(0);
-    save_entry_to_db(entrys["."]->getkey(), entry->getmeta()); 
+    entry->dump_to_disk_cache();
     return entrys[name] = entry;
 }
 
@@ -104,6 +107,19 @@ time_t dir_t::getmtime() {
 size_t dir_t::size() {
     auto_rlock(this);
     return entrys.size();
+}
+
+void dir_t::dump_to_disk_cache(){
+    auto_rlock(this);
+    if((flags & DIR_PULLED_F) == 0){
+        return;
+    }
+    for(auto i: entrys){
+        if(i.first == "." || i.first == ".."){
+            continue;
+        }
+        i.second->dump_to_disk_cache();
+    }
 }
 
 int dir_t::drop_mem_cache(){

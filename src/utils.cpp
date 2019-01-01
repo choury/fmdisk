@@ -416,7 +416,7 @@ int download_meta(const filekey& file, filemeta& meta){
     }
     int ret;
     if((ret = HANDLE_EAGAIN(fm_getattr(file, meta))) == 0){
-        save_file_to_db(file.path, meta);
+        save_file_to_db(file.path, meta, std::vector<filekey>{});
     }
     return ret;
 }
@@ -424,7 +424,11 @@ int download_meta(const filekey& file, filemeta& meta){
 json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks){
     json_object *jobj = json_object_new_object();
     json_object_object_add(jobj, "size", json_object_new_int64(meta.size));
-    json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
+    if(meta.flags & ENTRY_CHUNCED_F){
+        json_object_object_add(jobj, "mode", json_object_new_int64(S_IFDIR | 0644));
+    }else{
+        json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
+    }
     json_object_object_add(jobj, "ctime", json_object_new_int64(meta.ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(meta.mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(meta.blksize));

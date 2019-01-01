@@ -23,6 +23,7 @@ public:
     void setmtime(time_t mtime);
     time_t getmtime();
     size_t size();
+    void dump_to_disk_cache();
     int drop_mem_cache();
 };
 

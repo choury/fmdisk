@@ -82,16 +82,12 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
     flags(meta.flags)
 {
     assert((flags & ENTRY_INITED_F) == 0);
-    if((flags & ENTRY_CHUNCED_F) && (flags & ENTRY_CREATE_F) == 0){
+    if(flags & ENTRY_CHUNCED_F){
         fk = decodepath(fk);
         mode = S_IFREG | 0666;
-        return;
     }
     if(meta.flags & META_KEY_ONLY_F){
         return;
-    }
-    if(flags & ENTRY_CHUNCED_F){
-        fk = decodepath(fk);
     }
     if(S_ISDIR(mode)){
         dir = new dir_t(this, parent, meta.mtime);
@@ -190,6 +186,7 @@ filemeta entry_t::getmeta() {
     }
     struct filemeta meta = initfilemeta(getkey());
     meta.mode = mode;
+    meta.flags = (flags & ENTRY_CHUNCED_F);
     meta.ctime = ctime;
     if(!S_ISDIR(mode)){
         filemeta fmeta = file->getmeta();
@@ -284,7 +281,6 @@ int entry_t::open() {
 
 const std::map<string, entry_t*>& entry_t::entrys(){
     auto_rlock(this);
-    assert(opened);
     return dir->get_entrys();
 }
 
@@ -381,82 +377,114 @@ int entry_t::utime(const struct timespec  tv[2]) {
     return ret;
 }
 
+int entry_t::moveto(entry_t* newparent, string oldname, string newname) {
+    auto_rlocker __1(this);
+    assert(S_ISDIR(this->mode));
+    entry_t* entry = this->dir->find(oldname);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    auto_rlocker __2(newparent);
+    assert(S_ISDIR(newparent->mode));
+    newparent->unlink(newname);
 
-void entry_t::insert(string name, entry_t* entry) {
-    auto_rlock(this);
-    assert(S_ISDIR(mode));
-    dir->insert(name, entry);
-}
-
-
-int entry_t::move(entry_t* newparent, string name) {
-    auto_wlock(this);
     if(newparent->dir->size() >= MAXFILE){
         return -ENOSPC;
     }
-    filekey newfile{(flags & ENTRY_CHUNCED_F)?encodepath(name):name, 0};
-    int ret = HANDLE_EAGAIN(fm_rename(parent->getkey(), getkey(), newparent->getkey(), newfile));
+
+    auto_wlocker __3(entry);
+    filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
+    int ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
     if(ret){
         return ret;
     }
-    parent->erase(fk.path);
-    parent = newparent;
-    fk = filekey{name, newfile.private_key};
-    parent->insert(name, this);
+
+    this->dir->erase(oldname);
+    entry->parent = newparent;
+    entry->fk = filekey{newname, newfile.private_key};
+    newparent->dir->insert(newname, entry);
+    entry->dump_to_disk_cache();
     return 0;
 }
 
-void entry_t::erase(string name) {
+void entry_t::erase_child_rlocked(entry_t* child) {
+    assert(S_ISDIR(mode));
+    dir->erase(child->fk.path);
+    child->upgrade();
+    child->parent = nullptr;
+    child->flags |= ENTRY_DELETED_F;
+    if(child->flags & ENTRY_REASEWAIT_F){
+        child->unwlock();
+        //delete this in clean
+        return;
+    }
+    delete child;
+}
+
+int entry_t::unlink(const string& name) {
     auto_rlock(this);
     assert(S_ISDIR(mode));
-    return dir->erase(name);
-}
-
-int entry_t::unlink() {
-    auto_wlock(this);
-    assert(opened == 0);
-    if(!S_ISREG(mode)){
+    entry_t* entry = this->dir->find(name);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    entry->rlock();
+    assert(entry->opened == 0);
+    if(!S_ISREG(entry->mode)){
+        entry->unrlock();
         return -EISDIR;
     }
-    int ret = HANDLE_EAGAIN(fm_delete(getkey()));
+    int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
     if(ret){
+        entry->unrlock();
         return ret;
     }
-    parent->erase(fk.path);
-    parent = nullptr;
-    flags |= ENTRY_DELETED_F;
-    if(flags & ENTRY_REASEWAIT_F){
-        //delete this in clean
-        return 0;
-    }
-    __w.unlock();
-    delete this;
+    this->erase_child_rlocked(entry);
     return 0;
 }
 
-int entry_t::rmdir() {
-    auto_wlock(this);
-    if(!S_ISDIR(mode)){
+int entry_t::rmdir(const string& name) {
+    auto_rlock(this);
+    assert(S_ISDIR(mode));
+    entry_t* entry = this->dir->find(name);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    entry->rlock();
+    if(!S_ISDIR(entry->mode)){
+        entry->unrlock();
         return -ENOTDIR;
     }
-    if(opened){
+    if(entry->opened){
+        entry->unrlock();
         return -EBUSY;
     }
-    if(dir->get_entrys().size() != 2){
+    if(entry->entrys().size() != 2){
+        entry->unrlock();
         return -ENOTEMPTY;
     }
-    int ret = HANDLE_EAGAIN(fm_delete(getkey()));
+    int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
     if(ret){
+        entry->unrlock();
         return ret;
     }
-    parent->erase(fk.path);
-    flags |= ENTRY_DELETED_F;
-    if(flags & ENTRY_REASEWAIT_F){
-        return 0;
-    }
-    __w.unlock();
-    delete this;
+    this->erase_child_rlocked(entry);
     return 0;
+}
+
+void entry_t::dump_to_disk_cache(){
+    auto_rlock(this);
+    if((flags & ENTRY_INITED_F) == 0){
+        return;
+    }
+    save_entry_to_db(parent->getkey(), getmeta());
+    filemeta meta = getmeta();
+    if(S_ISDIR(mode)){
+        save_file_to_db(meta.key.path, meta, std::vector<filekey>{});
+        dir->dump_to_disk_cache();
+    }else{
+        save_file_to_db(meta.key.path, meta, file->getfblocks());
+    }
 }
 
 int entry_t::drop_mem_cache(){

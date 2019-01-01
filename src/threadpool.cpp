@@ -213,7 +213,7 @@ static void do_delay_task() {
     pthread_mutex_lock(&delay_task_lock);
     for(auto i: delay_tasks){
         i->func(i->param);
-        delete i;
+        free(i);
     }
     delay_tasks.clear();
     pthread_mutex_unlock(&delay_task_lock);

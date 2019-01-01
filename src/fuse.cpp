@@ -87,37 +87,33 @@ int fm_fuse_mkdir(const char *path, mode_t mode){
 
 int fm_fuse_unlink(const char *path){
     entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t *entry = root->find(path);
-    if(entry == nullptr){
+    entry_t* parent = root->find(dirname(path));
+    if(parent == nullptr){
         return -ENOENT;
     }
-    return entry->unlink();
+    return parent->unlink(basename(path));
 }
 
 int fm_fuse_rmdir(const char *path){
     entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t *entry = root->find(path);
-    if(entry == nullptr){
+    entry_t* parent = root->find(dirname(path));
+    if(parent == nullptr){
         return -ENOENT;
     }
-    return entry->rmdir();
+    return parent->rmdir(basename(path));
 }
 
 int fm_fuse_rename(const char *oldname, const char *newname){
     entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry =  root->find(oldname);
-    if(entry == nullptr){
+    entry_t* parent =  root->find(dirname(oldname));
+    if(parent == nullptr){
         return -ENOENT;
-    }
-    entry_t* nentry = root->find(newname);
-    if(nentry){
-        nentry->unlink();
     }
     entry_t* newparent = root->find(dirname(newname));
     if(newparent == nullptr){
         return -ENOENT;
     }
-    return entry->move(newparent, basename(newname));
+    return parent->moveto(newparent, basename(oldname), basename(newname));
 }
 
 int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){

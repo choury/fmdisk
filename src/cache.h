@@ -28,8 +28,7 @@ class entry_t: locker {
     time_t ctime = 0;
     uint32_t flags = 0;
     uint32_t opened = 0;
-    void erase(string name);
-    void insert(string name, entry_t* entry);
+    void erase_child_rlocked(entry_t* child);
     string getcwd();
     void pull_wlocked();
     static void push(entry_t* entry);
@@ -51,10 +50,11 @@ public:
     int sync(int datasync);
     int flush();
     int release();
-    int move(entry_t* newparent, string name);
+    int moveto(entry_t* newparent, string oldname, string newname);
     int utime(const struct timespec tv[2]);
-    int unlink();
-    int rmdir();
+    int unlink(const string& name);
+    int rmdir(const string& name);
+    void dump_to_disk_cache();
     int drop_mem_cache();
     int drop_disk_cache();
 };

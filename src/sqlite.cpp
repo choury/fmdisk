@@ -74,8 +74,8 @@ void save_file_to_db(const string& path, const filekey& metakey, const char* jso
     }
 }
 
-void save_file_to_db(const string& path, const filemeta& meta){
-    json_object* jobj = marshal_meta(meta, std::vector<filekey>{});
+void save_file_to_db(const string& path, const filemeta& meta, const std::vector<filekey>& fblocks){
+    json_object* jobj = marshal_meta(meta, fblocks);
     save_file_to_db(path, meta.key, json_object_to_json_string(jobj));
     json_object_put(jobj);
 }
@@ -130,12 +130,6 @@ void save_entry_to_db(const filekey& fileat, const filemeta& meta){
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
-    }
-    if(endwith(meta.key.path, ".def") && S_ISDIR(meta.mode)){
-        return;
-    }
-    if((meta.flags & META_KEY_ONLY_F) == 0){
-        save_file_to_db(pathjoin(fileat.path, basename(meta.key.path)), meta);
     }
 }
 
