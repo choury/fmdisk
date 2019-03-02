@@ -87,6 +87,7 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         mode = S_IFREG | 0666;
     }
     if(meta.flags & META_KEY_ONLY_F){
+        addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
     if(S_ISDIR(mode)){
@@ -176,6 +177,14 @@ void entry_t::pull_wlocked(){
     }
     ctime = meta.ctime;
     flags |= ENTRY_INITED_F;
+}
+
+void entry_t::pull(entry_t* entry){
+    auto_wlock(entry);
+    if(entry->flags & ENTRY_INITED_F){
+        return;
+    }
+    entry->pull_wlocked();
 }
 
 filemeta entry_t::getmeta() {
@@ -477,8 +486,14 @@ void entry_t::dump_to_disk_cache(){
     if((flags & ENTRY_INITED_F) == 0){
         return;
     }
-    save_entry_to_db(parent->getkey(), getmeta());
     filemeta meta = getmeta();
+    if(flags & ENTRY_CHUNCED_F){
+        auto savemeta = meta;
+        savemeta.mode = S_IFDIR | 0755;
+        save_entry_to_db(parent->getkey(), savemeta);
+    }else{
+        save_entry_to_db(parent->getkey(), meta);
+    }
     if(S_ISDIR(mode)){
         save_file_to_db(meta.key.path, meta, std::vector<filekey>{});
         dir->dump_to_disk_cache();

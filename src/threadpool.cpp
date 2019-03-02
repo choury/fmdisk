@@ -112,8 +112,9 @@ task_id addtask(thrdpool* pool, taskfunc func, void *param , uint flags) {
     pool->tasks.push(task);                              //加入任务队列尾部
     pool->valmap[task->taskid] = val;
     sem_post(&pool->wait);                                       //发信号给各线程
+    auto taskid = task->taskid;
     pthread_mutex_unlock(&pool->lock);
-    return task->taskid;
+    return taskid;
 }
 
 

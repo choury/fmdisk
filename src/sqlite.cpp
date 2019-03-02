@@ -61,10 +61,15 @@ int sqlinit(){
 }
 
 void sqldeinit(){
-    sqlite3_close(cachedb);
+    if(cachedb){
+        sqlite3_close(cachedb);
+    }
 }
 
 void save_file_to_db(const string& path, const filekey& metakey, const char* json){
+    if(cachedb ==  nullptr){
+        return;
+    }
     string sql = "replace into files (path, private_key, meta) values('"
      + path + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ json + "')";
     char* err_msg;
@@ -100,6 +105,9 @@ static int files_callback(void *data, int columns, char **field, char **colum){
 }
 
 int load_file_from_db(const string& path, filekey& metakey, buffstruct& bs){
+    if(cachedb == nullptr){
+        return 0;
+    }
     string sql = "select private_key, meta from files where path='" + path + "'";
     char* err_msg;
     auto data = std::make_pair<filekey*, buffstruct*>(&metakey, &bs);
@@ -111,6 +119,9 @@ int load_file_from_db(const string& path, filekey& metakey, buffstruct& bs){
 }
 
 int delete_file_from_db(const string& path){
+    if(cachedb == nullptr){
+        return -1;
+    }
     string sql = "delete from files where path='" + path + "'";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
@@ -123,6 +134,9 @@ int delete_file_from_db(const string& path){
 
 
 void save_entry_to_db(const filekey& fileat, const filemeta& meta){
+    if(cachedb == nullptr){
+        return;
+    }
     string sql = "replace into entrys(parent, path, private_key, mode) values('" + fileat.path 
     + "', '" + basename(meta.key.path) + "', '" + fm_private_key_tostring(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
@@ -156,6 +170,9 @@ static int entrys_callback(void *data, int columns, char **field, char **colum){
 }
 
 int load_entry_from_db(const string& path, std::vector<filemeta>& flist){
+    if(cachedb == nullptr){
+        return 0;
+    }
     string sql = "select path, private_key, mode from entrys where parent = '" + path + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), entrys_callback, &flist, &err_msg)){
@@ -175,6 +192,9 @@ static string escapSQL(const string& sql){
 }
 
 int delete_entry_prefix_from_db(const string& path){
+    if(cachedb == nullptr){
+        return -1;
+    }
     string sql = "delete from entrys where parent = '" + path + "' or parent like '" + escapSQL(path) + "/%' escape '\\'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
@@ -192,6 +212,9 @@ int delete_entry_prefix_from_db(const string& path){
 }
 
 int delete_entry_from_db(const string& path){
+    if(cachedb == nullptr){
+        return -1;
+    }
     string sql = "delete from entrys where parent = '" + dirname(path) + "' and path= '" + basename(path) + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){

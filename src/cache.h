@@ -31,7 +31,7 @@ class entry_t: locker {
     void erase_child_rlocked(entry_t* child);
     string getcwd();
     void pull_wlocked();
-    static void push(entry_t* entry);
+    static void pull(entry_t* entry);
     static void clean(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
