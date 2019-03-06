@@ -6,10 +6,13 @@
 #include <errno.h>
 #include <sqlite3.h>
 #include <json-c/json.h>
+#include <functional>
 
-sqlite3* cachedb = nullptr;
+static sqlite3* cachedb = nullptr;
 
 using std::string;
+using std::make_pair;
+using std::reference_wrapper;
 
 int sqlinit(){
     string cachefile = pathjoin(fm_getcachepath(), "cache.db");
@@ -66,7 +69,7 @@ void sqldeinit(){
     }
 }
 
-void save_file_to_db(const string& path, const filekey& metakey, const char* json){
+static void save_file_to_db(const string& path, const filekey& metakey, const char* json){
     if(cachedb ==  nullptr){
         return;
     }
@@ -86,36 +89,38 @@ void save_file_to_db(const string& path, const filemeta& meta, const std::vector
 }
 
 static int files_callback(void *data, int columns, char **field, char **colum){
-    auto param = (std::pair<filekey*, buffstruct*>*)data;
+    auto param = (std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>*)data;
     assert(columns = 2);
     for(int i = 0; i < columns; i++){
         if(strcmp(colum[i], "private_key") == 0){
-            param->first->private_key = fm_get_private_key(field[i]);
+            param->first.get().key.private_key = fm_get_private_key(field[i]);
             continue;
         }
         if(strcmp(colum[i], "meta") == 0){
-            size_t len = strlen(field[i]);
-            param->second->expand(len);
-            strcpy(param->second->buf, field[i]);
-            param->second->offset = len;
+            json_object *json_get = json_tokener_parse(field[i]);
+            if(json_get ==  nullptr){
+                throw "Json parse error";
+            }
+            unmarshal_meta(json_get, param->first, param->second);
+            json_object_put(json_get);
             continue;
         }
     }
     return 0;
 }
 
-int load_file_from_db(const string& path, filekey& metakey, buffstruct& bs){
+void load_file_from_db(const std::string& path, filemeta& meta, std::vector<filekey>& fblocks){
     if(cachedb == nullptr){
-        return 0;
+        return;
     }
     string sql = "select private_key, meta from files where path='" + path + "'";
     char* err_msg;
-    auto data = std::make_pair<filekey*, buffstruct*>(&metakey, &bs);
+    std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>> data = 
+        make_pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>(meta, fblocks);
     if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &data, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
     }
-    return bs.offset;
 }
 
 int delete_file_from_db(const string& path){
@@ -222,5 +227,5 @@ int delete_entry_from_db(const string& path){
         sqlite3_free(err_msg);
         return -1;
     }
-    return delete_entry_prefix_from_db(path);
+    return 0;
 }

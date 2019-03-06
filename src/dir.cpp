@@ -88,7 +88,9 @@ entry_t* dir_t::insert(string name, entry_t* entry){
 void dir_t::erase(std::string name) {
     auto_wlock(this);
     assert(entrys.count(name));
-    delete_entry_from_db(entrys[name]->getkey().path);
+    auto path = entrys[name]->getkey().path;
+    delete_entry_from_db(path);
+    delete_entry_prefix_from_db(path);
     entrys.erase(name);
     mtime = time(0);
 }

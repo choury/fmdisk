@@ -76,7 +76,6 @@ filemeta initfilemeta(const filekey& key);
 struct json_object;
 json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks);
 int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblocks);
-int download_meta(const filekey& file, filemeta& meta);
-int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks);
+int download_meta(const filekey& fileat, filemeta& meta, std::vector< filekey >& fblocks);
 int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks);
 #endif

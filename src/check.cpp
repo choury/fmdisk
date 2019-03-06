@@ -10,6 +10,7 @@
 #include <string>
 #include <json-c/json.h>
 #include <string.h>
+#include "sqlite.h"
 
 using namespace std;
 
@@ -62,7 +63,10 @@ del:
     int ret = HANDLE_EAGAIN(fm_delete(file));
     if (ret != 0) {
         cerr << "delete dir " << file.path << "failed: " << ret << endl;
+        return;
     }
+    delete_entry_from_db(file.path);
+    delete_file_from_db(file.path);
 }
 
 filekey fixMissBlock(const filekey& file, const std::map<std::string, struct filekey>& flist, uint64_t no) {
@@ -123,8 +127,8 @@ void checkchunk(filekey* file) {
     }
     filemeta meta;
     std::vector<filekey> blks;
-    ret = downlod_meta(*file, meta, blks);
-    defer1([&meta]{delete meta.inline_data;});
+    ret = download_meta(*file, meta, blks);
+    defer1([&meta]{delete[] meta.inline_data;});
     if(ret == 0){
         if(meta.inline_data && blks.size()){
             cerr<<lock<<"get inline_data and blocks/block_list: "<< meta.key.path <<endl <<unlock;
@@ -167,6 +171,7 @@ void checkchunk(filekey* file) {
             return;
         }
     }
+    save_file_to_db(file->path, meta, blks);
     std::vector<filekey> ftrim;
     for (auto f : fs) {
         if (!isdigit(f.first[0])){
@@ -212,7 +217,9 @@ void checkdir(filekey* file) {
         cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
         return;
     }
+    delete_entry_prefix_from_db(file->path);
     for (auto f : flist) {
+        save_entry_to_db(*file, f);
         if (S_ISREG(f.mode)) {
             if (verbose) {
                 cout<<lock << f.key.path << " skip check" << endl<<unlock;
@@ -251,6 +258,9 @@ int main(int argc, char **argv) {
         cerr<<"fm_prepare failed!"<<endl;
         return -1;
     }
+    sqlinit();
+    defer(sqldeinit);
+
     char ch;
     bool isfile = false;
     while ((ch = getopt(argc, argv, "evfr")) != -1)

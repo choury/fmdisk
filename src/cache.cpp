@@ -158,15 +158,22 @@ string entry_t::getcwd() {
 void entry_t::pull_wlocked(){
     struct filemeta meta = initfilemeta(getkey());
     assert(file == nullptr);
+    std::vector<filekey> fblocks;
+    load_file_from_db(meta.key.path, meta, fblocks);
     if(flags & ENTRY_CHUNCED_F){
-        std::vector<filekey> fblocks;
-        if(downlod_meta(meta.key, meta, fblocks)){
-            throw "download_meta IO Error";
+        if(meta.blksize == 0){
+            if(download_meta(meta.key, meta, fblocks)){
+                throw "download_meta IO Error";
+            }
+            save_file_to_db(meta.key.path, meta, fblocks);
         }
         file = new file_t(this, meta, fblocks);
     }else{
-        if(download_meta(meta.key, meta)){
-            throw "downalod_meta IO Error";
+        if(meta.blksize == 0){
+            if(HANDLE_EAGAIN(fm_getattr(meta.key, meta))){
+                throw "fm_getattr IO Error";
+            }
+            save_file_to_db(meta.key.path, meta, {});
         }
         assert(meta.inline_data == nullptr);
         if(S_ISDIR(meta.mode)){
@@ -200,14 +207,14 @@ filemeta entry_t::getmeta() {
     if(!S_ISDIR(mode)){
         filemeta fmeta = file->getmeta();
         meta.size = fmeta.size;
-        meta.mode = S_IFREG | 0644;
+        meta.mode = S_IFREG | (mode & 0777);
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
         meta.blocks = fmeta.blocks;
         meta.mtime = fmeta.mtime;
     }else{
         meta.size = 0;
-        meta.mode = S_IFDIR | 0755;
+        meta.mode = S_IFDIR | (mode & 0777);
         meta.inline_data = 0;
         meta.blksize =  0;
         meta.blocks = 0;
@@ -280,6 +287,9 @@ int entry_t::open() {
     if((flags & ENTRY_INITED_F) == 0){
         pull_wlocked();
     }
+    if((mode & 0777) == 0){
+        return -EACCES;
+    }
     if(S_ISREG(mode) && file->open() < 0){
         return -errno;
     }
@@ -338,9 +348,12 @@ int entry_t::sync(int datasync){
     filemeta meta = file->getmeta();
     meta.ctime = ctime;
     if((!datasync && (meta.flags & FILE_DIRTY_F))){
-        if(upload_meta(getkey(), meta, file->getfblocks())){
+        filekey key = getkey();
+        std::vector<filekey> fblocks = file->getfblocks();
+        if(upload_meta(key, meta, fblocks)){
             throw "upload_meta IO Error";
         }
+        save_file_to_db(key.path, meta, fblocks);
         file->post_sync(meta.key);
     }
     return 0;

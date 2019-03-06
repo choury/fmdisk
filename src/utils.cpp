@@ -7,7 +7,6 @@
 #include <json-c/json.h>
 
 #include "utils.h"
-#include "sqlite.h"
 #include "fmdisk.h"
 
 using std::string;
@@ -142,11 +141,11 @@ void xorcode(void* buf, size_t offset, size_t len, const char* key){
 }
 
 string basename(const string& path) {
-    size_t pos = path.find_last_of("/");
+    size_t pos = path.find_last_of('/');
     if(pos == string::npos) {
         return path;
     }
-    if(path.length() == 1){
+    if(path.length() <= 1){
         return path;
     }
     if(pos == path.length() -1 ) {
@@ -157,14 +156,14 @@ string basename(const string& path) {
 }
 
 string dirname(const string& path) {
-    size_t pos = path.find_last_of("/");
+    size_t pos = path.find_last_of('/');
     if(pos == string::npos) {
         return ".";
     }
     if(pos == 0){
         return "/";
     }
-    if(path.length() == 1){
+    if(path.length() <= 1){
         return path;
     }
     if(pos == path.length() -1 ) {
@@ -206,7 +205,7 @@ string replaceAll(const std::string &s, const std::string &search, const std::st
 
 string encodepath(const string& path){
     string bname = basename(path);
-    char dst[bname.length()*2];
+    char dst[bname.length()*2 < 10 ? 10 : bname.length()*2];
     Base64Encode(bname.data(), bname.length(), dst);
     if(dirname(path) == "."){
         return string(dst) + ".def";
@@ -228,7 +227,12 @@ string decodepath(const string& path){
 }
 
 string pathjoin(const string& dir, const string& name){
-    if(endwith(dir, "/") || startwith(name, "/")){
+    bool endwithslash = endwith(dir, "/");
+    bool startwithslash = startwith(name, "/");
+
+    if(endwithslash && startwithslash){
+        return dir + (name.c_str()+1);
+    }else if(endwithslash || startwithslash){
         return dir + name;
     }else{
         return dir +'/'+ name;
@@ -374,51 +378,24 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
 }
 
 
-int downlod_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
-    bool cached = false;
+int download_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
     buffstruct bs;
     filekey metakey{METANAME, 0};
-    if(load_file_from_db(fileat.path, metakey, bs) == 0){
-        int ret;
-        if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
-            return ret;
-        }
-        if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
-            return ret;
-        }
-    }else{
-        cached = true;
+    int ret;
+    if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
+        return ret;
+    }
+    if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
+        return ret;
     }
     json_object *json_get = json_tokener_parse(bs.buf);
     if(json_get ==  nullptr){
         throw "Json parse error";
     }
-    if(!cached){
-        save_file_to_db(fileat.path, metakey, bs.buf);
-    }
     meta = initfilemeta(metakey);
     unmarshal_meta(json_get, meta, fblocks);
     json_object_put(json_get);
     return 0;
-}
-
-int download_meta(const filekey& file, filemeta& meta){
-    buffstruct bs;
-    if(load_file_from_db(file.path, meta.key, bs)){
-        json_object *json_get = json_tokener_parse(bs.buf);
-        if(json_get ==  nullptr){
-            throw "Json parse error";
-        }
-        std::vector<filekey> ignore;
-        unmarshal_meta(json_get, meta, ignore);
-        json_object_put(json_get);
-        return 0;
-    }
-    int ret;
-    if((ret = HANDLE_EAGAIN(fm_getattr(file, meta))) == 0){
-        save_file_to_db(file.path, meta, std::vector<filekey>{});
-    }
-    return ret;
 }
 
 json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks){
@@ -438,7 +415,7 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
         json_object_object_add(jobj, "encoding", json_object_new_string("none"));
     }
     if(meta.inline_data){
-        char* inline_data = new char[INLINE_DLEN * 2];
+        char* inline_data = new char[INLINE_DLEN * 2 < 10 ? 10 : INLINE_DLEN * 2];
         Base64Encode((const char*)meta.inline_data, meta.size, inline_data);
         json_object_object_add(jobj, "inline_data", json_object_new_string(inline_data));
         delete[] inline_data;
@@ -465,7 +442,6 @@ retry:
     if(ret != 0 && errno == EEXIST){
         goto retry;
     }
-    save_file_to_db(fileat.path, meta.key, jstring);
     json_object_put(jobj);
     return ret;
 }
