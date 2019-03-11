@@ -347,6 +347,7 @@ int entry_t::sync(int datasync){
     file->sync();
     filemeta meta = file->getmeta();
     meta.ctime = ctime;
+    meta.flags |= flags;
     if((!datasync && (meta.flags & FILE_DIRTY_F))){
         filekey key = getkey();
         std::vector<filekey> fblocks = file->getfblocks();
@@ -500,6 +501,7 @@ void entry_t::dump_to_disk_cache(){
         return;
     }
     filemeta meta = getmeta();
+    meta.flags |= flags;
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
         savemeta.mode = S_IFDIR | 0755;
