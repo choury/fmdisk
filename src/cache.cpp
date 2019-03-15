@@ -87,6 +87,7 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         mode = S_IFREG | 0666;
     }
     if(meta.flags & META_KEY_ONLY_F){
+        flags |= ENTRY_PULLING_F;
         addtask(dpool, (taskfunc)pull, this, 0);
         return;
     }
@@ -188,10 +189,16 @@ void entry_t::pull_wlocked(){
 
 void entry_t::pull(entry_t* entry){
     auto_wlock(entry);
-    if(entry->flags & ENTRY_INITED_F){
-        return;
+    if(entry->flags & ENTRY_DELETED_F){
+        __w.unlock();
+        delete entry;
+	return;
     }
-    entry->pull_wlocked();
+    if((entry->flags & ENTRY_INITED_F) == 0){
+        entry->pull_wlocked();
+    }
+    entry->flags &= ~ENTRY_PULLING_F;
+    return;
 }
 
 filemeta entry_t::getmeta() {
@@ -436,9 +443,11 @@ void entry_t::erase_child_rlocked(entry_t* child) {
     child->upgrade();
     child->parent = nullptr;
     child->flags |= ENTRY_DELETED_F;
-    if(child->flags & ENTRY_REASEWAIT_F){
+    if((child->flags & ENTRY_REASEWAIT_F)||
+       (child->flags & ENTRY_PULLING_F))
+    {
         child->unwlock();
-        //delete this in clean
+        //delete this in clean or pull
         return;
     }
     delete child;

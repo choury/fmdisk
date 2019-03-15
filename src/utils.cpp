@@ -379,16 +379,17 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
 
 
 int download_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
-    buffstruct bs;
     filekey metakey{METANAME, 0};
     int ret;
     if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
         return ret;
     }
+    buffstruct bs;
     if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
         return ret;
     }
-    json_object *json_get = json_tokener_parse(bs.buf);
+    std::string json_str = std::string(bs.buf, bs.offset);
+    json_object *json_get = json_tokener_parse(json_str.c_str());
     if(json_get ==  nullptr){
         throw "Json parse error";
     }

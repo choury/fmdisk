@@ -27,9 +27,10 @@ struct filekey {
 #define ENTRY_DELETED_F   (1<<2)
 #define ENTRY_REASEWAIT_F (1<<3)
 #define ENTRY_CREATE_F    (1<<4)
-#define FILE_ENCODE_F     (1<<5)
-#define FILE_DIRTY_F      (1<<6)
-#define DIR_PULLED_F      (1<<7)
+#define ENTRY_PULLING_F   (1<<5)
+#define FILE_ENCODE_F     (1<<6)
+#define FILE_DIRTY_F      (1<<7)
+#define DIR_PULLED_F      (1<<8)
 #define META_KEY_ONLY_F   (1<<16)
 
 struct filemeta{
