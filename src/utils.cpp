@@ -4,7 +4,7 @@
 #include <assert.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <json-c/json.h>
+#include <json.h>
 
 #include "utils.h"
 #include "fmdisk.h"

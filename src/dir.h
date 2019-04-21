@@ -10,18 +10,19 @@ class entry_t;
 
 class dir_t: locker {
     uint32_t flags = 0;
+    time_t ctime;
     time_t mtime;
     std::map<string, entry_t*> entrys;
     void pull_wlocked();
 public:
-    dir_t(entry_t* entry, entry_t* parent, time_t mtime);
+    dir_t(entry_t* entry, entry_t* parent, const filemeta& meta);
     virtual ~dir_t();
     entry_t* find(std::string path);
     const std::map<string, entry_t*>& get_entrys();
     entry_t* insert(std::string name, entry_t* entry);
     void erase(std::string name);
-    void setmtime(time_t mtime);
-    time_t getmtime();
+    void setutime(time_t utime[2]);
+    void getutime(time_t utime[2]);
     size_t size();
     void dump_to_disk_cache();
     int drop_mem_cache();

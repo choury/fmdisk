@@ -5,7 +5,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sqlite3.h>
-#include <json-c/json.h>
+#include <json.h>
 #include <functional>
 
 static sqlite3* cachedb = nullptr;

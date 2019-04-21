@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <assert.h>
+#include <errno.h>
 #include <sys/resource.h>
 #include <unordered_map>
 #include <queue>
@@ -186,7 +187,11 @@ static void do_delay_task() {
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 10;
     while(!delay_task_stop) {
+#if __APPLE__
+        sem_wait(&delay_task);
+#else
         sem_timedwait(&delay_task, &ts);             //等待addtask的信号
+#endif
         struct timespec now;
         clock_gettime(CLOCK_REALTIME, &now);
         ts.tv_sec = now.tv_sec + 10;

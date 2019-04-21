@@ -78,7 +78,6 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
     parent(parent),
     fk(basename(meta.key)),
     mode(meta.mode),
-    ctime(meta.ctime),
     flags(meta.flags)
 {
     assert((flags & ENTRY_INITED_F) == 0);
@@ -92,7 +91,7 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
         return;
     }
     if(S_ISDIR(mode)){
-        dir = new dir_t(this, parent, meta.mtime);
+        dir = new dir_t(this, parent, meta);
     }else{
         file = new file_t(this, meta);
     }
@@ -178,12 +177,11 @@ void entry_t::pull_wlocked(){
         }
         assert(meta.inline_data == nullptr);
         if(S_ISDIR(meta.mode)){
-            dir = new dir_t(this, parent, meta.mtime);
+            dir = new dir_t(this, parent, meta);
         }else{
             file = new file_t(this, meta);
         }
     }
-    ctime = meta.ctime;
     flags |= ENTRY_INITED_F;
 }
 
@@ -210,7 +208,6 @@ filemeta entry_t::getmeta() {
     struct filemeta meta = initfilemeta(getkey());
     meta.mode = mode;
     meta.flags = (flags & ENTRY_CHUNCED_F);
-    meta.ctime = ctime;
     if(!S_ISDIR(mode)){
         filemeta fmeta = file->getmeta();
         meta.size = fmeta.size;
@@ -218,6 +215,7 @@ filemeta entry_t::getmeta() {
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
         meta.blocks = fmeta.blocks;
+        meta.ctime = fmeta.ctime;
         meta.mtime = fmeta.mtime;
     }else{
         meta.size = 0;
@@ -225,7 +223,10 @@ filemeta entry_t::getmeta() {
         meta.inline_data = 0;
         meta.blksize =  0;
         meta.blocks = 0;
-        meta.mtime = dir->getmtime();
+        time_t utime[2];
+        dir->getutime(utime);
+        meta.ctime = utime[0];
+        meta.mtime = utime[1];
     }
     return meta;
 }
@@ -261,8 +262,7 @@ entry_t* entry_t::create(string name){
     meta.flags =  ENTRY_CHUNCED_F | ENTRY_CREATE_F | FILE_ENCODE_F | FILE_DIRTY_F ;
     meta.blksize = BLOCKLEN;
     meta.mode = S_IFREG | 0644;
-    entry_t* entry = new entry_t(this, meta);
-    return dir->insert(name, entry);
+    return dir->insert(name, new entry_t(this, meta));
 }
 
 entry_t* entry_t::mkdir(string name) {
@@ -285,8 +285,7 @@ entry_t* entry_t::mkdir(string name) {
     meta.mtime = time(NULL);
     meta.flags = ENTRY_CREATE_F;
     meta.mode = S_IFDIR | 0755;
-    entry_t* entry = new entry_t(this, meta);
-    return dir->insert(name, entry);
+    return dir->insert(name, new entry_t(this, meta));
 }
 
 int entry_t::open() {
@@ -353,7 +352,6 @@ int entry_t::sync(int datasync){
     assert(S_ISREG(mode));
     file->sync();
     filemeta meta = file->getmeta();
-    meta.ctime = ctime;
     meta.flags |= flags;
     if((!datasync && (meta.flags & FILE_DIRTY_F))){
         filekey key = getkey();
@@ -397,10 +395,13 @@ int entry_t::utime(const struct timespec  tv[2]) {
         ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
     }
     if(ret == 0){
+        time_t utime[2];
+        utime[0] = tv[0].tv_sec;
+        utime[1] = tv[1].tv_sec;
         if(S_ISDIR(mode)){
-            dir->setmtime(tv[1].tv_sec);
+            dir->setutime(utime);
         }else{
-            file->setmtime(tv[1].tv_sec);
+            file->setutime(utime);
         }
         sync(0);
     }

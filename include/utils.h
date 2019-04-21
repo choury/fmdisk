@@ -1,6 +1,7 @@
 #ifndef UTILS_H__
 #define UTILS_H__
 
+#include <sys/stat.h>
 #include <string>
 #include <memory>
 #include <vector>

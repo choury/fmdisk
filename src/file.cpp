@@ -224,6 +224,7 @@ file_t::file_t(entry_t *entry, const filemeta& meta):
     private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
+    ctime(meta.ctime),
     mtime(meta.mtime),
     flags(meta.flags)
 {
@@ -247,6 +248,7 @@ file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblock
     private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
+    ctime(meta.ctime),
     mtime(meta.mtime),
     flags(meta.flags)
 {
@@ -467,6 +469,7 @@ filemeta file_t::getmeta() {
     meta.flags = flags;
     meta.size = size;
     meta.blksize = blksize;
+    meta.ctime = ctime;
     meta.mtime = mtime;
     meta.blocks = 1; //at least for meta.json
     for(auto i: blocks){
@@ -501,9 +504,9 @@ void file_t::post_sync(const filekey& file) {
 }
 
 
-void file_t::setmtime(time_t mtime) {
+void file_t::setutime(time_t utime[2]) {
     auto_wlock(this);
     flags |= FILE_DIRTY_F;
-    this->mtime = mtime;
+    this->ctime = utime[0];
+    this->mtime = utime[1];
 }
-

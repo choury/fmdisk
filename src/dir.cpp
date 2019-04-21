@@ -6,7 +6,10 @@
 #include <string.h>
 #include <assert.h>
 
-dir_t::dir_t(entry_t* entry, entry_t* parent, time_t mtime): mtime(mtime){
+dir_t::dir_t(entry_t* entry, entry_t* parent, const filemeta& meta):
+    ctime(meta.ctime),
+    mtime(meta.mtime)
+{
     entrys.emplace(".", entry);
     entrys.emplace("..", parent ? parent: entry);
 }
@@ -95,15 +98,17 @@ void dir_t::erase(std::string name) {
     mtime = time(0);
 }
 
-void dir_t::setmtime(time_t mtime) {
+void dir_t::setutime(time_t utime[2]) {
     auto_wlock(this);
-    this->mtime = mtime;
+    this->ctime = utime[0];
+    this->mtime = utime[1];
 }
 
 
-time_t dir_t::getmtime() {
+void dir_t::getutime(time_t utime[2]) {
     auto_rlock(this);
-    return mtime;
+    utime[0] = this->ctime;
+    utime[1] = this->mtime;
 }
 
 size_t dir_t::size() {

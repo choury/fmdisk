@@ -8,7 +8,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
-#include <json-c/json.h>
+#include <json.h>
 #include <string.h>
 #include "sqlite.h"
 

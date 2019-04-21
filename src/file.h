@@ -1,6 +1,7 @@
 #ifndef FILE_H__
 #define FILE_H__
 #include "locker.h"
+#include "utils.h"
 
 #include <vector>
 #include <map>
@@ -41,6 +42,7 @@ class file_t: locker {
     char* inline_data = nullptr;
     size_t size;
     blksize_t blksize;
+    time_t   ctime;
     time_t   mtime;
     uint32_t flags;
     pthread_mutex_t extraLocker = PTHREAD_MUTEX_INITIALIZER;
@@ -58,7 +60,7 @@ public:
     filemeta getmeta();
     int putbuffer(void* buffer, off_t offset, size_t size);
     int getbuffer(void* buffer, off_t offset, size_t size);
-    void setmtime(time_t mtime);
+    void setutime(time_t utime[2]);
 
     int open();
     int read(void* buff, off_t offset, size_t size);

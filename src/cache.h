@@ -25,7 +25,7 @@ class entry_t: locker {
         dir_t* dir = nullptr;
         file_t* file;
     };
-    time_t ctime = 0;
+//    time_t ctime = 0;
     uint32_t flags = 0;
     uint32_t opened = 0;
     void erase_child_rlocked(entry_t* child);
