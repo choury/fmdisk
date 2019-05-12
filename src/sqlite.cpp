@@ -69,12 +69,16 @@ void sqldeinit(){
     }
 }
 
+static string escapQuote(const string& s){
+    return replaceAll(s, "'", "''");
+}
+
 static void save_file_to_db(const string& path, const filekey& metakey, const char* json){
     if(cachedb ==  nullptr){
         return;
     }
     string sql = "replace into files (path, private_key, meta) values('"
-     + path + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ json + "')";
+     + escapQuote(path) + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ escapQuote(json) + "')";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -113,7 +117,7 @@ void load_file_from_db(const std::string& path, filemeta& meta, std::vector<file
     if(cachedb == nullptr){
         return;
     }
-    string sql = "select private_key, meta from files where path='" + path + "'";
+    string sql = "select private_key, meta from files where path='" + escapQuote(path) + "'";
     char* err_msg;
     std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>> data = 
         make_pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>(meta, fblocks);
@@ -127,7 +131,7 @@ int delete_file_from_db(const string& path){
     if(cachedb == nullptr){
         return -1;
     }
-    string sql = "delete from files where path='" + path + "'";
+    string sql = "delete from files where path='" + escapQuote(path) + "'";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -142,8 +146,8 @@ void save_entry_to_db(const filekey& fileat, const filemeta& meta){
     if(cachedb == nullptr){
         return;
     }
-    string sql = "replace into entrys(parent, path, private_key, mode) values('" + fileat.path 
-    + "', '" + basename(meta.key.path) + "', '" + fm_private_key_tostring(meta.key.private_key)
+    string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(fileat.path) 
+    + "', '" + escapQuote(basename(meta.key.path)) + "', '" + fm_private_key_tostring(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
@@ -178,7 +182,7 @@ int load_entry_from_db(const string& path, std::vector<filemeta>& flist){
     if(cachedb == nullptr){
         return 0;
     }
-    string sql = "select path, private_key, mode from entrys where parent = '" + path + "'";
+    string sql = "select path, private_key, mode from entrys where parent = '" + escapQuote(path) + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), entrys_callback, &flist, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -200,14 +204,14 @@ int delete_entry_prefix_from_db(const string& path){
     if(cachedb == nullptr){
         return -1;
     }
-    string sql = "delete from entrys where parent = '" + path + "' or parent like '" + escapSQL(path) + "/%' escape '\\'";
+    string sql = "delete from entrys where parent = '" + escapQuote(path) + "' or parent like '" + escapSQL(path) + "/%' escape '\\'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
-    sql = "delete from files where path  = '"+ path + "' or path like '" + escapSQL(path) + "/%' escape '\\'";
+    sql = "delete from files where path  = '"+ escapQuote(path) + "' or path like '" + escapSQL(path) + "/%' escape '\\'";
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
@@ -220,7 +224,7 @@ int delete_entry_from_db(const string& path){
     if(cachedb == nullptr){
         return -1;
     }
-    string sql = "delete from entrys where parent = '" + dirname(path) + "' and path= '" + basename(path) + "'";
+    string sql = "delete from entrys where parent = '" + escapQuote(dirname(path)) + "' and path= '" + escapQuote(basename(path)) + "'";
     char *err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);

@@ -156,24 +156,25 @@ string entry_t::getcwd() {
 }
 
 void entry_t::pull_wlocked(){
-    struct filemeta meta = initfilemeta(getkey());
+    const filekey& key = getkey();
+    filemeta meta = initfilemeta(key);
     assert(file == nullptr);
     std::vector<filekey> fblocks;
-    load_file_from_db(meta.key.path, meta, fblocks);
+    load_file_from_db(key.path, meta, fblocks);
     if(flags & ENTRY_CHUNCED_F){
         if(meta.blksize == 0){
-            if(download_meta(meta.key, meta, fblocks)){
+            if(download_meta(key, meta, fblocks)){
                 throw "download_meta IO Error";
             }
-            save_file_to_db(meta.key.path, meta, fblocks);
+            save_file_to_db(key.path, meta, fblocks);
         }
         file = new file_t(this, meta, fblocks);
     }else{
         if(meta.blksize == 0){
-            if(HANDLE_EAGAIN(fm_getattr(meta.key, meta))){
+            if(HANDLE_EAGAIN(fm_getattr(key, meta))){
                 throw "fm_getattr IO Error";
             }
-            save_file_to_db(meta.key.path, meta, {});
+            save_file_to_db(key.path, meta, {});
         }
         assert(meta.inline_data == nullptr);
         if(S_ISDIR(meta.mode)){
@@ -183,6 +184,7 @@ void entry_t::pull_wlocked(){
         }
     }
     flags |= ENTRY_INITED_F;
+    flags &= ~META_KEY_ONLY_F;
 }
 
 void entry_t::pull(entry_t* entry){
@@ -205,13 +207,14 @@ filemeta entry_t::getmeta() {
         __r.upgrade();
         pull_wlocked();
     }
-    struct filemeta meta = initfilemeta(getkey());
+    filemeta meta = initfilemeta(getkey());
     meta.mode = mode;
-    meta.flags = (flags & ENTRY_CHUNCED_F);
+    meta.flags = flags;
     if(!S_ISDIR(mode)){
         filemeta fmeta = file->getmeta();
         meta.size = fmeta.size;
         meta.mode = S_IFREG | (mode & 0777);
+        meta.flags = fmeta.flags;
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
         meta.blocks = fmeta.blocks;
@@ -351,10 +354,9 @@ int entry_t::sync(int datasync){
     }
     assert(S_ISREG(mode));
     file->sync();
-    filemeta meta = file->getmeta();
-    meta.flags |= flags;
+    filemeta meta = getmeta();
     if((!datasync && (meta.flags & FILE_DIRTY_F))){
-        filekey key = getkey();
+        const filekey& key = getkey();
         std::vector<filekey> fblocks = file->getfblocks();
         if(upload_meta(key, meta, fblocks)){
             throw "upload_meta IO Error";
@@ -434,7 +436,6 @@ int entry_t::moveto(entry_t* newparent, string oldname, string newname) {
     entry->parent = newparent;
     entry->fk = filekey{newname, newfile.private_key};
     newparent->dir->insert(newname, entry);
-    entry->dump_to_disk_cache();
     return 0;
 }
 
@@ -511,7 +512,6 @@ void entry_t::dump_to_disk_cache(){
         return;
     }
     filemeta meta = getmeta();
-    meta.flags |= flags;
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
         savemeta.mode = S_IFDIR | 0755;

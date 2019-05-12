@@ -19,7 +19,7 @@ struct filemeta;
 
 class entry_t: locker {
     entry_t* parent;
-    struct filekey fk;
+    filekey fk;
     mode_t mode;
     union{
         dir_t* dir = nullptr;
@@ -38,7 +38,7 @@ public:
     entry_t(entry_t* parent, const filemeta meta);
     virtual ~entry_t();
     filekey getkey();
-    struct filemeta getmeta();
+    filemeta getmeta();
     entry_t* find(string path);
     entry_t* create(string name);
     entry_t* mkdir(string name);
