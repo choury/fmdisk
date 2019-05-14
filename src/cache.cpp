@@ -192,7 +192,7 @@ void entry_t::pull(entry_t* entry){
     if(entry->flags & ENTRY_DELETED_F){
         __w.unlock();
         delete entry;
-	return;
+        return;
     }
     if((entry->flags & ENTRY_INITED_F) == 0){
         entry->pull_wlocked();
@@ -238,6 +238,10 @@ entry_t* entry_t::find(string path){
     auto_rlock(this);
     if(path == "." || path == "/"){
         return this;
+    }
+    if((flags & ENTRY_INITED_F) == 0){
+        __r.upgrade();
+        pull_wlocked();
     }
     assert(S_ISDIR(mode));
     string cname = childname(path);
@@ -532,20 +536,25 @@ int entry_t::drop_mem_cache(){
     if(opened){
         return -EBUSY;
     }
-    if(flags & ENTRY_REASEWAIT_F){
+    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F)){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
+    __r.upgrade();
     if(S_ISREG(mode)){
-        __r.upgrade();
         delete file;
         flags &= ~ENTRY_INITED_F;
         file = nullptr;
         return 0;
+    }else if(dir->drop_mem_cache() == 0){
+        delete dir;
+        flags &= ~ENTRY_INITED_F;
+        dir = nullptr;
+        return 0;
     }
-    return dir->drop_mem_cache();
+    return -EAGAIN;
 }
 
 int entry_t::drop_disk_cache(){
@@ -554,6 +563,9 @@ int entry_t::drop_disk_cache(){
     if(S_ISREG(mode)){
         return delete_file_from_db(path);
     }else{
+        if(parent == nullptr){
+            return delete_entry_prefix_from_db("");
+        }
         return delete_entry_prefix_from_db(path);
     }
 }

@@ -138,5 +138,5 @@ int dir_t::drop_mem_cache(){
         }
         ret |= i.second->drop_mem_cache();
     }
-    return ret?-EAGAIN:0;
+    return ret;
 }
