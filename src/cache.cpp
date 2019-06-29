@@ -361,6 +361,7 @@ int entry_t::sync(int datasync){
     filemeta meta = getmeta();
     if((!datasync && (meta.flags & FILE_DIRTY_F))){
         const filekey& key = getkey();
+        meta.key = file->getkey();
         std::vector<filekey> fblocks = file->getfblocks();
         if(upload_meta(key, meta, fblocks)){
             throw "upload_meta IO Error";

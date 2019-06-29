@@ -17,6 +17,7 @@ using namespace std;
 static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
+static bool deleteall = false;
 static thrdpool *pool;
 
 static mutex console_lock;
@@ -43,10 +44,13 @@ void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>&
         cerr << f.first<<" ";
     }
     cerr<<endl;
+    if(deleteall)
+        goto del;
     do {
         fflush(stdin);
         cerr << "delete this file or ignore it([D]elete/[I]gnore) I?";
-        char a = getchar();
+        char a;
+        cin>>a;
         if (a == '\n') {
             a = 'I';
         } else if (a != 'D' && a != 'I') {
@@ -263,7 +267,7 @@ int main(int argc, char **argv) {
 
     char ch;
     bool isfile = false;
-    while ((ch = getopt(argc, argv, "evfr")) != -1)
+    while ((ch = getopt(argc, argv, "evfrd")) != -1)
         switch (ch) {
         case 'e':
             cout<< "treat it as file"<<endl;
@@ -280,6 +284,10 @@ int main(int argc, char **argv) {
             cout << "will check recursive" <<endl;
             recursive = true;
             break;
+	case 'd':
+	    cout<<"will delete all failed file"<<endl;
+	    deleteall = true;
+	    break;
         case '?':
             return 1;
         }

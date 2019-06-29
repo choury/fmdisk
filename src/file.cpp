@@ -462,9 +462,14 @@ filekey file_t::getDirkey() {
     return entry->getkey();
 }
 
+filekey file_t::getkey(){
+    auto_rlock(this);
+    return filekey{METANAME, private_key};
+}
+
 filemeta file_t::getmeta() {
     auto_rlock(this);
-    filemeta meta = initfilemeta(filekey{METANAME, private_key});
+    filemeta meta = initfilemeta(getkey());
     meta.inline_data = (unsigned char*)inline_data;
     meta.flags = flags;
     meta.size = size;
