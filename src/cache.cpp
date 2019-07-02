@@ -474,7 +474,7 @@ int entry_t::unlink(const string& name) {
         return -EISDIR;
     }
     int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
-    if(ret){
+    if(ret && errno != ENOENT){
         entry->unrlock();
         return ret;
     }
@@ -503,7 +503,7 @@ int entry_t::rmdir(const string& name) {
         return -ENOTEMPTY;
     }
     int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
-    if(ret){
+    if(ret && errno != ENOENT){
         entry->unrlock();
         return ret;
     }
