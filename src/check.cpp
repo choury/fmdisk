@@ -253,7 +253,7 @@ filekey* getpath(string path){
             return nullptr;
         }
         delete fileat;
-        return new filekey{file};
+        return new filekey(file);
     }
 }
 
