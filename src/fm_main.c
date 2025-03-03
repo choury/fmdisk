@@ -27,6 +27,7 @@ struct fuse_operations fm_oper = {
     .utimens    = fm_fuse_utimens,
     .getxattr   = fm_fuse_getxattr,
     .setxattr   = fm_fuse_setxattr,
+    .chmod      = fm_fuse_chmod,
 #ifndef __APPLE__
     .flag_nullpath_ok = 1,
     .flag_nopath = 1,

@@ -31,16 +31,9 @@ public:
     }
 };
 
-#define defer(...) __defer __(__VA_ARGS__)
-#define defer1(...) __defer __1(__VA_ARGS__)
-#define defer2(...) __defer __2(__VA_ARGS__)
-#define defer3(...) __defer __3(__VA_ARGS__)
-#define defer4(...) __defer __4(__VA_ARGS__)
-#define defer5(...) __defer __5(__VA_ARGS__)
-#define defer6(...) __defer __6(__VA_ARGS__)
-#define defer7(...) __defer __7(__VA_ARGS__)
-#define defer8(...) __defer __8(__VA_ARGS__)
-#define defer9(...) __defer __9(__VA_ARGS__)
+#define __S1(x, y) x ## y
+#define __S2(x, y) __S1(x, y)
+#define defer(...) __defer __S2(__, __LINE__) (__VA_ARGS__)
 
 #define delay(second, ...) (new __delay(second, __VA_ARGS__))
 

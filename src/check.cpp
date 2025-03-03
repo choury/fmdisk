@@ -132,7 +132,7 @@ void checkchunk(filekey* file) {
     filemeta meta;
     std::vector<filekey> blks;
     ret = download_meta(*file, meta, blks);
-    defer1([&meta]{delete[] meta.inline_data;});
+    defer([&meta]{delete[] meta.inline_data;});
     if(ret == 0){
         if(meta.inline_data && blks.size()){
             cerr<<lock<<"get inline_data and blocks/block_list: "<< meta.key.path <<endl <<unlock;
@@ -284,10 +284,10 @@ int main(int argc, char **argv) {
             cout << "will check recursive" <<endl;
             recursive = true;
             break;
-	case 'd':
-	    cout<<"will delete all failed file"<<endl;
-	    deleteall = true;
-	    break;
+        case 'd':
+            cout<<"will delete all failed file"<<endl;
+            deleteall = true;
+            break;
         case '?':
             return 1;
         }

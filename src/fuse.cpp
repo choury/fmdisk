@@ -16,7 +16,6 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
     conn->capable = conn->want & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
     conn->max_background = 20;
 #endif
-    conn->max_write = 1024*1024;
     conn->max_readahead = 10*1024*1024;
     return cache_root();
 }
@@ -202,6 +201,16 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
         return -ENOENT;
     }
     return entry->utime(tv);
+}
+
+
+int fm_fuse_chmod (const char *path, mode_t mode){
+    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    entry_t* entry = (entry_t*)root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    return 0;
 }
 
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){

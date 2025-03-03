@@ -37,6 +37,7 @@ int fm_fuse_release(const char *path, struct fuse_file_info *fi);
 int fm_fuse_utimens(const char *path, const struct timespec tv[2]);
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags);
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len);
+int fm_fuse_chmod (const char *path, mode_t mode);
 
 #ifdef  __cplusplus
 }
