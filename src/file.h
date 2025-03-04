@@ -45,8 +45,8 @@ class file_t: locker {
     time_t   ctime;
     time_t   mtime;
     uint32_t flags;
-    pthread_mutex_t extraLocker = PTHREAD_MUTEX_INITIALIZER;
     std::map<uint32_t, block_t*> blocks;
+    pthread_mutex_t dropLocker = PTHREAD_MUTEX_INITIALIZER;
     std::vector<filekey> droped;
     int truncate_rlocked(off_t offset);
 public:

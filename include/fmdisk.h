@@ -14,7 +14,7 @@ int fm_prepare();
 
 int fm_statfs(struct statvfs* sf);
 
-int fm_download(const filekey& file, size_t startp, size_t len, buffstruct& bs);
+int fm_download(const filekey& file, off_t startp, size_t len, buffstruct& bs);
 
 //upload `file` in `fileat`, return key in `file`
 int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool overwrite);

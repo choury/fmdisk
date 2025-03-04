@@ -32,12 +32,14 @@ void test1(){
     l.unrlock();
     l.unwlock();
     cout<<"---------------"<<endl;
-    thread(lock_read, 1, &l).detach();
-    thread(lock_read, 2, &l).detach();
-    thread  wt1(lock_write, 1, &l);
-    thread  wt2(lock_write, 2, &l);
+    thread lt1(lock_read, 1, &l);
+    thread lt2(lock_read, 2, &l);
+    thread wt1(lock_write, 1, &l);
+    thread wt2(lock_write, 2, &l);
     wt1.join();
     wt2.join();
+    lt1.join();
+    lt2.join();
 }
 
 void lock_upgrade(int i, locker* l){
@@ -56,12 +58,12 @@ void test2(){
     cout<<"rlock in test2: "<<l.rlock()<<endl;
     thread t1(lock_read, 1, &l);
     thread t2(lock_write, 1, &l);
-    t1.detach();
     cout<<"upgrade in test2: "<<l.upgrade()<<endl;
     sleep(3);
     cout<<"unwlock in test2"<<endl;
     l.unwlock();
     t2.join();
+    t1.join();
 
     cout<<"---------------"<<endl;
     thread u1(lock_upgrade, 1, &l);

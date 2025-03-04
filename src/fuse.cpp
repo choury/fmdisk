@@ -5,11 +5,14 @@
 
 #include <errno.h>
 #include <string.h>
+#include <memory>
 
 
 int fm_fuse_prepare(){
     return cache_prepare();
 }
+
+std::unique_ptr<struct statvfs> fs = nullptr;
 
 void *fm_fuse_init(struct fuse_conn_info *conn){
 #ifndef __APPLE__
@@ -21,12 +24,22 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
 }
 
 void fm_fuse_destroy(void* root){
+    fs = nullptr;
     cache_destroy((entry_t*)root);
 }
 
 int fm_fuse_statfs(const char *path, struct statvfs *sf){
+    if(fs){
+        memcpy(sf, fs.get(), sizeof(struct statvfs));
+        return 0;
+    }
     entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    return root->statfs(path, sf);
+    auto ret = root->statfs(path, sf);
+    if(ret >= 0) {
+        fs = std::unique_ptr<struct statvfs>(new struct statvfs);
+        memcpy(fs.get(), sf, sizeof(struct statvfs));
+    }
+    return ret;
 }
 
 int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
@@ -81,6 +94,7 @@ int fm_fuse_mkdir(const char *path, mode_t mode){
     if(entry->mkdir(basename(path)) == nullptr){
         return -errno;
     }
+    fs = nullptr;
     return 0;
 }
 
@@ -90,6 +104,7 @@ int fm_fuse_unlink(const char *path){
     if(parent == nullptr){
         return -ENOENT;
     }
+    fs = nullptr;
     return parent->unlink(basename(path));
 }
 
@@ -99,6 +114,7 @@ int fm_fuse_rmdir(const char *path){
     if(parent == nullptr){
         return -ENOENT;
     }
+    fs = nullptr;
     return parent->rmdir(basename(path));
 }
 
@@ -112,6 +128,7 @@ int fm_fuse_rename(const char *oldname, const char *newname){
     if(newparent == nullptr){
         return -ENOENT;
     }
+    fs = nullptr;
     return parent->moveto(newparent, basename(oldname), basename(newname));
 }
 
@@ -125,6 +142,7 @@ int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
     }
     fi->fh = (uint64_t)nentry;
     fi->direct_io = 1;
+    fs = nullptr;
     return nentry->open();
 }
 
@@ -145,6 +163,7 @@ int fm_fuse_truncate(const char* path, off_t offset){
     if(entry == nullptr){
         return -ENOENT;
     }
+    fs = nullptr;
     return entry->truncate(offset);
 }
 
@@ -171,11 +190,13 @@ int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse
 
 int fm_fuse_ftruncate(const char*, off_t offset, struct fuse_file_info *fi){
     entry_t* entry = (entry_t*)fi->fh;
+    fs = nullptr;
     return entry->truncate(offset);
 }
 
 int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
     entry_t* entry = (entry_t*)fi->fh;
+    fs = nullptr;
     return entry->write(buf, offset, size);
 }
 

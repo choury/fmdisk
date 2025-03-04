@@ -4,7 +4,7 @@ int fm_prepare(){
     return 0;
 }
 
-int fm_download(const filekey&, size_t, size_t, buffstruct&){
+int fm_download(const filekey&, off_t, size_t, buffstruct&){
     return 0;
 }
 

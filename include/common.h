@@ -4,7 +4,7 @@
 #define BLOCKLEN       (uint64_t)0x100000          //1M,缓存分块大小 必须为4K的倍数
 #define INLINE_DLEN    (uint64_t)0x1000            //inline data limit (4K)
 #define UPLOADTHREADS  10
-#define DOWNLOADTHREADS    5
+#define DOWNLOADTHREADS    20
 #define CHECKTHREADS   20
 
 #define METANAME      "meta.json"

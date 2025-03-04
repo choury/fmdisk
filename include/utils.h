@@ -7,15 +7,25 @@
 #include <vector>
 
 class buffstruct {
-    bool const_buff = false;
-public:
     size_t offset = 0;
-    char *buf;
-    size_t len;
-    buffstruct(char* buf = nullptr, size_t len = 0);
-    buffstruct(const char* buf, size_t len);
+    char *buf = nullptr;
+    const char* cbuf = nullptr;
+    size_t cap;
     void expand(size_t size);
+public:
+    buffstruct();
+    buffstruct(char* buf, size_t len);
+    buffstruct(const char* buf, size_t len);
     ~buffstruct();
+
+    const char* data() const { return cbuf ? cbuf : buf; }
+    char* mutable_data() { return buf; }
+    size_t size() const { return offset; }
+    size_t capacity() const { return cap; }
+    void clear() { offset = 0; }
+
+    static size_t savetobuff(char* buffer, size_t size, size_t nmemb, void *user_p);
+    static size_t readfrombuff(char* buffer, size_t size, size_t nmemb, void *user_p);
 };
 
 struct filekey {
@@ -70,8 +80,8 @@ bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);
 std::string replaceAll(const std::string &s, const std::string &search, const std::string &replace);
 
-size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p);
-size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p);
+//size_t savetobuff(char* buffer, size_t size, size_t nmemb, void *user_p);
+//size_t readfrombuff(char* buffer, size_t size, size_t nmemb, void *user_p);
 
 filemeta initfilemeta(const filekey& key);
 

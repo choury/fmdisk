@@ -12,7 +12,7 @@
 #include <list>
 
 sem_t dirty_sem;
-std::list<block_t*> dblocks;
+std::list<block_t*> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
@@ -86,8 +86,8 @@ void block_t::pull(block_t* b) {
     if(HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs))){
         throw "fm_download IO Error";
     }
-    assert(bs.offset <= (size_t)b->size);
-    if(b->file->putbuffer(bs.buf, b->offset, bs.offset) >= 0){
+    assert(bs.size() <= (size_t)b->size);
+    if(b->file->putbuffer(bs.mutable_data(), b->offset, bs.size()) >= 0){
         b->flags |= BLOCK_SYNC;
     }
 }
@@ -147,6 +147,7 @@ void block_t::makedirty() {
     flags |=  BLOCK_DIRTY;
     unwlock();
     pthread_mutex_lock(&dblocks_lock);
+    // 挪到队尾
     bool found = false;
     for(auto i = dblocks.begin(); i != dblocks.end(); i++ ){
         if(*i == this){
@@ -164,6 +165,7 @@ void block_t::makedirty() {
 
 void block_t::sync(){
     pthread_mutex_lock(&dblocks_lock);
+    // dblocks 是异步搞的，所以挪出来同步搞
     for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
             i = dblocks.erase(i);
@@ -204,9 +206,9 @@ static int tempfile() {
     if ((fd = mkstemp(tmpfilename)) != -1) {
         /*Unlink the temp file.*/
         unlink(tmpfilename);
-    }else{
-	fprintf(stderr, "mkstem failed: %s", strerror(errno));
-	assert(0);
+    } else {
+        fprintf(stderr, "mkstem failed: %s", strerror(errno));
+        abort();
     }
     return fd;
 }
@@ -277,7 +279,7 @@ file_t::~file_t() {
     if(inline_data){
         delete[] inline_data;
     }
-    pthread_mutex_destroy(&extraLocker);
+    pthread_mutex_destroy(&dropLocker);
 }
 
 int file_t::open(){
@@ -306,7 +308,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i< endc + DOWNLOADTHREADS && i<= GetBlkNo(this->size, blksize); i++){
+    for(size_t i = startc; i< endc + DOWNLOADTHREADS/ 2 && i<= GetBlkNo(this->size, blksize); i++){
         blocks[i]->prefetch(false);
     }
     for(size_t i = startc; i<= endc; i++ ){
@@ -492,7 +494,7 @@ void file_t::trim(const filekey& file) {
     if(name == "" || name == "x"){
         return;
     }
-    auto_lock(&extraLocker);
+    auto_lock(&dropLocker);
     droped.emplace_back(file);
 }
 
@@ -501,7 +503,7 @@ void file_t::post_sync(const filekey& file) {
     private_key = file.private_key;
     flags &= ~FILE_DIRTY_F;
     unwlock();
-    auto_lock(&extraLocker);
+    auto_lock(&dropLocker);
     if(!droped.empty()){
         fm_batchdelete(droped);
         droped.clear();

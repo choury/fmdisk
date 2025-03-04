@@ -245,44 +245,38 @@ filemeta initfilemeta(const filekey& key){
 }
 
 
-buffstruct::buffstruct(char* buf, size_t len):buf(buf),len(len) {
-    offset = 0;
-    if(this->buf == nullptr){
-        this->buf = (char*)calloc(1024, 1);
-        len = 1024;
-    }else{
-        assert(len);
-    }
+buffstruct::buffstruct(): buf((char*)calloc(1024, 1)), cap(1024) {
 }
 
-buffstruct::buffstruct(const char* buf, size_t len):buf((char *)buf), len(len) {
-    const_buff = true;
+buffstruct::buffstruct(char* buf, size_t len):buf(buf),cap(len) {
+    assert(buf != nullptr && len > 0);
+}
+
+buffstruct::buffstruct(const char* buf, size_t len):cbuf(buf), cap(len) {
+    assert(cbuf != nullptr && len > 0);
 }
 
 
 void buffstruct::expand(size_t size){
-    if(const_buff){
+    if(cbuf){
         assert(0);
         return;
     }
-    if(offset + size >= len){
-        len = ((offset + size)&0xfffffffffc00)+1024;
-        buf = (char*)realloc(buf, len);
-        memset(buf + offset, 0, len - offset);
+    if(offset + size >= cap){
+        cap = ((offset + size)&0xfffffffffc00)+1024;
+        buf = (char*)realloc(buf, cap);
+        memset(buf + offset, 0, cap - offset);
     }
 }
 
 buffstruct::~buffstruct() {
-    if(!const_buff && buf){
-        free(buf);
-    }
+    free(buf);
 }
 
 
 
 //顾名思义，将服务器传回的数据写到buff中
-size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
+size_t buffstruct::savetobuff(char* buffer, size_t size, size_t nmemb, void *user_p) {
     buffstruct *bs = (buffstruct *) user_p;
     size_t len = size * nmemb;
     bs->expand(len);
@@ -292,11 +286,14 @@ size_t savetobuff(void *buffer, size_t size, size_t nmemb, void *user_p)
 }
 
 //你猜
-size_t readfrombuff(void *buffer, size_t size, size_t nmemb, void *user_p)
-{
+size_t buffstruct::readfrombuff(char* buffer, size_t size, size_t nmemb, void *user_p) {
     buffstruct *bs = (buffstruct *) user_p;
-    size_t len = std::min(size * nmemb, (bs->len) - (size_t)bs->offset);
-    memcpy(buffer, bs->buf + bs->offset, len);
+    size_t len = std::min(size * nmemb, (bs->cap) - (size_t)bs->offset);
+    if(bs->cbuf) {
+        memcpy(buffer, bs->cbuf + bs->offset, len);
+    }else {
+        memcpy(buffer, bs->buf + bs->offset, len);
+    }
     bs->offset += len;
     return len;
 }
@@ -343,7 +340,7 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
     json_object* jblocks;
     if(json_object_object_get_ex(jobj, "blocks", &jblocks)){
         fblocks.reserve(json_object_array_length(jblocks));
-        for(int i=0; i < json_object_array_length(jblocks); i++){
+        for(size_t i=0; i < json_object_array_length(jblocks); i++){
             json_object *jblock = json_object_array_get_idx(jblocks, i);
             json_object *jname;
             ret = json_object_object_get_ex(jblock, "name", &jname);
@@ -360,7 +357,7 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
     json_object *jblock_list;
     if(json_object_object_get_ex(jobj, "block_list", &jblock_list)){
         fblocks.reserve(json_object_array_length(jblock_list));
-        for(int i=0; i < json_object_array_length(jblock_list); i++){
+        for(size_t i=0; i < json_object_array_length(jblock_list); i++){
             json_object *block = json_object_array_get_idx(jblock_list, i);
             const char* name = json_object_get_string(block);
             fblocks.emplace_back(filekey{name, 0});
@@ -388,7 +385,7 @@ int download_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& f
     if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
         return ret;
     }
-    std::string json_str = std::string(bs.buf, bs.offset);
+    std::string json_str = std::string(bs.data(), bs.size());
     json_object *json_get = json_tokener_parse(json_str.c_str());
     if(json_get ==  nullptr){
         throw "Json parse error";

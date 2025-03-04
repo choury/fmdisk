@@ -94,7 +94,7 @@ void save_file_to_db(const string& path, const filemeta& meta, const std::vector
 
 static int files_callback(void *data, int columns, char **field, char **colum){
     auto param = (std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>*)data;
-    assert(columns = 2);
+    assert(columns == 2);
     for(int i = 0; i < columns; i++){
         if(strcmp(colum[i], "private_key") == 0){
             param->first.get().key.private_key = fm_get_private_key(field[i]);

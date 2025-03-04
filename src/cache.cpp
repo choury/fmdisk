@@ -559,7 +559,7 @@ int entry_t::drop_mem_cache(){
 }
 
 int entry_t::drop_disk_cache(){
-    auto_rlock();
+    auto_rlock(this);
     string path = getkey().path;
     if(S_ISREG(mode)){
         return delete_file_from_db(path);
