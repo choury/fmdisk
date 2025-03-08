@@ -25,10 +25,11 @@ class entry_t: locker {
         dir_t* dir = nullptr;
         file_t* file;
     };
-//    time_t ctime = 0;
+    time_t mtime = 0;
+    time_t ctime = 0;
     uint32_t flags = 0;
     uint32_t opened = 0;
-    void erase_child_rlocked(entry_t* child);
+    void erase_child_wlocked(entry_t* child);
     string getcwd();
     void pull_wlocked();
     static void pull(entry_t* entry);
@@ -38,6 +39,7 @@ public:
     entry_t(entry_t* parent, const filemeta meta);
     virtual ~entry_t();
     filekey getkey();
+    std::vector<filekey> getkeys();
     filemeta getmeta();
     entry_t* find(string path);
     entry_t* create(string name);
@@ -47,7 +49,7 @@ public:
     int read(void* buff, off_t offset, size_t size);
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
-    int sync(int datasync);
+    int sync(int dataonly);
     int flush();
     int release();
     int moveto(entry_t* newparent, string oldname, string newname);

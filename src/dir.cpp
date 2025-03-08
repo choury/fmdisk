@@ -6,9 +6,7 @@
 #include <string.h>
 #include <assert.h>
 
-dir_t::dir_t(entry_t* entry, entry_t* parent, const filemeta& meta):
-    ctime(meta.ctime),
-    mtime(meta.mtime)
+dir_t::dir_t(entry_t* entry, entry_t* parent, const filemeta& meta): length(meta.size)
 {
     entrys.emplace(".", entry);
     entrys.emplace("..", parent ? parent: entry);
@@ -83,7 +81,6 @@ entry_t* dir_t::insert(string name, entry_t* entry){
     auto_wlock(this);
     assert(entrys.count(name) == 0);
     assert(entrys.size() < MAXFILE);
-    mtime = time(0);
     entry->dump_to_disk_cache();
     return entrys[name] = entry;
 }
@@ -95,23 +92,9 @@ void dir_t::erase(std::string name) {
     delete_entry_from_db(path);
     delete_entry_prefix_from_db(path);
     entrys.erase(name);
-    mtime = time(0);
 }
 
-void dir_t::setutime(time_t utime[2]) {
-    auto_wlock(this);
-    this->ctime = utime[0];
-    this->mtime = utime[1];
-}
-
-
-void dir_t::getutime(time_t utime[2]) {
-    auto_rlock(this);
-    utime[0] = this->ctime;
-    utime[1] = this->mtime;
-}
-
-size_t dir_t::size() {
+size_t dir_t::children() {
     auto_rlock(this);
     return entrys.size();
 }

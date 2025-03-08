@@ -49,6 +49,7 @@ int cache_prepare() {
     if(ret){
         return ret;
     }
+    assert(opt.block_len > INLINE_DLEN);
     upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
     dpool = creatpool(DOWNLOADTHREADS);
     addtask(upool, (taskfunc)writeback_thread, 0, 0);
@@ -78,6 +79,8 @@ entry_t::entry_t(entry_t* parent, filemeta meta):
     parent(parent),
     fk(basename(meta.key)),
     mode(meta.mode),
+    mtime(meta.mtime),
+    ctime(meta.ctime),
     flags(meta.flags)
 {
     assert((flags & ENTRY_INITED_F) == 0);
@@ -147,6 +150,20 @@ filekey entry_t::getkey() {
     return filekey{path, fk.private_key};
 }
 
+std::vector<filekey> entry_t::getkeys() {
+    auto_rlock(this);
+    std::vector<filekey> flist = file->getfblocks();
+    string path;
+    if(flags & ENTRY_CHUNCED_F){
+        path = encodepath(getcwd());
+    }else{
+        path = getcwd();
+    }
+    flist.emplace_back(filekey{path, fk.private_key});
+    flist.emplace_back(file->getkey());
+    return flist;
+}
+
 string entry_t::getcwd() {
     auto_rlock(this);
     if(parent == nullptr){
@@ -158,6 +175,7 @@ string entry_t::getcwd() {
 void entry_t::pull_wlocked(){
     const filekey& key = getkey();
     filemeta meta = initfilemeta(key);
+    meta.mode = this->mode;
     assert(file == nullptr);
     std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
@@ -183,6 +201,8 @@ void entry_t::pull_wlocked(){
             file = new file_t(this, meta);
         }
     }
+    ctime = meta.ctime;
+    mtime = meta.mtime;
     flags |= ENTRY_INITED_F;
     flags &= ~META_KEY_ONLY_F;
 }
@@ -218,18 +238,16 @@ filemeta entry_t::getmeta() {
         meta.inline_data = fmeta.inline_data;
         meta.blksize = fmeta.blksize;
         meta.blocks = fmeta.blocks;
-        meta.ctime = fmeta.ctime;
-        meta.mtime = fmeta.mtime;
+        meta.ctime = ctime;
+        meta.mtime = mtime;
     }else{
-        meta.size = 0;
+        meta.size = dir->size();
         meta.mode = S_IFDIR | (mode & 0777);
         meta.inline_data = 0;
         meta.blksize =  0;
         meta.blocks = 0;
-        time_t utime[2];
-        dir->getutime(utime);
-        meta.ctime = utime[0];
-        meta.mtime = utime[1];
+        meta.ctime = ctime;
+        meta.mtime = mtime;
     }
     return meta;
 }
@@ -253,8 +271,8 @@ entry_t* entry_t::find(string path){
 }
 
 entry_t* entry_t::create(string name){
-    auto_rlock(this);
-    if(dir->size() >= MAXFILE){
+    auto_wlock(this);
+    if(dir->children() >= MAXFILE){
         errno = ENOSPC;
         return nullptr;
     }
@@ -263,22 +281,22 @@ entry_t* entry_t::create(string name){
     if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
         return nullptr;
     }
-
+    this->mtime = time(NULL);
     meta.ctime = time(NULL);
     meta.mtime = time(NULL);
     meta.flags =  ENTRY_CHUNCED_F | ENTRY_CREATE_F | FILE_ENCODE_F | FILE_DIRTY_F ;
-    meta.blksize = BLOCKLEN;
+    meta.blksize = opt.block_len;
     meta.mode = S_IFREG | 0644;
     return dir->insert(name, new entry_t(this, meta));
 }
 
 entry_t* entry_t::mkdir(string name) {
-    auto_rlock(this);
     if(endwith(name, ".def")){
         errno = EINVAL;
         return nullptr;
     }
-    if(dir->size() >= MAXFILE){
+    auto_wlock(this);
+    if(dir->children() >= MAXFILE){
         errno = ENOSPC;
         return nullptr;
     }
@@ -287,7 +305,7 @@ entry_t* entry_t::mkdir(string name) {
     if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
         return nullptr;
     }
-
+    this->mtime = time(NULL);
     meta.ctime = time(NULL);
     meta.mtime = time(NULL);
     meta.flags = ENTRY_CREATE_F;
@@ -324,7 +342,7 @@ int entry_t::read(void* buff, off_t offset, size_t size) {
 }
 
 int entry_t::truncate(off_t offset){
-    auto_rlock(this);
+    auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
@@ -333,12 +351,13 @@ int entry_t::truncate(off_t offset){
     if(ret < 0){
         return -errno;
     }
+    this->mtime = time(NULL);
     return ret;
 }
 
 
 int entry_t::write(const void* buff, off_t offset, size_t size) {
-    auto_rlock(this);
+    auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
@@ -347,27 +366,34 @@ int entry_t::write(const void* buff, off_t offset, size_t size) {
     if(ret < 0){
         return -errno;
     }
+    this->mtime = time(NULL);
     return ret;
 }
 
 
-int entry_t::sync(int datasync){
+int entry_t::sync(int dataonly){
     auto_rlock(this);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return 0;
     }
-    assert(S_ISREG(mode));
-    file->sync();
-    filemeta meta = getmeta();
-    if((!datasync && (meta.flags & FILE_DIRTY_F))){
-        const filekey& key = getkey();
-        meta.key = file->getkey();
-        std::vector<filekey> fblocks = file->getfblocks();
-        if(upload_meta(key, meta, fblocks)){
-            throw "upload_meta IO Error";
+    if(S_ISREG(mode)){
+        file->syncfblocks();
+        filemeta meta = getmeta();
+        if(!dataonly && (meta.flags & FILE_DIRTY_F)){
+            const filekey& key = getkey();
+            meta.key = file->getkey();
+            std::vector<filekey> fblocks = file->getfblocks();
+            if(upload_meta(key, meta, fblocks)){
+                throw "upload_meta IO Error";
+            }
+            save_file_to_db(key.path, meta, fblocks);
+            file->post_sync(meta.key);
         }
-        save_file_to_db(key.path, meta, fblocks);
-        file->post_sync(meta.key);
+    } else {
+        struct timespec tv[2];
+        tv[0].tv_sec = mtime;
+        tv[1].tv_sec = ctime;
+        HANDLE_EAGAIN(fm_utime(getkey(), tv));
     }
     return 0;
 }
@@ -391,7 +417,7 @@ int entry_t::release() {
     return 0;
 }
 
-int entry_t::utime(const struct timespec  tv[2]) {
+int entry_t::utime(const struct timespec tv[2]) {
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
@@ -402,31 +428,25 @@ int entry_t::utime(const struct timespec  tv[2]) {
         ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
     }
     if(ret == 0){
-        time_t utime[2];
-        utime[0] = tv[0].tv_sec;
-        utime[1] = tv[1].tv_sec;
-        if(S_ISDIR(mode)){
-            dir->setutime(utime);
-        }else{
-            file->setutime(utime);
-        }
+        mtime = tv[0].tv_sec;
+        ctime = tv[1].tv_sec;
         sync(0);
     }
     return ret;
 }
 
 int entry_t::moveto(entry_t* newparent, string oldname, string newname) {
-    auto_rlocker __1(this);
+    auto_wlocker __1(this);
     assert(S_ISDIR(this->mode));
     entry_t* entry = this->dir->find(oldname);
     if(entry == nullptr){
         return -ENOENT;
     }
-    auto_rlocker __2(newparent);
+    auto_wlocker __2(newparent);
     assert(S_ISDIR(newparent->mode));
     newparent->unlink(newname);
 
-    if(newparent->dir->size() >= MAXFILE){
+    if(newparent->dir->children() >= MAXFILE){
         return -ENOSPC;
     }
 
@@ -437,14 +457,16 @@ int entry_t::moveto(entry_t* newparent, string oldname, string newname) {
         return ret;
     }
 
+    this->mtime = time(NULL);
     this->dir->erase(oldname);
     entry->parent = newparent;
     entry->fk = filekey{newname, newfile.private_key};
     newparent->dir->insert(newname, entry);
+    newparent->mtime = time(NULL);
     return 0;
 }
 
-void entry_t::erase_child_rlocked(entry_t* child) {
+void entry_t::erase_child_wlocked(entry_t* child) {
     assert(S_ISDIR(mode));
     dir->erase(child->fk.path);
     child->upgrade();
@@ -461,7 +483,7 @@ void entry_t::erase_child_rlocked(entry_t* child) {
 }
 
 int entry_t::unlink(const string& name) {
-    auto_rlock(this);
+    auto_wlock(this);
     assert(S_ISDIR(mode));
     entry_t* entry = this->dir->find(name);
     if(entry == nullptr){
@@ -473,17 +495,23 @@ int entry_t::unlink(const string& name) {
         entry->unrlock();
         return -EISDIR;
     }
-    int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
+    int ret;
+    if(opt.flags & FM_DELETE_NEED_PURGE) {
+        ret = HANDLE_EAGAIN(fm_batchdelete(entry->getkeys()));
+    }else{
+        ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
+    }
     if(ret && errno != ENOENT){
         entry->unrlock();
         return ret;
     }
-    this->erase_child_rlocked(entry);
+    this->erase_child_wlocked(entry);
+    this->mtime = time(NULL);
     return 0;
 }
 
 int entry_t::rmdir(const string& name) {
-    auto_rlock(this);
+    auto_wlock(this);
     assert(S_ISDIR(mode));
     entry_t* entry = this->dir->find(name);
     if(entry == nullptr){
@@ -507,7 +535,8 @@ int entry_t::rmdir(const string& name) {
         entry->unrlock();
         return ret;
     }
-    this->erase_child_rlocked(entry);
+    this->erase_child_wlocked(entry);
+    this->mtime = time(NULL);
     return 0;
 }
 

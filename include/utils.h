@@ -61,6 +61,7 @@ std::string URLEncode(const std::string& str);
 std::string URLDecode(const std::string& str);
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);
+extern "C" size_t Base64En(const char *src, size_t len, char *dst);
 
 void xorcode(void* buf, size_t offset, size_t len, const char* key);
 

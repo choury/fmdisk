@@ -42,8 +42,6 @@ class file_t: locker {
     char* inline_data = nullptr;
     size_t size;
     blksize_t blksize;
-    time_t   ctime;
-    time_t   mtime;
     uint32_t flags;
     std::map<uint32_t, block_t*> blocks;
     pthread_mutex_t dropLocker = PTHREAD_MUTEX_INITIALIZER;
@@ -61,13 +59,12 @@ public:
     filemeta getmeta();
     int putbuffer(void* buffer, off_t offset, size_t size);
     int getbuffer(void* buffer, off_t offset, size_t size);
-    void setutime(time_t utime[2]);
 
     int open();
     int read(void* buff, off_t offset, size_t size);
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
-    int sync();
+    int syncfblocks();
     std::vector<filekey> getfblocks();
     int release();
     void trim(const filekey& fk);

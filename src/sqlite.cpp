@@ -15,7 +15,7 @@ using std::make_pair;
 using std::reference_wrapper;
 
 int sqlinit(){
-    string cachefile = pathjoin(fm_getcachepath(), "cache.db");
+    string cachefile = pathjoin(opt.cache_dir, "cache.db");
     struct stat st;
     if(stat(cachefile.c_str(), &st) == 0 || errno == ENOENT){
         bool failed = false;

@@ -10,8 +10,7 @@ class entry_t;
 
 class dir_t: locker {
     uint32_t flags = 0;
-    time_t ctime;
-    time_t mtime;
+    size_t length;
     std::map<string, entry_t*> entrys;
     void pull_wlocked();
 public:
@@ -21,9 +20,10 @@ public:
     const std::map<string, entry_t*>& get_entrys();
     entry_t* insert(std::string name, entry_t* entry);
     void erase(std::string name);
-    void setutime(time_t utime[2]);
-    void getutime(time_t utime[2]);
-    size_t size();
+    size_t children();
+    size_t size() {
+        return length;
+    }
     void dump_to_disk_cache();
     int drop_mem_cache();
 };

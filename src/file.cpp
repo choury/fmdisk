@@ -15,7 +15,7 @@ sem_t dirty_sem;
 std::list<block_t*> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
+//static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
 void writeback_thread(){
     sem_init(&dirty_sem, 0, UPLOADTHREADS/2);
@@ -72,7 +72,11 @@ block_t::~block_t() {
 
 filekey block_t::getkey(){
     filekey key = file->getDirkey();
-    return filekey{pathjoin(key.path, fk.path), fk.private_key};
+    if(fk.path.empty()) {
+        return filekey{key.path, fk.private_key};
+    } else {
+        return filekey{pathjoin(key.path, fk.path), fk.private_key};
+    }
 }
 
 void block_t::pull(block_t* b) {
@@ -105,7 +109,7 @@ void block_t::push(block_t* b) {
     b->file->trim(b->getkey());
     if(len){
         //It must be chunk file, because native file can't be written
-        filekey file{std::to_string(b->no), 0};
+        filekey file{std::to_string(b->no) + '_' + std::to_string(time(nullptr)), 0};
 retry:
         int ret = HANDLE_EAGAIN(fm_upload(b->file->getDirkey(), file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
@@ -202,7 +206,7 @@ int block_t::staled(){
 static int tempfile() {
     int fd;
     char tmpfilename[PATHLEN];
-    snprintf(tmpfilename, sizeof(tmpfilename), "%s/.fm_fuse_XXXXXX", fm_getcachepath());
+    snprintf(tmpfilename, sizeof(tmpfilename), "%s/.fm_fuse_XXXXXX", opt.cache_dir);
     if ((fd = mkstemp(tmpfilename)) != -1) {
         /*Unlink the temp file.*/
         unlink(tmpfilename);
@@ -226,8 +230,6 @@ file_t::file_t(entry_t *entry, const filemeta& meta):
     private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
-    ctime(meta.ctime),
-    mtime(meta.mtime),
     flags(meta.flags)
 {
     if(flags & ENTRY_CREATE_F){
@@ -250,8 +252,6 @@ file_t::file_t(entry_t* entry, const filemeta& meta, std::vector<filekey> fblock
     private_key(meta.key.private_key),
     size(meta.size),
     blksize(meta.blksize),
-    ctime(meta.ctime),
-    mtime(meta.mtime),
     flags(meta.flags)
 {
     flags |=  ENTRY_CHUNCED_F;
@@ -352,7 +352,6 @@ int file_t::truncate_rlocked(off_t offset){
     if(size == 0 && inline_data == nullptr){
         inline_data = new char[INLINE_DLEN];
     }
-    mtime = time(0);
     flags |= FILE_DIRTY_F;
     assert(fd >= 0);
     return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
@@ -386,14 +385,13 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         }
         __r.upgrade();
     }
-    mtime = time(0);
     flags |= FILE_DIRTY_F;
     assert(fd >= 0);
     return pwrite(fd, buff, size, offset);
 }
 
 
-int file_t::sync(){
+int file_t::syncfblocks(){
     auto_rlock(this);
     for(auto i: blocks){
         i.second->sync();
@@ -443,7 +441,7 @@ int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
         return 0;
     }
     if(flags & FILE_ENCODE_F){
-        xorcode(buffer, offset, ret, fm_getsecret());
+        xorcode(buffer, offset, ret, opt.secret);
     }
     return ret;
 }
@@ -454,7 +452,7 @@ int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
         return -1;
     }
     if(flags & FILE_ENCODE_F){
-        xorcode(buffer, offset, size, fm_getsecret());
+        xorcode(buffer, offset, size, opt.secret);
     }
     return TEMP_FAILURE_RETRY(pwrite(fd, buffer, size, offset));
 }
@@ -476,8 +474,6 @@ filemeta file_t::getmeta() {
     meta.flags = flags;
     meta.size = size;
     meta.blksize = blksize;
-    meta.ctime = ctime;
-    meta.mtime = mtime;
     meta.blocks = 1; //at least for meta.json
     for(auto i: blocks){
         if(i.second->zero()){
@@ -505,15 +501,7 @@ void file_t::post_sync(const filekey& file) {
     unwlock();
     auto_lock(&dropLocker);
     if(!droped.empty()){
-        fm_batchdelete(droped);
+        fm_batchdelete(std::move(droped));
         droped.clear();
     }
-}
-
-
-void file_t::setutime(time_t utime[2]) {
-    auto_wlock(this);
-    flags |= FILE_DIRTY_F;
-    this->ctime = utime[0];
-    this->mtime = utime[1];
 }

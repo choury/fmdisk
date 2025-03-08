@@ -10,6 +10,7 @@ struct fuse_operations fm_oper = {
     .opendir    = fm_fuse_opendir,
     .readdir    = fm_fuse_readdir,
     .releasedir = fm_fuse_releasedir,
+    .fsyncdir   = fm_fuse_fsyncdir,
     .mkdir      = fm_fuse_mkdir,
     .unlink     = fm_fuse_unlink,
     .rmdir      = fm_fuse_rmdir,

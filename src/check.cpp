@@ -14,6 +14,7 @@
 
 using namespace std;
 
+struct fmoption opt;
 static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
@@ -201,7 +202,7 @@ void checkchunk(filekey* file) {
         }
     }
     if (!ftrim.empty()) {
-        int ret = HANDLE_EAGAIN(fm_batchdelete(ftrim));
+        int ret = HANDLE_EAGAIN(fm_batchdelete(std::move(ftrim)));
         if (ret != 0) {
             cerr<<lock<< "delete lagecy block in: "<<file->path<<" failed"<<endl<<unlock;
         }
@@ -267,11 +268,16 @@ int main(int argc, char **argv) {
 
     char ch;
     bool isfile = false;
-    while ((ch = getopt(argc, argv, "evfrd")) != -1)
+    int concurrent =  CHECKTHREADS;
+    while ((ch = getopt(argc, argv, "evfrdc:")) != -1)
         switch (ch) {
         case 'e':
             cout<< "treat it as file"<<endl;
             isfile = true;
+        case 'c':
+            cout<< "concurrent: "<<optarg<<endl;
+            concurrent = atoi(optarg);
+            break;
         case 'v':
             cout << "verbose mode" << endl;
             verbose = true;
@@ -298,7 +304,7 @@ int main(int argc, char **argv) {
         path = "/";
     }
     cout << "will check path: " << path << endl;
-    pool = creatpool(CHECKTHREADS);
+    pool = creatpool(concurrent);
     filekey* file = nullptr;
     if(isfile){
         file = getpath(encodepath(path));

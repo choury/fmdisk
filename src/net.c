@@ -8,7 +8,7 @@
 
 #include "net.h"
 
-int(*errorlog)( const char *__restrict fmt, ... );
+//int(*errorlog)( const char *__restrict fmt, ... );
 
 //用来存放已有的CURL的链表
 struct connect_data{
@@ -163,10 +163,28 @@ static void releasecurl(CURL *curl){
     pthread_mutex_unlock(&lockcon);
 }
 
+const char* getMethod(const Http *r){
+    switch(r->method){
+    case head:
+        return "HEAD";
+    case get:
+        return "GET";
+    case post:
+        return "POST";
+    case put:
+        return "PUT";
+    case patch:
+        return "PATCH";
+    case Delete:
+        return "DELETE";
+    default:
+        return "UNKNOW";
+    }
+}
+
 CURLcode request(Http *r){
 //    errorlog("request: %s\n", r->url);
 
-    struct curl_slist *headers = NULL; /* init to NULL is important */
     curl_mime *mime = NULL;
 
     curl_easy_setopt(r->curl_handle, CURLOPT_URL, r->url);
@@ -204,23 +222,24 @@ CURLcode request(Http *r){
         }
         char bearer[1024];
         sprintf(bearer, "Authorization: Bearer %s", r->token);
-        headers = curl_slist_append(headers, bearer);
+        r->headers = curl_slist_append(r->headers, bearer);
     }
 
     switch(r->method){
     case head:
-        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, "HEAD");
+        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, getMethod(r));
         curl_easy_setopt(r->curl_handle, CURLOPT_NOBODY, 1);
         break;
 
     case Delete:
-        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, getMethod(r));
     case get:
         curl_easy_setopt(r->curl_handle,CURLOPT_HTTPGET,1);
         break;
 
+    case put:
     case patch:
-        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, "PATCH");
+        curl_easy_setopt(r->curl_handle, CURLOPT_CUSTOMREQUEST, getMethod(r));
     case post:
         curl_easy_setopt(r->curl_handle, CURLOPT_POST, 1);
         curl_easy_setopt(r->curl_handle, CURLOPT_POSTFIELDSIZE, r->length);
@@ -246,14 +265,14 @@ CURLcode request(Http *r){
         break;
     }
     case post_related:
-        headers = curl_slist_append(headers, "Content-Type: multipart/related; boundary="BUNDARY);
+        r->headers = curl_slist_append(r->headers, "Content-Type: multipart/related; boundary="BUNDARY);
         break;
     case post_json:
-        headers = curl_slist_append(headers, "Content-Type: application/json");
+        r->headers = curl_slist_append(r->headers, "Content-Type: application/json");
         break;
     }
 
-    curl_easy_setopt(r->curl_handle, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(r->curl_handle, CURLOPT_HTTPHEADER, r->headers);
     CURLcode curl_code = curl_easy_perform(r->curl_handle);
     long http_code = 0;
     curl_easy_getinfo(r->curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
@@ -262,9 +281,6 @@ CURLcode request(Http *r){
     }
     if(mime){
         curl_mime_free(mime);
-    }
-    if(headers){
-        curl_slist_free_all(headers);
     }
     if(curl_code == CURLE_OK && (http_code >= 300 || http_code < 200)){
         return http_code;
@@ -290,12 +306,12 @@ Http *Httpinit(const char *url){
     hh->method = get;
     hh->posttype = none;
     hh->timeout = 60;
-    hh->token = NULL;
     return hh;
 }
 
 void Httpdestroy(Http *hh){
     releasecurl(hh->curl_handle);
+    curl_slist_free_all(hh->headers);
     free(hh);
 }
 

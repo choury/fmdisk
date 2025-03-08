@@ -1,15 +1,37 @@
 #include "fmdisk.h"
 
+#define BLOCKLEN       (uint64_t)0x100000          //1M,缓存分块大小 必须为4K的倍数
+
 int fm_prepare(){
+    opt.cache_dir = "/tmp";
+    opt.secret = "STUB_XXXXX";
+    opt.block_len = BLOCKLEN;
     return 0;
 }
 
-int fm_download(const filekey&, off_t, size_t, buffstruct&){
+int fm_statfs(struct statvfs* sf) {
     return 0;
+}
+
+int fm_mkdir(const filekey& fileat, struct filekey& file) {
+    errno = EACCES;
+    return -EACCES;
+}
+
+int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile) {
+    errno = EACCES;
+    return -EACCES;
+}
+
+
+int fm_download(const filekey&, off_t, size_t, buffstruct&){
+    errno = EACCES;
+    return -EACCES;
 }
 
 int fm_upload(const filekey&, filekey&, const char*, size_t, bool){
-    return 0;
+    errno = EACCES;
+    return -EACCES;
 }
 
 int fm_list(const filekey&, std::vector<struct filemeta>&){
@@ -17,19 +39,28 @@ int fm_list(const filekey&, std::vector<struct filemeta>&){
 }
 
 int fm_getattr(const filekey&, struct filemeta&){
-    return 0;
+    errno = EACCES;
+    return -EACCES;
 }
 
-int fm_getattrat(const filekey&, struct filekey&) {
+// 有些情况下，需要通过文件名获取 private key,就通过这个函数
+int fm_getattrat(const filekey& fileat, struct filekey& file) {
+    file.path = pathjoin(fileat.path, file.path);
     return 0;
 }
 
 
 int fm_delete(const filekey&){
-    return 0;
+    errno = EACCES;
+    return -EACCES;
 }
 
-int fm_batchdelete(std::vector<struct filekey> flist){
+int fm_utime(const filekey& file, const struct timespec  tv[2]) {
+    errno = EACCES;
+    return -EACCES;
+}
+
+int fm_batchdelete(std::vector<struct filekey>&& flist){
     for(auto i: flist){
         int ret = fm_delete(i);
         if(ret){
@@ -43,10 +74,6 @@ std::shared_ptr<void> fm_get_private_key(const char*){
     return std::shared_ptr<void>(nullptr, [](void*){});
 }
 
-std::string fm_private_key_tostring(std::shared_ptr<void>) {
+const char* fm_private_key_tostring(std::shared_ptr<void>) {
     return "";
-}
-
-const char* fm_getcachepath(){
-    return "/tmp";
 }

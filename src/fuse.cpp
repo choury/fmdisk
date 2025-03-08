@@ -7,12 +7,12 @@
 #include <string.h>
 #include <memory>
 
+std::unique_ptr<struct statvfs> fs = nullptr;
+struct fmoption opt;
 
 int fm_fuse_prepare(){
     return cache_prepare();
 }
-
-std::unique_ptr<struct statvfs> fs = nullptr;
 
 void *fm_fuse_init(struct fuse_conn_info *conn){
 #ifndef __APPLE__
@@ -174,8 +174,9 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     assert((meta.flags & META_KEY_ONLY_F) == 0);
     st->st_mode = meta.mode;
     st->st_size = meta.size;
-    st->st_blksize = meta.blksize;
-    st->st_blocks = (meta.blocks * meta.blksize)/512;
+    st->st_blksize = 4096;
+    st->st_nlink = 1;
+    st->st_blocks = meta.size/4096 + 1;
     st->st_ctime = meta.ctime;
     st->st_mtime = meta.mtime;
     st->st_uid = getuid();
@@ -200,9 +201,9 @@ int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, stru
     return entry->write(buf, offset, size);
 }
 
-int fm_fuse_fsync(const char *, int datasync, struct fuse_file_info *fi){
+int fm_fuse_fsync(const char *, int dataonly, struct fuse_file_info *fi){
     entry_t* entry = (entry_t*)fi->fh;
-    return entry->sync(datasync);
+    return entry->sync(dataonly);
 }
 
 int fm_fuse_flush(const char*, struct fuse_file_info *fi){
@@ -213,6 +214,12 @@ int fm_fuse_flush(const char*, struct fuse_file_info *fi){
 int fm_fuse_release(const char *, struct fuse_file_info *fi){
     entry_t* entry = (entry_t*)fi->fh;
     return entry->release();
+}
+
+
+int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {
+    entry_t* entry = (entry_t*)fi->fh;
+    return entry->sync(dataonly);
 }
 
 int fm_fuse_utimens(const char *path, const struct timespec tv[2]){

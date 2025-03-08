@@ -23,6 +23,7 @@ int fm_fuse_getattr(const char *path, struct stat *st);
 int fm_fuse_mkdir(const char *path, mode_t mode);
 int fm_fuse_unlink(const char *path);
 int fm_fuse_rmdir(const char *path);
+int fm_fuse_fsyncdir(const char *path, int dataonly, struct fuse_file_info *fi);
 int fm_fuse_rename(const char *oldname, const char *newname);
 int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi);
 int fm_fuse_open(const char *path, struct fuse_file_info *fi);
@@ -31,7 +32,7 @@ int fm_fuse_fgetattr(const char* path, struct stat* st, struct fuse_file_info* f
 int fm_fuse_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 int fm_fuse_ftruncate(const char* path, off_t offset, struct fuse_file_info *fi);
 int fm_fuse_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
-int fm_fuse_fsync(const char *path, int datasync, struct fuse_file_info *fi);
+int fm_fuse_fsync(const char *path, int dataonly, struct fuse_file_info *fi);
 int fm_fuse_flush(const char *path, struct fuse_file_info *fi);
 int fm_fuse_release(const char *path, struct fuse_file_info *fi);
 int fm_fuse_utimens(const char *path, const struct timespec tv[2]);

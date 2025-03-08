@@ -71,30 +71,39 @@ string URLDecode(const string& str) {
     return result;
 }
 
-static const char *base64_endigs="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+static const char *base64_endigs_normal ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char *base64_endigs_mod ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-size_t Base64Encode(const char *s, size_t len, char *dst){
+static size_t Base64(const char* endigs, const char *s, size_t len, char *dst){
     size_t i=0,j=0;
     const unsigned char* src = (const unsigned char *)s;
     for(;i+2<len;i+=3){
-        dst[j++] = base64_endigs[src[i]>>2];
-        dst[j++] = base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
-        dst[j++] = base64_endigs[((src[i+1]<<2) & 0x3c) | src[i+2]>>6];
-        dst[j++] = base64_endigs[src[i+2] & 0x3f];
+        dst[j++] = endigs[src[i]>>2];
+        dst[j++] = endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
+        dst[j++] = endigs[((src[i+1]<<2) & 0x3c) | src[i+2]>>6];
+        dst[j++] = endigs[src[i+2] & 0x3f];
     }
     if(i == len-1){
-        dst[j++] = base64_endigs[src[i]>>2];
-        dst[j++] = base64_endigs[(src[i]<<4) & 0x30];
+        dst[j++] = endigs[src[i]>>2];
+        dst[j++] = endigs[(src[i]<<4) & 0x30];
         dst[j++] = '=';
         dst[j++] = '=';
     }else if(i == len-2){
-        dst[j++] = base64_endigs[src[i]>>2];
-        dst[j++] = base64_endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
-        dst[j++] = base64_endigs[(src[i+1]<<2) & 0x3c];
+        dst[j++] = endigs[src[i]>>2];
+        dst[j++] = endigs[((src[i]<<4) & 0x30) | src[i+1]>>4];
+        dst[j++] = endigs[(src[i+1]<<2) & 0x3c];
         dst[j++] = '=';
     }
     dst[j] = 0;
     return j;
+}
+
+size_t Base64Encode(const char *s, size_t len, char *dst){
+    return Base64(base64_endigs_mod, s, len, dst);
+}
+
+size_t Base64En(const char *s, size_t len, char *dst){
+    return Base64(base64_endigs_normal, s, len, dst);
 }
 
 static const char base64_dedigs[128] = 
@@ -423,7 +432,7 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
     for(auto block: fblocks){
         json_object *jblock = json_object_new_object();
         json_object_object_add(jblock, "name", json_object_new_string(block.path.c_str()));
-        json_object_object_add(jblock, "key", json_object_new_string(fm_private_key_tostring(block.private_key).c_str()));
+        json_object_object_add(jblock, "key", json_object_new_string(fm_private_key_tostring(block.private_key)));
         json_object_array_add(jblocks, jblock);
     }
 

@@ -34,20 +34,16 @@ int fm_mkdir(const filekey& fileat, struct filekey& file);
 int fm_delete(const filekey& file);
 
 //delete file in `flist`
-int fm_batchdelete(std::vector<struct filekey> flist);
+int fm_batchdelete(std::vector<struct filekey>&& flist);
 
 //move `file` at `oldat` to `newat` with new name of `newfile`, new key return in `newfile`
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
 //optional, return -EACCES if not supported.
-int fm_utime(const filekey& file, const struct timespec  tv[2]);
+int fm_utime(const filekey& file, const struct timespec tv[2]);
 
-std::string fm_private_key_tostring(std::shared_ptr<void> private_key);
+const char* fm_private_key_tostring(std::shared_ptr<void> private_key);
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
-
-const char* fm_getsecret();
-
-const char* fm_getcachepath();
 
 #define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \
