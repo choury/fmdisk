@@ -16,7 +16,8 @@
 extern "C" {
 #endif
 
-#define FM_DELETE_NEED_PURGE 1
+#define FM_DELETE_NEED_PURGE   1
+#define FM_DONOT_REQUIRE_MKDIR 2
 
 struct fmoption{
     const char* cache_dir;

@@ -224,6 +224,17 @@ void checkdir(filekey* file) {
     }
     delete_entry_prefix_from_db(file->path);
     for (auto f : flist) {
+        std::string path;
+        if(f.key.path[0] != '/') {
+            path = "/";
+            path += f.key.path;
+        } else{
+            path = f.key.path;
+        }
+        if(path[path.length() - 1] == '/') {
+            path.resize(path.size() - 1);
+        }
+        f.key.path = path;
         save_entry_to_db(*file, f);
         if (S_ISREG(f.mode)) {
             if (verbose) {

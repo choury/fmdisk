@@ -13,52 +13,41 @@
 
 using std::string;
 
-class dir_t;
-class file_t;
 struct filemeta;
-
-class entry_t: locker {
-    entry_t* parent;
+class dir_t;
+class entry_t: public locker {
+protected:
+    dir_t* parent;
     filekey fk;
     mode_t mode;
-    union{
-        dir_t* dir = nullptr;
-        file_t* file;
-    };
+    size_t length;
     time_t mtime = 0;
     time_t ctime = 0;
     uint32_t flags = 0;
     uint32_t opened = 0;
-    void erase_child_wlocked(entry_t* child);
     string getcwd();
-    void pull_wlocked();
+    virtual void pull_wlocked() = 0;
+    void pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
     static void pull(entry_t* entry);
-    static void clean(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
-    entry_t(entry_t* parent, const filemeta meta);
+    entry_t(dir_t* parent, const filemeta meta);
     virtual ~entry_t();
     filekey getkey();
-    std::vector<filekey> getkeys();
-    filemeta getmeta();
-    entry_t* find(string path);
-    entry_t* create(string name);
-    entry_t* mkdir(string name);
-    int open();
-    const std::map<string, entry_t*>& entrys();
-    int read(void* buff, off_t offset, size_t size);
-    int truncate(off_t offset);
-    int write(const void* buff, off_t offset, size_t size);
-    int sync(int dataonly);
-    int flush();
-    int release();
-    int moveto(entry_t* newparent, string oldname, string newname);
-    int utime(const struct timespec tv[2]);
-    int unlink(const string& name);
-    int rmdir(const string& name);
-    void dump_to_disk_cache();
-    int drop_mem_cache();
+    virtual filemeta getmeta() = 0;
+    size_t size() {
+        return length;
+    }
+    virtual int open() = 0;
+    virtual int sync(int dataonly) = 0;
+    virtual int release() = 0;
+    virtual int utime(const struct timespec tv[2]) = 0;
+    virtual void dump_to_disk_cache() = 0;
+    virtual int drop_mem_cache() = 0;
     int drop_disk_cache();
+
+    friend class dir_t;
+    friend class file_t;
 };
 
 struct thrdpool;
@@ -66,8 +55,7 @@ extern thrdpool* upool;
 extern thrdpool* dpool;
 
 int cache_prepare();
-entry_t* cache_root();
-void cache_destroy(entry_t* root);
+void cache_destroy(dir_t* root);
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
 

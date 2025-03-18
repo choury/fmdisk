@@ -1,5 +1,6 @@
 #include "fuse.h"
-#include "cache.h"
+#include "dir.h"
+#include "file.h"
 #include "utils.h"
 #include "fmdisk.h"
 
@@ -16,7 +17,7 @@ int fm_fuse_prepare(){
 
 void *fm_fuse_init(struct fuse_conn_info *conn){
 #ifndef __APPLE__
-    conn->capable = conn->want & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
+    conn->want = conn->capable & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
     conn->max_background = 20;
 #endif
     conn->max_readahead = 10*1024*1024;
@@ -25,7 +26,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
 
 void fm_fuse_destroy(void* root){
     fs = nullptr;
-    cache_destroy((entry_t*)root);
+    cache_destroy((dir_t*)root);
 }
 
 int fm_fuse_statfs(const char *path, struct statvfs *sf){
@@ -33,7 +34,7 @@ int fm_fuse_statfs(const char *path, struct statvfs *sf){
         memcpy(sf, fs.get(), sizeof(struct statvfs));
         return 0;
     }
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
     auto ret = root->statfs(path, sf);
     if(ret >= 0) {
         fs = std::unique_ptr<struct statvfs>(new struct statvfs);
@@ -47,8 +48,8 @@ int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
 }
 
 int fm_fuse_readdir(const char*, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
-    auto entrys = entry->entrys();
+    dir_t* dir = (dir_t*)fi->fh;
+    auto entrys = dir->get_entrys();
     for(auto i: entrys){
     /*
         struct stat st;
@@ -60,12 +61,17 @@ int fm_fuse_readdir(const char*, void *buf, fuse_fill_dir_t filler, off_t offset
     return 0;
 }
 
+int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {
+    dir_t* entry = (dir_t*)fi->fh;
+    return entry->sync(dataonly);
+}
+
 int fm_fuse_releasedir(const char*, struct fuse_file_info *fi){
     return fm_fuse_release(nullptr, fi);
 }
 
 int fm_fuse_access(const char* path, int mask){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -74,7 +80,7 @@ int fm_fuse_access(const char* path, int mask){
 }
 
 int fm_fuse_getattr(const char *path, struct stat *st){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -86,12 +92,12 @@ int fm_fuse_getattr(const char *path, struct stat *st){
 
 
 int fm_fuse_mkdir(const char *path, mode_t mode){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry =  root->find(dirname(path));
-    if(entry == nullptr){
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t* parent =  dynamic_cast<dir_t*>(root->find(dirname(path)));
+    if(parent == nullptr){
         return -ENOENT;
     }
-    if(entry->mkdir(basename(path)) == nullptr){
+    if(parent->mkdir(basename(path)) == nullptr){
         return -errno;
     }
     fs = nullptr;
@@ -99,8 +105,8 @@ int fm_fuse_mkdir(const char *path, mode_t mode){
 }
 
 int fm_fuse_unlink(const char *path){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* parent = root->find(dirname(path));
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t* parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
@@ -109,8 +115,8 @@ int fm_fuse_unlink(const char *path){
 }
 
 int fm_fuse_rmdir(const char *path){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* parent = root->find(dirname(path));
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t* parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
@@ -119,12 +125,12 @@ int fm_fuse_rmdir(const char *path){
 }
 
 int fm_fuse_rename(const char *oldname, const char *newname){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* parent =  root->find(dirname(oldname));
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t* parent =  dynamic_cast<dir_t*>(root->find(dirname(oldname)));
     if(parent == nullptr){
         return -ENOENT;
     }
-    entry_t* newparent = root->find(dirname(newname));
+    dir_t* newparent = dynamic_cast<dir_t*>(root->find(dirname(newname)));
     if(newparent == nullptr){
         return -ENOENT;
     }
@@ -133,21 +139,23 @@ int fm_fuse_rename(const char *oldname, const char *newname){
 }
 
 int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t *entry = root->find(dirname(path));
-    assert(entry);
-    entry_t *nentry = entry->create(basename(path));
-    if(nentry == nullptr){
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t *parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
+    if(parent == nullptr){
+        return -ENOENT;
+    }
+    file_t *entry = parent->create(basename(path));
+    if(entry == nullptr){
         return -errno;
     }
-    fi->fh = (uint64_t)nentry;
+    fi->fh = (uint64_t)entry;
     fi->direct_io = 1;
     fs = nullptr;
-    return nentry->open();
+    return entry->open();
 }
 
 int fm_fuse_open(const char *path, struct fuse_file_info *fi){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
@@ -158,8 +166,8 @@ int fm_fuse_open(const char *path, struct fuse_file_info *fi){
 }
 
 int fm_fuse_truncate(const char* path, off_t offset){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry = root->find(path);
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    file_t* entry = dynamic_cast<file_t*>(root->find(path));
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -174,9 +182,9 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
     assert((meta.flags & META_KEY_ONLY_F) == 0);
     st->st_mode = meta.mode;
     st->st_size = meta.size;
-    st->st_blksize = 4096;
+    st->st_blksize = meta.blksize;
     st->st_nlink = 1;
-    st->st_blocks = meta.size/4096 + 1;
+    st->st_blocks = meta.blocks;
     st->st_ctime = meta.ctime;
     st->st_mtime = meta.mtime;
     st->st_uid = getuid();
@@ -185,30 +193,30 @@ int fm_fuse_fgetattr(const char*, struct stat* st, struct fuse_file_info* fi){
 }
 
 int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
+    file_t* entry = (file_t*)fi->fh;
     return entry->read(buf, offset, size);
 }
 
 int fm_fuse_ftruncate(const char*, off_t offset, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
+    file_t* entry = (file_t*)fi->fh;
     fs = nullptr;
     return entry->truncate(offset);
 }
 
 int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
+    file_t* entry = (file_t*)fi->fh;
     fs = nullptr;
     return entry->write(buf, offset, size);
 }
 
 int fm_fuse_fsync(const char *, int dataonly, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
+    file_t* entry = (file_t*)fi->fh;
     return entry->sync(dataonly);
 }
 
 int fm_fuse_flush(const char*, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
-    return entry->flush();
+    file_t* entry = (file_t*)fi->fh;
+    return entry->sync(0);
 }
 
 int fm_fuse_release(const char *, struct fuse_file_info *fi){
@@ -216,15 +224,9 @@ int fm_fuse_release(const char *, struct fuse_file_info *fi){
     return entry->release();
 }
 
-
-int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {
-    entry_t* entry = (entry_t*)fi->fh;
-    return entry->sync(dataonly);
-}
-
 int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry = (entry_t*)root->find(path);
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -233,8 +235,17 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
 
 
 int fm_fuse_chmod (const char *path, mode_t mode){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry = (entry_t*)root->find(path);
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+    return 0;
+}
+
+int fm_fuse_chown(const char* path, uid_t, gid_t) {
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -242,8 +253,8 @@ int fm_fuse_chmod (const char *path, mode_t mode){
 }
 
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry = (entry_t*)root->find(path);
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -257,8 +268,8 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
 }
 
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
-    entry_t* root = (entry_t*)fuse_get_context()->private_data;
-    entry_t* entry = (entry_t*)root->find(path);
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    entry_t* entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }

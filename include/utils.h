@@ -41,8 +41,9 @@ struct filekey {
 #define ENTRY_PULLING_F   (1<<5)
 #define FILE_ENCODE_F     (1<<6)
 #define FILE_DIRTY_F      (1<<7)
+#define DIR_DIRTY_F       (1<<7)   //same as FILE_DIRTY_F
 #define DIR_PULLED_F      (1<<8)
-#define META_KEY_ONLY_F   (1<<16)
+#define META_KEY_ONLY_F   (1<<16)  //used for input meta
 
 struct filemeta{
     struct filekey key;

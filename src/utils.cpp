@@ -409,7 +409,7 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
     json_object *jobj = json_object_new_object();
     json_object_object_add(jobj, "size", json_object_new_int64(meta.size));
     if(meta.flags & ENTRY_CHUNCED_F){
-        json_object_object_add(jobj, "mode", json_object_new_int64(S_IFDIR | 0644));
+        json_object_object_add(jobj, "mode", json_object_new_int64(S_IFDIR | (meta.mode & 0777)));
     }else{
         json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
     }
