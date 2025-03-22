@@ -1,3 +1,4 @@
+#include "common.h"
 #include "fmdisk.h"
 #include "defer.h"
 #include "threadpool.h"

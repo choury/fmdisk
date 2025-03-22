@@ -1,3 +1,4 @@
+#include "common.h"
 #include "sqlite.h"
 #include "fmdisk.h"
 

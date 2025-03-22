@@ -1,3 +1,4 @@
+#include "common.h"
 #include "fmdisk.h"
 #include "file.h"
 #include "dir.h"
@@ -11,6 +12,19 @@
 #include <semaphore.h>
 
 #include <list>
+#include <random>
+#include <algorithm>
+
+
+std::string random_string() {
+     std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
+
+     std::random_device rd;
+     std::mt19937 generator(rd());
+
+     std::shuffle(str.begin(), str.end(), generator);
+     return str.substr(0, 16);    // assumes 16 < number of characters in str
+}
 
 sem_t dirty_sem;
 std::list<block_t*> dblocks; // dirty blocks
@@ -108,7 +122,15 @@ void block_t::push(block_t* b) {
     b->file->trim(b->getkey());
     if(len){
         //It must be chunk file, because native file can't be written
-        filekey file{std::to_string(b->no) + '_' + std::to_string(time(nullptr)), 0};
+        string path;
+        if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+            //放到.objs/目录下，使用随机文件名，重命名也不移动它
+            path = std::string("/.objs/") + random_string();
+        } else {
+            path = std::to_string(b->no);
+        }
+        path +=  '_' + std::to_string(time(nullptr));
+        filekey file{path, 0};
 retry:
         int ret = HANDLE_EAGAIN(fm_upload(b->file->getkey(), file, buff, len, false));
         if(ret != 0 && errno == EEXIST){

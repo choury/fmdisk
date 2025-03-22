@@ -50,13 +50,15 @@ public:
     file_t(dir_t* parent, const filemeta& meta, std::vector<filekey> fblocks);
     virtual ~file_t();
 
-    filekey getDirkey();
     filekey getmetakey();
     std::vector<filekey> getkeys();
     virtual filemeta getmeta() override;
     int putbuffer(void* buffer, off_t offset, size_t size);
     int getbuffer(void* buffer, off_t offset, size_t size);
 
+    virtual bool isDir() override {
+        return false;
+    }
     virtual int open() override;
     virtual int release() override;
     virtual int sync(int dataonly) override;
@@ -70,6 +72,8 @@ public:
 
     virtual void dump_to_disk_cache() override;
     virtual int drop_mem_cache() override;
+
+    friend class dir_t;
 };
 
 

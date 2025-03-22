@@ -1,8 +1,10 @@
+#include "common.h"
 #include "fmdisk.h"
 #include "dir.h"
 #include "file.h"
 #include "cache.h"
 #include "sqlite.h"
+#include "utils.h"
 
 #include <string.h>
 #include <assert.h>
@@ -68,6 +70,9 @@ dir_t::~dir_t(){
 
 // Must wlock before call this function
 void dir_t::pull_entrys_wlocked() {
+    if(flags & DIR_PULLED_F) {
+        return;
+    }
     bool cached = false;
     std::vector<filemeta> flist;
     if(load_entry_from_db(getkey().path, flist) == 0){
@@ -83,6 +88,9 @@ void dir_t::pull_entrys_wlocked() {
     entrys.emplace("..", parent);
     for(auto i: flist){
         string bname = basename(i.key.path);
+        if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && bname == ".objs"){
+            continue;
+        }
         bool is_dir = S_ISDIR(i.mode);
         if(endwith(bname, ".def") && is_dir){
             bname = decodepath(bname);
@@ -188,6 +196,10 @@ dir_t* dir_t::mkdir(string name) {
         return nullptr;
     }
     auto_wlock(this);
+    if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && name == ".objs"){
+        errno = EINVAL;
+        return nullptr;
+    }
     assert(flags & DIR_PULLED_F);
     if(children() >= MAXFILE){
         errno = ENOSPC;
@@ -206,6 +218,10 @@ dir_t* dir_t::mkdir(string name) {
 
 file_t* dir_t::create(string name){
     auto_wlock(this);
+    if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && name == ".objs"){
+        errno = EINVAL;
+        return nullptr;
+    }
     assert(flags & DIR_PULLED_F);
     if(children() >= MAXFILE){
         errno = ENOSPC;
@@ -323,7 +339,33 @@ int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
     entry_t* entry = entrys[oldname];
     auto_wlocker __3(entry);
     filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
-    int ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
+    int ret = 0;
+    if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+        //copy and delete
+        if(entry->isDir()){
+            dir_t* dir = dynamic_cast<dir_t*>(entry);
+            dir->pull_entrys_wlocked();
+            if(dir->entrys.size() > 2) {
+                return -ENOTEMPTY;
+            }
+            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), dir->getkey(), newparent->getkey(), newfile));
+            if(ret == 0){
+                ret = HANDLE_EAGAIN(fm_delete(dir->getkey()));
+            }
+        }else {
+            file_t* file = dynamic_cast<file_t*>(entry);
+            filekey newmeta = filekey{entry->flags & ENTRY_CHUNCED_F
+                ? pathjoin(newfile.path, METANAME)
+                : newfile.path, 0};
+            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), file->getmetakey(), newparent->getkey(), newmeta));
+            if(ret == 0){
+                ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
+                if(file) file->private_key = newmeta.private_key;
+            }
+        }
+    } else {
+        ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
+    }
     if(ret){
         return ret;
     }

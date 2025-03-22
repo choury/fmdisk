@@ -38,6 +38,7 @@ public:
     size_t size() {
         return length;
     }
+    virtual bool isDir() = 0;
     virtual int open() = 0;
     virtual int sync(int dataonly) = 0;
     virtual int release() = 0;

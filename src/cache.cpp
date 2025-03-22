@@ -1,13 +1,11 @@
+#include "common.h"
 #include "cache.h"
 #include "dir.h"
 #include "file.h"
 #include "threadpool.h"
-#include "defer.h"
 #include "sqlite.h"
 
-#include <string.h>
 #include <assert.h>
-#include <thread>
 
 thrdpool* upool;
 thrdpool* dpool;

@@ -3,10 +3,8 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <vector>
-#include <string>
 #include <unistd.h>
 
-#include "common.h"
 #include "utils.h"
 
 
@@ -44,13 +42,12 @@ int fm_utime(const filekey& file, const struct timespec tv[2]);
 
 const char* fm_private_key_tostring(std::shared_ptr<void> private_key);
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
+int fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile);
 
 #define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \
-  auto _retry = 0;                \
   while(true){                    \
     _result = (x);                \
-    _retry++;                     \
     if(_result &&                 \
       (errno == EAGAIN ||         \
        errno == ETIMEDOUT));      \

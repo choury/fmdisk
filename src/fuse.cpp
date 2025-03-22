@@ -1,3 +1,4 @@
+#include "common.h"
 #include "fuse.h"
 #include "dir.h"
 #include "file.h"
@@ -234,7 +235,7 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2]){
 }
 
 
-int fm_fuse_chmod (const char *path, mode_t mode){
+int fm_fuse_chmod(const char *path, mode_t mode){
     dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
@@ -285,4 +286,28 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
     }
     strcpy(value, underlay_path.c_str());
     return underlay_path.length();
+}
+
+int __attribute__((weak)) fm_statfs(struct statvfs* sf) {
+    return 0;
+}
+
+int __attribute__((weak)) fm_mkdir(const filekey& fileat, struct filekey& file) {
+    errno = EACCES;
+    return -errno;
+}
+
+int __attribute__((weak)) fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile) {
+    errno = EACCES;
+    return -errno;
+}
+
+int __attribute__((weak)) fm_utime(const filekey& file, const struct timespec  tv[2]) {
+    errno = EACCES;
+    return -errno;
+}
+
+int __attribute__((weak)) fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile) {
+    errno = EPERM;
+    return -errno;
 }

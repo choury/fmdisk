@@ -1,3 +1,4 @@
+#include "common.h"
 #include "fmdisk.h"
 
 #define BLOCKLEN       (uint64_t)0x100000          //1M,缓存分块大小 必须为4K的倍数
@@ -8,21 +9,6 @@ int fm_prepare(){
     opt.block_len = BLOCKLEN;
     return 0;
 }
-
-int fm_statfs(struct statvfs* sf) {
-    return 0;
-}
-
-int fm_mkdir(const filekey& fileat, struct filekey& file) {
-    errno = EACCES;
-    return -EACCES;
-}
-
-int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile) {
-    errno = EACCES;
-    return -EACCES;
-}
-
 
 int fm_download(const filekey&, off_t, size_t, buffstruct&){
     errno = EACCES;
@@ -51,11 +37,6 @@ int fm_getattrat(const filekey& fileat, struct filekey& file) {
 
 
 int fm_delete(const filekey&){
-    errno = EACCES;
-    return -EACCES;
-}
-
-int fm_utime(const filekey& file, const struct timespec  tv[2]) {
     errno = EACCES;
     return -EACCES;
 }

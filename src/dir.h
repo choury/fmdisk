@@ -25,6 +25,9 @@ public:
     const std::map<string, entry_t*>& get_entrys();
     size_t children();
 
+    virtual bool isDir() override {
+        return true;
+    }
     virtual int open() override {
         auto_wlock(this);
         if((flags & ENTRY_INITED_F) == 0){
