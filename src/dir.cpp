@@ -267,7 +267,7 @@ int dir_t::unlink(const string& name) {
     mtime = time(NULL);
     flags |= DIR_DIRTY_F;
 
-    //entry->parent = nullptr;
+    entry->parent = nullptr;
     entry->flags |= ENTRY_DELETED_F;
     if(entry->opened ||
       (entry->flags & ENTRY_REASEWAIT_F)||
@@ -360,7 +360,7 @@ int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
             ret = HANDLE_EAGAIN(fm_copy(this->getkey(), file->getmetakey(), newparent->getkey(), newmeta));
             if(ret == 0){
                 ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
-                if(file) file->private_key = newmeta.private_key;
+                file->private_key = newmeta.private_key;
             }
         }
     } else {

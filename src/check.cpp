@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
+#include <set>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -21,6 +22,7 @@ static bool autofix = false;
 static bool recursive = false;
 static bool deleteall = false;
 static thrdpool *pool;
+static std::set<std::string> objs;
 
 static mutex console_lock;
 
@@ -156,18 +158,29 @@ void checkchunk(filekey* file) {
     fs.erase(METANAME);
     bool fixed = false;
     for(size_t i = 0; i < blks.size(); i++) {
+        if(blks[i].path == "x"){
+            continue;
+        }
         bool haswrong = false;
         if (!blockMatchNo(blks[i].path, i)) {
             cerr<<lock<<"file: "<<decodepath(file->path)<<" has block "<<blks[i].path<<" on No."<<i<<endl<<unlock;
             haswrong = true;
         }
-        if (blks[i].path != "x" && fs.count(blks[i].path) == 0) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<blks[i].path<<endl<<unlock;
+        if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+            if(objs.count(blks[i].path) == 0) {
+                haswrong = true;
+            }else{
+                objs.erase(blks[i].path);
+            }
+        } else if (fs.count(blks[i].path) == 0) {
             haswrong = true;
         }
-        if (haswrong && autofix) {
-            fixed = true;
-            blks[i] = fixMissBlock(*file, fs, i);
+        if (haswrong) {
+            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<blks[i].path<<endl<<unlock;
+            if (autofix) {
+                fixed = true;
+                blks[i] = fixMissBlock(*file, fs, i);
+            }
         }
     }
     if(fixed){
@@ -223,8 +236,12 @@ void checkdir(filekey* file) {
         cerr<<lock<< "list dir "<<file->path<<" failed: "<<ret<<endl<<unlock;
         return;
     }
+    bool isRoot = file->path == "/";
     delete_entry_prefix_from_db(file->path);
     for (auto f : flist) {
+        if(isRoot && (opt.flags & FM_RENAME_NOTSUPPRTED) && (f.key.path == ".objs" || f.key.path == ".objs/")){
+            continue;
+        }
         std::string path;
         if(f.key.path[0] != '/') {
             path = "/";
@@ -269,6 +286,7 @@ filekey* getpath(string path){
         return new filekey(file);
     }
 }
+
 
 int main(int argc, char **argv) {
     if(fm_prepare()){
@@ -327,6 +345,23 @@ int main(int argc, char **argv) {
         cerr<<"dir/file "<<path<<" not found."<<endl;
         return -2;
     }
+    if(opt.flags & FM_RENAME_NOTSUPPRTED){
+        cout<<"rename notsupported set, listing objs"<<endl;
+        filekey obj = {".objs/", 0};
+        if(fm_getattrat(filekey{"/"}, obj) < 0){
+            cerr<<"get .objs failed"<<endl;
+            return -3;
+        }
+        std::vector<filemeta> objslist;
+        if(fm_list(obj, objslist) < 0){
+            cerr<<"list .objs failed"<<endl;
+            return -4;
+        }
+        for(auto i: objslist){
+            objs.insert(basename(i.key.path));
+        }
+        cout<<"objs list done, size: "<<objs.size()<<endl;
+    }
     if(isfile){
         checkchunk(file);
     }else{
@@ -334,5 +369,11 @@ int main(int argc, char **argv) {
     }
     void* result;
     waittask(pool, 0, &result);
+    if(objs.size()){
+        cerr<<"objs not used: "<<objs.size()<<endl;
+        for(auto i: objs){
+            cerr<<i<<endl;
+        }
+    }
     return 0;
 }

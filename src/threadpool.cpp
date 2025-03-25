@@ -29,12 +29,7 @@ struct thrdpool{
     int              num;
     int              doing;
     task_id          curid;     //下一任务分配id
-#if __APPLE__
-    sem_t*           wait_ptr;
-#else
     sem_t            wait;      //每个线程等待信号量
-    sem_t*           wait_ptr;
-#endif
     pthread_t*       id;        //线程池各线程
     pthread_mutex_t  lock;      //给tasks和valmap的锁
     queue<task_t *>  tasks;
@@ -44,7 +39,7 @@ struct thrdpool{
 
 void* dotask(thrdpool* pool) {                                //执行任务
     while (1) {
-        sem_wait(pool->wait_ptr);
+        sem_wait(&pool->wait);
         pthread_mutex_lock(&pool->lock);
         task_t* task = pool->tasks.front();
         pool->tasks.pop();
@@ -88,20 +83,12 @@ thrdpool* creatpool(size_t threadnum) {
     pool->curid = 1;
     pool->id = (pthread_t *)malloc(threadnum * sizeof(pthread_t));
 
+    sem_init(&pool->wait, 0 , 0);
     pthread_attr_t attr;
     pthread_attr_init(&attr);
     pthread_attr_setstacksize(&attr, 20*1024*1024);               //设置20M的栈
     pthread_mutex_init(&pool->lock, NULL);
     for (size_t i = 0; i < threadnum; ++i) {
-#if __APPLE__
-        char sem_name[100];
-        sprintf(sem_name, "fmdisk-threadpool-%zu", i);
-        pool->wait_ptr = sem_open(sem_name, O_CREAT|O_EXCL, S_IRWXU, 0);
-        sem_unlink(sem_name);
-#else
-        pool->wait_ptr = &pool->wait;
-        sem_init(pool->wait_ptr, 0 , 0);
-#endif
         pthread_create(pool->id + i, &attr, (taskfunc)dotask, pool);
     }
     pthread_attr_destroy(&attr);
@@ -125,7 +112,7 @@ task_id addtask(thrdpool* pool, taskfunc func, void *param , uint flags) {
     task->taskid = pool->curid++;
     pool->tasks.push(task);                              //加入任务队列尾部
     pool->valmap[task->taskid] = val;
-    sem_post(pool->wait_ptr);                                       //发信号给各线程
+    sem_post(&pool->wait);                                       //发信号给各线程
     auto taskid = task->taskid;
     pthread_mutex_unlock(&pool->lock);
     return taskid;
@@ -189,12 +176,7 @@ int taskinqueu(struct thrdpool* pool){
 #include <thread>
 #include <atomic>
 
-#if __APPLE__
-sem_t* delay_task_ptr;
-#else
 sem_t delay_task;
-sem_t* delay_task_ptr = &delay_task;
-#endif
 std::atomic<bool> delay_task_stop(false);
 pthread_mutex_t delay_task_lock = PTHREAD_MUTEX_INITIALIZER;
 std::list<task_t*> delay_tasks;
@@ -206,7 +188,7 @@ static void do_delay_task() {
     ts.tv_sec += 10;
     while(!delay_task_stop) {
 #if __APPLE__
-        sem_wait(delay_task_ptr);
+        sem_wait(&delay_task);
 #else
         sem_timedwait(&delay_task, &ts);             //等待addtask的信号
 #endif
@@ -247,12 +229,7 @@ static void do_delay_task() {
 std::thread* delay_thread;
 
 void start_delay_thread(){
-#if __APPLE__
-    delay_task_ptr = sem_open("fmdisk-delaytask", O_CREAT, S_IRUSR | S_IWUSR, 0);
-    sem_unlink("fmdisk-delaytask");
-#else
-    sem_init(delay_task_ptr, 0 ,0);
-#endif
+    sem_init(&delay_task, 0 ,0);
     delay_thread = new std::thread(do_delay_task);
 }
 
@@ -260,11 +237,7 @@ void stop_delay_thread() {
     delay_task_stop.store(true);
     delay_thread->join();
     delete delay_thread;
-#if __APPLE__
-    sem_close(delay_task_ptr);
-#else
     sem_destroy(&delay_task);
-#endif
     pthread_mutex_destroy(&delay_task_lock);
 }
 
@@ -288,5 +261,5 @@ void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
     task->until.tv_sec += delaySec;
     delay_tasks.emplace_back(task);
     pthread_mutex_unlock(&delay_task_lock);
-    sem_post(delay_task_ptr);
+    sem_post(&delay_task);
 }

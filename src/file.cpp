@@ -33,7 +33,7 @@ pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
 void writeback_thread(){
-    sem_init(&dirty_sem, 0, UPLOADTHREADS/2);
+    sem_init(&dirty_sem, 0, UPLOADTHREADS*2);
     while(true){
         usleep(100000);
         pthread_mutex_lock(&dblocks_lock);
@@ -43,13 +43,11 @@ void writeback_thread(){
         }else if(taskinqueu(upool) == 0){
             addtask(upool, (taskfunc)block_t::push, dblocks.front(), 0);
             dblocks.pop_front();
-            sem_post(&dirty_sem);
         }
         for(auto i = dblocks.begin(); i!= dblocks.end();){
-            if((*i)->staled() >= 10){
+            if((*i)->staled() >= 30){
                 addtask(upool, (taskfunc)block_t::push, *i, 0);
                 i = dblocks.erase(i);
-                sem_post(&dirty_sem);
             }else{
                 break;
             }
@@ -73,13 +71,15 @@ block_t::~block_t() {
     for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
             i = dblocks.erase(i);
-            sem_post(&dirty_sem);
         }else{
             i++;
         }
     }
     pthread_mutex_unlock(&dblocks_lock);
     auto_wlock(this);
+    if(flags & BLOCK_DIRTY){
+        sem_post(&dirty_sem);
+    }
     file->trim(getkey());
 }
 
@@ -125,11 +125,11 @@ void block_t::push(block_t* b) {
         string path;
         if(opt.flags & FM_RENAME_NOTSUPPRTED) {
             //放到.objs/目录下，使用随机文件名，重命名也不移动它
-            path = std::string("/.objs/") + random_string();
+            path = std::string("/.objs/") + std::to_string(b->no);
         } else {
             path = std::to_string(b->no);
         }
-        path +=  '_' + std::to_string(time(nullptr));
+        path +=  '_' + std::to_string(time(nullptr)) + '_' + random_string();
         filekey file{path, 0};
 retry:
         int ret = HANDLE_EAGAIN(fm_upload(b->file->getkey(), file, buff, len, false));
@@ -146,6 +146,7 @@ retry:
         b->fk = filekey{"x", 0};
     }
     b->flags &= ~BLOCK_DIRTY;
+    sem_post(&dirty_sem);
 }
 
 void block_t::prefetch(bool wait) {
@@ -169,23 +170,23 @@ void block_t::prefetch(bool wait) {
 void block_t::makedirty() {
     wlock();
     atime = time(0);
+    if(flags & BLOCK_DIRTY){
+        unwlock();
+        return;
+    }
     flags |=  BLOCK_DIRTY;
     unwlock();
     pthread_mutex_lock(&dblocks_lock);
     // 挪到队尾
-    bool found = false;
     for(auto i = dblocks.begin(); i != dblocks.end(); i++ ){
         if(*i == this){
-            found = true;
             dblocks.erase(i);
             break;
         }
     }
     dblocks.push_back(this);
     pthread_mutex_unlock(&dblocks_lock);
-    if(!found){
-        sem_wait(&dirty_sem);
-    }
+    sem_wait(&dirty_sem);
 }
 
 void block_t::sync(){
@@ -194,7 +195,6 @@ void block_t::sync(){
     for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
             i = dblocks.erase(i);
-            sem_post(&dirty_sem);
             break;
         }else{
             i++;
@@ -330,7 +330,7 @@ void file_t::clean(file_t* file) {
     if(file->opened > 0){
         return;
     }
-    assert((file->getmeta().flags & FILE_DIRTY_F) == 0);
+    assert((file->flags & FILE_DIRTY_F) == 0);
     if(file->flags & ENTRY_DELETED_F){
         __w.unlock();
         delete file;
@@ -443,9 +443,10 @@ int file_t::truncate_rlocked(off_t offset){
             return ret;
         }
         assert(blocks.count(0) == 0);
-        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | BLOCK_DIRTY));
+        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC));
         delete[] inline_data;
         inline_data = nullptr;
+        blocks[0]->makedirty();
     }
     length = offset;
     if(length == 0 && inline_data == nullptr){
@@ -483,15 +484,22 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         }
     }
     assert((!inline_data) || (inline_data && length < INLINE_DLEN));
+    const size_t startc = GetBlkNo(offset, blksize);
+    const size_t endc = GetBlkNo(offset + size, blksize);
+    if(inline_data == nullptr) {
+        for(size_t i = startc; i <= endc; i++){
+            blocks[i]->prefetch(true);
+        }
+    }
+    assert(fd >= 0);
+    int ret = pwrite(fd, buff, size, offset);
+    if(ret < 0){
+        return ret;
+    }
     if(inline_data){
         __r.upgrade();
         memcpy(inline_data + offset, buff, size);
     }else{
-        size_t startc = GetBlkNo(offset, blksize);
-        size_t endc = GetBlkNo(offset + size, blksize);
-        for(size_t i = startc; i <= endc; i++){
-            blocks[i]->prefetch(true);
-        }
         for(size_t i =  startc; i <= endc; i++){
             blocks[i]->makedirty();
         }
@@ -499,8 +507,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     flags |= FILE_DIRTY_F;
     mtime = time(NULL);
-    assert(fd >= 0);
-    return inline_data ? size : pwrite(fd, buff, size, offset);
+    return ret;
 }
 
 
