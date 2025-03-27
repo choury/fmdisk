@@ -138,17 +138,19 @@ size_t Base64Decode(const char *src, size_t len, char* dst){
     return j;
 }
 
-void xorcode(void* buf, size_t offset, size_t len, const char* key){
-    unsigned char* buff= (unsigned char*)buf;
+
+void xorcode(void* buf, size_t offset, size_t len, const char* key) {
+    unsigned char* buff = (unsigned char*)buf;
     size_t klen = strlen(key);
-    size_t koffset = offset%klen;
-    string key_tune = string(key+koffset)+string(key).substr(0, koffset);
-    for(size_t i=0;i<len;i+=klen){
-        for(size_t j=0;j<klen && i+j<len;j++){
-            buff[i+j] ^= key_tune[j];
-        }
+    size_t k_idx = offset % klen;
+
+    for (size_t i = 0; i < len; i++) {
+        buff[i] ^= key[k_idx];
+        k_idx++;
+        if (k_idx == klen) k_idx = 0;  // Faster than using modulo in a tight loop
     }
 }
+
 
 string basename(const string& path) {
     size_t pos = path.find_last_of('/');
