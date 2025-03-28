@@ -37,9 +37,5 @@ struct fuse_operations fm_oper = {
 };
 
 int fm_main(int argc, char *argv[]) {
-    if(fm_fuse_prepare()){
-        fprintf(stderr, "fm_fuse_prepare failed!");
-        return -1;
-    }
     return fuse_main(argc, argv, &fm_oper, NULL);
 }

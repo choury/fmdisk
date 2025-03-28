@@ -12,11 +12,8 @@
 std::unique_ptr<struct statvfs> fs = nullptr;
 struct fmoption opt;
 
-int fm_fuse_prepare(){
-    return cache_prepare();
-}
-
 void *fm_fuse_init(struct fuse_conn_info *conn){
+    cache_prepare();
 #ifndef __APPLE__
     conn->want = conn->capable & FUSE_CAP_BIG_WRITES & FUSE_CAP_EXPORT_SUPPORT;
     conn->max_background = 20;
