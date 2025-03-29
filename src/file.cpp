@@ -594,7 +594,11 @@ filemeta file_t::getmeta() {
     meta.blksize = blksize;
     if(inline_data) {
         meta.blocks = length *3 / 2 / 512 + 1; //base64 encode
-    }else{
+    }else if(block_size > 0 && (flags & FILE_DIRTY_F) == 0){
+        //sync will call getmeta before clear FILE_DIRTY_F
+        //so we no need to recalculate the block size
+        meta.blocks = block_size;
+    }else {
         meta.blocks = 1; //at least for meta.json
         for(auto i: blocks){
             if(i.second->dummy()){
@@ -606,6 +610,7 @@ filemeta file_t::getmeta() {
             meta.blocks += blksize / 512;
         }
         meta.blocks += (length % blksize) / 512 + 1;
+        block_size = meta.blocks;
     }
     meta.ctime = ctime;
     meta.mtime = mtime;

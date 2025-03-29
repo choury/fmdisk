@@ -40,6 +40,7 @@ class file_t: public entry_t {
     std::map<uint32_t, block_t*> blocks;
     pthread_mutex_t dropLocker = PTHREAD_MUTEX_INITIALIZER;
     std::vector<filekey> droped;
+    size_t block_size = 0; // cache for getmeta
     int truncate_rlocked(off_t offset);
     virtual void pull_wlocked() override;
     static void clean(file_t* file);
