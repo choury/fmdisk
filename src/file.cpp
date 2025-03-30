@@ -633,13 +633,13 @@ int file_t::sync(int dataonly){
         return 0;
     }
     assert(flags & ENTRY_INITED_F);
-    if((flags & ENTRY_CHUNCED_F) == 0){
+    if((flags & ENTRY_CHUNCED_F) == 0 || (flags & FILE_DIRTY_F) == 0){
         return 0;
     }
     for(auto i: blocks){
         i.second->sync();
     }
-    if(!dataonly && (flags & FILE_DIRTY_F)){
+    if(!dataonly){
         const filekey& key = getkey();
         filemeta meta = getmeta();
         meta.key = getmetakey();

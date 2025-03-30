@@ -7,10 +7,6 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include <map>
-
-
-
 using std::string;
 
 struct filemeta;

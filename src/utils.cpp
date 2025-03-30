@@ -6,6 +6,14 @@
 #include <sys/stat.h>
 #include <json.h>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#define ARCH_X86
+#elif defined(__arm__) || defined(__aarch64__)
+#include <arm_neon.h>
+#define ARCH_ARM
+#endif
+
 #include "common.h"
 #include "utils.h"
 #include "fmdisk.h"
@@ -138,19 +146,94 @@ size_t Base64Decode(const char *src, size_t len, char* dst){
     return j;
 }
 
-
 void xorcode(void* buf, size_t offset, size_t len, const char* key) {
     unsigned char* buff = (unsigned char*)buf;
     size_t klen = strlen(key);
     size_t k_idx = offset % klen;
 
-    for (size_t i = 0; i < len; i++) {
-        buff[i] ^= key[k_idx];
-        k_idx++;
-        if (k_idx == klen) k_idx = 0;  // Faster than using modulo in a tight loop
+    // 处理非常小的缓冲区，避免SIMD的初始化开销
+    if (len < 16) {
+        for (size_t i = 0; i < len; i++) {
+            buff[i] ^= key[k_idx];
+            k_idx = (k_idx + 1) % klen;
+        }
+        return;
+    }
+
+    // 准备扩展密钥数组
+    unsigned char extended_key[1024]; // 足够容纳大多数密钥情况
+    size_t extended_len = 0;
+
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    size_t target_size = std::max(klen * 2, (size_t)128);
+#elif defined(__AVX2__)
+    size_t target_size = std::max(klen * 2, (size_t)64);
+#else
+    size_t target_size = std::max(klen * 2, (size_t)32);
+#endif
+    while (extended_len < target_size) {
+        extended_key[extended_len] = key[extended_len % klen];
+        extended_len++;
+    }
+
+    size_t i = 0;
+
+#ifdef ARCH_X86
+    // 使用x86 SIMD指令
+    #if defined(__AVX512F__) && defined(__AVX512BW__)
+    // 使用AVX-512 (64字节向量)
+    while (i + 64 <= len) {
+        __m512i data = _mm512_loadu_si512((__m512i*)(buff + i));
+        __m512i key_vec = _mm512_loadu_si512((__m512i*)(extended_key + k_idx));
+        __m512i result = _mm512_xor_si512(data, key_vec);
+        _mm512_storeu_si512((__m512i*)(buff + i), result);
+
+        k_idx = (k_idx + 64) % klen;
+        i += 64;
+    }
+    #endif
+    #if defined(__AVX2__)
+    // 使用AVX2 (32字节向量)
+    while (i + 32 <= len) {
+        __m256i data = _mm256_loadu_si256((__m256i*)(buff + i));
+        __m256i key_vec = _mm256_loadu_si256((__m256i*)(extended_key + k_idx));
+        __m256i result = _mm256_xor_si256(data, key_vec);
+        _mm256_storeu_si256((__m256i*)(buff + i), result);
+
+        k_idx = (k_idx + 32) % klen;
+        i += 32;
+    }
+    #endif
+
+    // 使用SSE (16字节向量)
+    while (i + 16 <= len) {
+        __m128i data = _mm_loadu_si128((__m128i*)(buff + i));
+        __m128i key_vec = _mm_loadu_si128((__m128i*)(extended_key + k_idx));
+        __m128i result = _mm_xor_si128(data, key_vec);
+        _mm_storeu_si128((__m128i*)(buff + i), result);
+
+        k_idx = (k_idx + 16) % klen;
+        i += 16;
+    }
+#elif defined(ARCH_ARM)
+    // 使用ARM NEON SIMD指令
+    while (i + 16 <= len) {
+        uint8x16_t data = vld1q_u8(buff + i);
+        uint8x16_t key_vec = vld1q_u8(extended_key + k_idx);
+        uint8x16_t result = veorq_u8(data, key_vec);
+        vst1q_u8(buff + i, result);
+
+        k_idx = (k_idx + 16) % klen;
+        i += 16;
+    }
+#endif
+
+    // 处理剩余部分的字节 - 现在也使用extended_key
+    for (; i < len; i++) {
+        buff[i] ^= extended_key[k_idx];
+        k_idx = (k_idx + 1) % klen;
     }
 }
-
 
 string basename(const string& path) {
     size_t pos = path.find_last_of('/');
