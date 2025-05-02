@@ -1,14 +1,16 @@
 #include "common.h"
-#include "cache.h"
+#include "entry.h"
 #include "dir.h"
 #include "file.h"
 #include "threadpool.h"
 #include "sqlite.h"
 
+#include <thread>
 #include <assert.h>
 
 thrdpool* upool;
 thrdpool* dpool;
+std::thread gc;
 
 int cache_prepare() {
     int ret = fm_prepare();
@@ -19,6 +21,7 @@ int cache_prepare() {
     upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
     dpool = creatpool(DOWNLOADTHREADS);
     addtask(upool, (taskfunc)writeback_thread, 0, 0);
+    gc = std::thread(start_gc);
     start_delay_thread();
     return sqlinit();
 }
@@ -26,6 +29,10 @@ int cache_prepare() {
 void cache_destroy(dir_t* root){
     sqldeinit();
     stop_delay_thread();
+    stop_gc();
+    if(gc.joinable()){
+        gc.join();
+    }
     delete root;
 }
 

@@ -1,7 +1,7 @@
 #ifndef FILE_H__
 #define FILE_H__
 #include "utils.h"
-#include "cache.h"
+#include "entry.h"
 
 #include <vector>
 #include <map>
@@ -15,12 +15,14 @@ class block_t: locker {
     const size_t size;
 #define BLOCK_SYNC   1
 #define BLOCK_DIRTY  2
+#define BLOCK_STALE  4
     unsigned int flags;
     time_t atime;
     int staled();
     static void pull(block_t* b);
     static void push(block_t* b);
     friend void writeback_thread();
+    friend class file_t;
 public:
     block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
     ~block_t();
@@ -38,8 +40,6 @@ class file_t: public entry_t {
     char* inline_data = nullptr;
     blksize_t blksize;
     std::map<uint32_t, block_t*> blocks;
-    pthread_mutex_t dropLocker = PTHREAD_MUTEX_INITIALIZER;
-    std::vector<filekey> droped;
     size_t block_size = 0; // cache for getmeta
     int truncate_rlocked(off_t offset);
     virtual void pull_wlocked() override;
@@ -67,9 +67,9 @@ public:
     int read(void* buff, off_t offset, size_t size);
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
+    //It will release the wlock
+    int remove_and_release_wlock();
     std::vector<filekey> getfblocks();
-    void trim(const filekey& fk);
-
 
     virtual void dump_to_disk_cache() override;
     virtual int drop_mem_cache() override;
@@ -79,5 +79,7 @@ public:
 
 
 void writeback_thread();
+void start_gc();
+void stop_gc();
 
 #endif

@@ -51,8 +51,6 @@ struct thrdpool;
 extern thrdpool* upool;
 extern thrdpool* dpool;
 
-int cache_prepare();
-void cache_destroy(dir_t* root);
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
 

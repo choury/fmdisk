@@ -2,7 +2,6 @@
 #include "fmdisk.h"
 #include "dir.h"
 #include "file.h"
-#include "cache.h"
 #include "sqlite.h"
 #include "utils.h"
 
@@ -252,32 +251,10 @@ int dir_t::unlink(const string& name) {
         entry->unwlock();
         return -EISDIR;
     }
-    file_t* child = dynamic_cast<file_t*>(entry);
-    int ret;
-    if(opt.flags & FM_DELETE_NEED_PURGE) {
-        ret = HANDLE_EAGAIN(fm_batchdelete(child->getkeys()));
-    }else{
-        ret = HANDLE_EAGAIN(fm_delete(child->getkey()));
-    }
-    if(ret && errno != ENOENT){
-        entry->unwlock();
-        return ret;
-    }
     erase_child_wlocked(name, entry);
+    dynamic_cast<file_t*>(entry)->remove_and_release_wlock();
     mtime = time(NULL);
     flags |= DIR_DIRTY_F;
-
-    entry->parent = nullptr;
-    entry->flags |= ENTRY_DELETED_F;
-    if(entry->opened ||
-      (entry->flags & ENTRY_REASEWAIT_F)||
-      (entry->flags & ENTRY_PULLING_F))
-    {
-        entry->unwlock();
-        //delete this in clean or pull
-        return 0;
-    }
-    delete entry;
     return 0;
 }
 

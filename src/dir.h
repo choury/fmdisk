@@ -1,6 +1,6 @@
 #ifndef DIR_H__
 #define DIR_H__
-#include "cache.h"
+#include "entry.h"
 
 #include <map>
 

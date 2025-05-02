@@ -14,7 +14,46 @@
 #include <list>
 #include <random>
 #include <algorithm>
+#include <atomic>
 
+
+static pthread_mutex_t gcLocker = PTHREAD_MUTEX_INITIALIZER;
+static std::vector<filekey> droped;
+static std::atomic<bool> gc_stop(false);
+
+static void trim(const filekey& file) {
+    string name = basename(file.path);
+    if(name == "" || name == "x"){
+        return;
+    }
+    auto_lock(&gcLocker);
+    droped.push_back(file);
+}
+
+static void trim(const std::vector<filekey>& files) {
+    auto_lock(&gcLocker);
+    droped.insert(droped.end(), files.begin(), files.end());
+}
+
+void start_gc() {
+    while(!gc_stop) {
+        pthread_mutex_lock(&gcLocker);
+        //copy dropped and clear
+        std::vector<filekey> tmp = std::move(droped);
+        droped.clear();
+        pthread_mutex_unlock(&gcLocker);
+        if(tmp.empty()){
+            //wait 30s
+            sleep(30);
+            continue;
+        }
+        HANDLE_EAGAIN(fm_batchdelete(std::move(tmp)));
+    }
+}
+
+void stop_gc() {
+    gc_stop = true;
+}
 
 std::string random_string() {
      std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
@@ -40,7 +79,7 @@ void writeback_thread(){
         if(dblocks.empty()){
             pthread_mutex_unlock(&dblocks_lock);
             continue;
-        }else if(taskinqueu(upool) == 0){
+        }else if(taskinqueu(upool) == 0 && dblocks.size() >= UPLOADTHREADS){
             addtask(upool, (taskfunc)block_t::push, dblocks.front(), 0);
             dblocks.pop_front();
         }
@@ -66,6 +105,9 @@ block_t::block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size,
 {
 }
 
+//两种情况下会被调用
+// 1. file被销毁了，一般是 drop_mem_cache, BLOCK_STALE标记
+// 2. file被truncate了，这个时候需要删除数据
 block_t::~block_t() {
     pthread_mutex_lock(&dblocks_lock);
     for(auto i = dblocks.begin(); i != dblocks.end();){
@@ -76,11 +118,12 @@ block_t::~block_t() {
         }
     }
     pthread_mutex_unlock(&dblocks_lock);
-    auto_wlock(this);
     if(flags & BLOCK_DIRTY){
         sem_post(&dirty_sem);
     }
-    file->trim(getkey());
+    if((flags & BLOCK_STALE) == 0) {
+        trim(getkey());
+    }
 }
 
 filekey block_t::getkey(){
@@ -111,7 +154,7 @@ void block_t::pull(block_t* b) {
 
 void block_t::push(block_t* b) {
     auto_wlock(b);
-    if((b->flags & BLOCK_DIRTY) == 0){
+    if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
         return;
     }
     char *buff = (char*)malloc(b->size);
@@ -119,7 +162,7 @@ void block_t::push(block_t* b) {
     if(len < 0){
         return;
     }
-    b->file->trim(b->getkey());
+    trim(b->getkey());
     if(len){
         //It must be chunk file, because native file can't be written
         string path;
@@ -297,6 +340,7 @@ file_t::file_t(dir_t* parent, const filemeta& meta, std::vector<filekey> fblocks
 file_t::~file_t() {
     auto_wlock(this);
     for(auto i: blocks){
+        i.second->flags |= BLOCK_STALE;
         delete i.second;
     }
     if(fd >= 0){
@@ -305,7 +349,6 @@ file_t::~file_t() {
     if(inline_data){
         delete[] inline_data;
     }
-    pthread_mutex_destroy(&dropLocker);
 }
 
 int file_t::open(){
@@ -330,11 +373,16 @@ void file_t::clean(file_t* file) {
     if(file->opened > 0){
         return;
     }
-    assert((file->flags & FILE_DIRTY_F) == 0);
     if(file->flags & ENTRY_DELETED_F){
+        if(opt.flags & FM_DELETE_NEED_PURGE) {
+            trim(file->getkeys());
+        }else{
+            trim(file->getkey());
+        }
         __w.unlock();
         delete file;
     }else{
+        assert((file->flags & FILE_DIRTY_F) == 0);
         for(auto i: file->blocks){
             i.second->reset();
         }
@@ -427,7 +475,7 @@ int file_t::truncate_rlocked(off_t offset){
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
-        blocks[newc]->makedirty();
+        if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->makedirty();
         upgrade();
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
@@ -446,7 +494,7 @@ int file_t::truncate_rlocked(off_t offset){
         blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC));
         delete[] inline_data;
         inline_data = nullptr;
-        blocks[0]->makedirty();
+        if((flags & ENTRY_DELETED_F) == 0) blocks[0]->makedirty();
     }
     length = offset;
     if(length == 0 && inline_data == nullptr){
@@ -499,7 +547,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(inline_data){
         __r.upgrade();
         memcpy(inline_data + offset, buff, size);
-    }else{
+    }else if(flags & ENTRY_DELETED_F) {
+        __r.upgrade();
+    } else {
         for(size_t i =  startc; i <= endc; i++){
             blocks[i]->makedirty();
         }
@@ -510,6 +560,23 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     return ret;
 }
 
+int file_t::remove_and_release_wlock() {
+    parent = nullptr;
+    flags |= ENTRY_DELETED_F;
+    if(opened || (flags & ENTRY_REASEWAIT_F)) {
+        //do this in clean
+        unwlock();
+        return 0;
+    }
+    if(opt.flags & FM_DELETE_NEED_PURGE) {
+        HANDLE_EAGAIN(fm_batchdelete(getkeys()));
+    }else{
+        HANDLE_EAGAIN(fm_delete(getkey()));
+    }
+    unwlock();
+    delete this;
+    return 0;
+}
 
 std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
@@ -518,6 +585,9 @@ std::vector<filekey> file_t::getfblocks(){
     }
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
+        if(i.second->dummy()){
+            continue;
+        }
         fblocks[i.first] = basename(i.second->getkey());
     }
     return fblocks;
@@ -617,16 +687,6 @@ filemeta file_t::getmeta() {
     return meta;
 }
 
-
-void file_t::trim(const filekey& file) {
-    string name = basename(file.path);
-    if(name == "" || name == "x"){
-        return;
-    }
-    auto_lock(&dropLocker);
-    droped.emplace_back(file);
-}
-
 int file_t::sync(int dataonly){
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F) {
@@ -651,12 +711,6 @@ int file_t::sync(int dataonly){
         __r.upgrade();
         private_key = meta.key.private_key;
         flags &= ~FILE_DIRTY_F;
-        auto_lock(&dropLocker);
-        __r.unlock();
-        if(!droped.empty()){
-            fm_batchdelete(std::move(droped));
-            droped.clear();
-        }
     }
     return 0;
 }
@@ -725,13 +779,11 @@ int file_t::drop_mem_cache() {
     }
     __r.upgrade();
     for(auto i: blocks){
+        i.second->flags |= BLOCK_STALE;
         delete i.second;
     }
     blocks.clear();
-    if(fd >= 0){
-        close(fd);
-    }
-    fd = -1;
+    assert(fd == -1); //it should be closed in clean
     if(inline_data){
         delete[] inline_data;
     }

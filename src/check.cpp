@@ -6,7 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <map>
-#include <set>
+#include <unordered_map>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -22,7 +22,7 @@ static bool autofix = false;
 static bool recursive = false;
 static bool deleteall = false;
 static thrdpool *pool;
-static std::set<std::string> objs;
+static std::unordered_map<std::string, filemeta> objs;
 
 static mutex console_lock;
 
@@ -170,7 +170,7 @@ void checkchunk(filekey* file) {
             if(objs.count(blks[i].path) == 0) {
                 haswrong = true;
             }else{
-                objs.erase(blks[i].path);
+                objs[blks[i].path].flags |= META_KEY_CHECKED_F;
             }
         } else if (fs.count(blks[i].path) == 0) {
             haswrong = true;
@@ -327,22 +327,22 @@ int main(int argc, char **argv) {
         case '?':
             return 1;
         }
-    const char *path;
+    const char *checkpath;
     if (argv[optind]) {
-        path = argv[optind];
+        checkpath = argv[optind];
     } else {
-        path = "/";
+        checkpath = "/";
     }
-    cout << "will check path: " << path << endl;
+    cout << "will check path: " << checkpath << endl;
     pool = creatpool(concurrent);
     filekey* file = nullptr;
     if(isfile){
-        file = getpath(encodepath(path));
+        file = getpath(encodepath(checkpath));
     }else{
-        file = getpath(path);
+        file = getpath(checkpath);
     }
     if(file == nullptr){
-        cerr<<"dir/file "<<path<<" not found."<<endl;
+        cerr<<"dir/file "<<checkpath<<" not found."<<endl;
         return -2;
     }
     if(opt.flags & FM_RENAME_NOTSUPPRTED){
@@ -358,7 +358,7 @@ int main(int argc, char **argv) {
             return -4;
         }
         for(auto i: objslist){
-            objs.insert(basename(i.key.path));
+            objs.emplace(basename(i.key.path), i);
         }
         cout<<"objs list done, size: "<<objs.size()<<endl;
     }
@@ -369,10 +369,24 @@ int main(int argc, char **argv) {
     }
     void* result;
     waittask(pool, 0, &result);
-    if(objs.size()){
-        cerr<<"objs not used: "<<objs.size()<<endl;
-        for(auto i: objs){
-            cerr<<i<<endl;
+    if(objs.size() && strcmp(checkpath, "/") == 0 && recursive){
+        //only check objs for full check
+        std::vector<filekey> ftrim;
+        cerr<<"objs not used: "<<endl;
+        for(auto [path, meta]: objs){
+            if(meta.flags & META_KEY_CHECKED_F) continue;
+            char timestr[64];
+            strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&meta.ctime));
+            cerr<<path<<", create: "<<timestr<<", size: "<<meta.size<<endl;
+            if(autofix){ 
+                ftrim.emplace_back(meta.key);
+            }
+        }
+        if(!ftrim.empty()){
+            int ret = HANDLE_EAGAIN(fm_batchdelete(std::move(ftrim)));
+            if (ret != 0) {
+                cerr<< "delete lagecy block in: "<<file->path<<" failed"<<endl;
+            }
         }
     }
     return 0;
