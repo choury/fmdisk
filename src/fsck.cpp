@@ -111,7 +111,11 @@ bool blockMatchNo(string block, uint64_t no) {
     if (block == "x") {
         return true;
     }
-    return (uint64_t)stoi(block) == no;
+    try{
+        return (uint64_t)stoi(block) == no;
+    }catch(const std::logic_error& e) {
+        return false;
+    }
 }
 
 void checkchunk(filekey* file) {
@@ -378,7 +382,7 @@ int main(int argc, char **argv) {
             char timestr[64];
             strftime(timestr, sizeof(timestr), "%Y-%m-%d %H:%M:%S", localtime(&meta.ctime));
             cerr<<path<<", create: "<<timestr<<", size: "<<meta.size<<endl;
-            if(autofix){ 
+            if(autofix){
                 ftrim.emplace_back(meta.key);
             }
         }
