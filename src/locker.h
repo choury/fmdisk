@@ -76,11 +76,32 @@ public:
         pthread_mutex_unlock(&lock);
         return 0;
     }
+    virtual int trywlock(){
+        pthread_t self = pthread_self();
+        pthread_mutex_lock(&lock);
+        if(writer == self){
+            pthread_mutex_unlock(&lock);
+            return EDEADLK;
+        }
+        if(!writer && reader.empty()){
+            writer = self;
+            pthread_mutex_unlock(&lock);
+            return 0;
+        }
+        if(!writer && reader.size() == 1 && reader.count(self)){
+            reader.erase(self);
+            writer = self;
+            pthread_mutex_unlock(&lock);
+            return 0;
+        }
+        pthread_mutex_unlock(&lock);
+        return EAGAIN;
+    }
     virtual int upgrade(){
         pthread_t self = pthread_self();
         pthread_mutex_lock(&lock);
         if(writer == self){
-            pthread_mutex_lock(&lock);
+            pthread_mutex_unlock(&lock);
             return EEXIST;
         }
         assert(reader.count(self));

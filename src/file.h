@@ -74,6 +74,9 @@ public:
     virtual void dump_to_disk_cache() override;
     virtual int drop_mem_cache() override;
 
+    time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
+    static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
+
     friend class dir_t;
 };
 

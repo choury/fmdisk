@@ -292,7 +292,8 @@ inline size_t GetBlkNo(size_t p, blksize_t blksize) {
 file_t::file_t(dir_t *parent, const filemeta& meta):
     entry_t(parent, meta),
     private_key(meta.key.private_key),
-    blksize(meta.blksize)
+    blksize(meta.blksize),
+    last_meta_sync_time(0)
 {
     if(flags & ENTRY_CHUNCED_F){
         fk = decodepath(fk);
@@ -515,7 +516,11 @@ int file_t::truncate(off_t offset){
     if(ret < 0){
         return -errno;
     }
-    this->mtime = time(NULL);
+    mtime = time(NULL);
+    if(mtime - last_meta_sync_time >= 60) {
+        last_meta_sync_time = mtime;
+        addtask(upool, (taskfunc)file_t::upload_meta_async_task, this, 0);
+    }
     return 0;
 }
 
@@ -557,6 +562,10 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     flags |= FILE_DIRTY_F;
     mtime = time(NULL);
+    if(mtime - last_meta_sync_time >= 60) {
+        last_meta_sync_time = mtime;
+        addtask(upool, (taskfunc)file_t::upload_meta_async_task, this, 0);
+    }
     return ret;
 }
 
@@ -790,4 +799,29 @@ int file_t::drop_mem_cache() {
     inline_data = nullptr;
     flags &= ~ENTRY_INITED_F;
     return 0;
+}
+
+void file_t::upload_meta_async_task(file_t* file) {
+    if(file->tryrlock()) {
+        return;  // 获取不到锁，放弃本次上传
+    }
+    defer(&file_t::unrlock, dynamic_cast<locker*>(file));
+
+    try {
+        if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
+            return;
+        }
+
+        const filekey& key = file->getkey();
+        filemeta meta = file->getmeta();
+        meta.key = file->getmetakey();
+        std::vector<filekey> fblocks = file->getfblocks();
+
+        if(upload_meta(key, meta, fblocks) != 0) {
+            return;
+        }
+        save_file_to_db(key.path, meta, fblocks);
+    } catch(...) {
+        // 如果上传失败，时间戳不更新，下次check时会重新尝试
+    }
 }
