@@ -27,7 +27,7 @@ int sqlinit(){
                 break;
             }
             char *err_msg;
-            if(sqlite3_exec(cachedb, 
+            if(sqlite3_exec(cachedb,
                 "CREATE TABLE IF NOT EXISTS entrys("
                 "parent text,"
                 "path text,"
@@ -40,7 +40,7 @@ int sqlinit(){
                 failed = true;
                 break;
             }
-            if(sqlite3_exec(cachedb, 
+            if(sqlite3_exec(cachedb,
                 "CREATE TABLE IF NOT EXISTS files("
                 "path text PRIMARY KEY,"
                 "private_key text,"
@@ -120,7 +120,7 @@ void load_file_from_db(const std::string& path, filemeta& meta, std::vector<file
     }
     string sql = "select private_key, meta from files where path='" + escapQuote(path) + "'";
     char* err_msg;
-    std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>> data = 
+    std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>> data =
         make_pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>(meta, fblocks);
     if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &data, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -147,7 +147,7 @@ void save_entry_to_db(const filekey& fileat, const filemeta& meta){
     if(cachedb == nullptr){
         return;
     }
-    string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(fileat.path) 
+    string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(fileat.path)
     + "', '" + escapQuote(basename(meta.key.path)) + "', '" + fm_private_key_tostring(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
     char* err_msg;
