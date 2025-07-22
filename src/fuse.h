@@ -37,8 +37,13 @@ int fm_fuse_flush(const char *path, struct fuse_file_info *fi);
 int fm_fuse_release(const char *path, struct fuse_file_info *fi);
 int fm_fuse_utimens(const char *path, const struct timespec tv[2]);
 int fm_fuse_chown(const char* path, uid_t, gid_t);
+#ifdef __APPLE__
+int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags, uint32_t);
+int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len, uint32_t);
+#else
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags);
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len);
+#endif
 int fm_fuse_chmod (const char *path, mode_t mode);
 
 #ifdef  __cplusplus

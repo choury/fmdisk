@@ -53,17 +53,9 @@ endif()
 
 
 
-pkg_check_modules(JSON-C REQUIRED json-c)
-link_directories(${JSON-C_LIBRARY_DIRS})
-include_directories(${JSON-C_INCLUDE_DIRS})
-
-pkg_check_modules(FUSE REQUIRED fuse)
-link_directories(${FUSE_LIBRARY_DIRS})
-include_directories(${FUSE_INCLUDE_DIRS})
-
-pkg_check_modules(SQLITE3 REQUIRED sqlite3)
-link_directories(${SQLITE3_LIBRARY_DIRS})
-include_directories(${SQLITE3_INCLUDE_DIRS})
+pkg_check_modules(JSON-C REQUIRED IMPORTED_TARGET json-c)
+pkg_check_modules(FUSE REQUIRED IMPORTED_TARGET fuse)
+pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
 #set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -O2 -DNDEBUG -ggdb")
 #set(CMAKE_CXX_FLAGS "-D_FILE_OFFSET_BITS=64 -std=c++11 -Wall -O2 -DNDEBUG -ggdb")

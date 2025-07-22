@@ -250,7 +250,11 @@ int fm_fuse_chown(const char* path, uid_t, gid_t) {
     return 0;
 }
 
+#ifdef __APPLE__
+int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags, uint32_t){
+#else
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
+#endif
     dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
@@ -265,7 +269,11 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
     return -ENODATA;
 }
 
+#ifdef __APPLE__
+int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len, uint32_t) {
+#else
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
+#endif
     dir_t* root = (dir_t*)fuse_get_context()->private_data;
     entry_t* entry = root->find(path);
     if(entry == nullptr){
