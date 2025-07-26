@@ -51,6 +51,19 @@ int sqlinit(){
                 failed = true;
                 break;
             }
+            if(sqlite3_exec(cachedb,
+                "CREATE TABLE IF NOT EXISTS blocks("
+                "private_key text,"
+                "block_no integer,"
+                "sync_status integer DEFAULT 0,"
+                "last_sync_time integer DEFAULT 0,"
+                "primary key (private_key, block_no))", nullptr, nullptr, &err_msg))
+            {
+                fprintf(stderr, "create table blocks failed: %s\n", err_msg);
+                sqlite3_free(err_msg);
+                failed = true;
+                break;
+            }
         }while(0);
         if(failed){
             sqlite3_close(cachedb);
@@ -227,6 +240,75 @@ int delete_entry_from_db(const string& path){
     }
     string sql = "delete from entrys where parent = '" + escapQuote(dirname(path)) + "' and path= '" + escapQuote(basename(path)) + "'";
     char *err_msg;
+    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return 0;
+}
+
+void save_block_sync_status_to_db(std::shared_ptr<void> file_private_key, size_t block_no, bool synced){
+    if(cachedb == nullptr || !file_private_key){
+        return;
+    }
+    string key_str = fm_private_key_tostring(file_private_key);
+    string sql = "replace into blocks (private_key, block_no, sync_status, last_sync_time) values('"
+        + escapQuote(key_str) + "', " + std::to_string(block_no) + ", "
+        + std::to_string(synced ? 1 : 0) + ", " + std::to_string(time(nullptr)) + ")";
+    char* err_msg;
+    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+    }
+}
+
+static int block_sync_callback(void *data, int columns, char **field, char **colum){
+    bool* synced = (bool*)data;
+    for(int i = 0; i < columns; i++){
+        if(strcmp(colum[i], "sync_status") == 0){
+            *synced = (field[i] && std::stoi(field[i]) == 1);
+            break;
+        }
+    }
+    return 0;
+}
+
+bool is_block_synced_in_db(std::shared_ptr<void> file_private_key, size_t block_no){
+    if(cachedb == nullptr || !file_private_key){
+        return false;
+    }
+    string key_str = fm_private_key_tostring(file_private_key);
+    string sql = "select sync_status from blocks where private_key = '" + escapQuote(key_str)
+        + "' and block_no = " + std::to_string(block_no);
+    char* err_msg;
+    bool synced = false;
+    if(sqlite3_exec(cachedb, sql.c_str(), block_sync_callback, &synced, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return false;
+    }
+    return synced;
+}
+
+int delete_blocks_from_db(const std::vector<filekey>& filekeys){
+    if(cachedb == nullptr || filekeys.empty()){
+        return 0;
+    }
+
+    // 构建批量删除的SQL语句
+    string sql = "delete from blocks where private_key in (";
+    bool first = true;
+    for(const auto& fkey : filekeys) {
+        if(!first) sql += ", ";
+        string key_str = fm_private_key_tostring(fkey.private_key);
+        sql += "'" + escapQuote(key_str) + "'";
+        first = false;
+    }
+    sql += ")";
+    if(first) return 0; // 没有有效的private_key
+
+    char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);

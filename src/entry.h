@@ -44,7 +44,6 @@ public:
     int drop_disk_cache();
 
     friend class dir_t;
-    friend class file_t;
 };
 
 struct thrdpool;
@@ -53,5 +52,7 @@ extern thrdpool* dpool;
 
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
+int create_dirs_recursive(const string& path);
+string get_cache_path(const string& remote_path);
 
 #endif

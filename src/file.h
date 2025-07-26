@@ -18,17 +18,12 @@ class file_t: public entry_t {
     virtual void pull_wlocked() override;
     static void clean(file_t* file);
 public:
-    //for simple native file, use st.st_ino as flags
     file_t(dir_t* parent, const filemeta& meta);
-    //for chunck block file
-    file_t(dir_t* parent, const filemeta& meta, std::vector<filekey> fblocks);
     virtual ~file_t();
 
     filekey getmetakey();
     std::vector<filekey> getkeys();
     virtual filemeta getmeta() override;
-    int putbuffer(void* buffer, off_t offset, size_t size);
-    int getbuffer(void* buffer, off_t offset, size_t size);
 
     virtual bool isDir() override {
         return false;

@@ -36,6 +36,36 @@ void cache_destroy(dir_t* root){
     delete root;
 }
 
+int create_dirs_recursive(const string& path) {
+    if (path.empty() || path == "/") {
+        return 0;
+    }
+
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+
+    string parent = dirname(path);
+    if (create_dirs_recursive(parent) != 0) {
+        return -1;
+    }
+
+    if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
+        return -1;
+    }
+
+    return 0;
+}
+
+string get_cache_path(const string& remote_path) {
+    string cache_path = pathjoin(opt.cache_dir, "cache");
+    cache_path = pathjoin(cache_path, remote_path);
+    return cache_path;
+}
+
+
+
 
 int entry_t::statfs(const char*, struct statvfs* sf) {
     return HANDLE_EAGAIN(fm_statfs(sf));
@@ -130,6 +160,9 @@ void entry_t::pull(entry_t* entry){
 
 int entry_t::drop_disk_cache(){
     auto_rlock(this);
+    if(!isDir()) {
+        delete_blocks_from_db(dynamic_cast<file_t*>(this)->getfblocks());
+    }
     string path = getkey().path;
     if(S_ISREG(mode)){
         return delete_file_from_db(path);

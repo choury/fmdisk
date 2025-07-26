@@ -115,7 +115,7 @@ size_t Base64En(const char *s, size_t len, char *dst){
     return Base64(base64_endigs_normal, s, len, dst);
 }
 
-static const char base64_dedigs[128] = 
+static const char base64_dedigs[128] =
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
  0,0,0,0,0,0,0,0,0,0,0,0,0,62,0,0,

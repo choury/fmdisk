@@ -10,6 +10,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include <semaphore.h>
+#include <fcntl.h>
 
 #include <list>
 #include <random>
@@ -47,6 +48,8 @@ void start_gc() {
             sleep(30);
             continue;
         }
+        // 先清理数据库中的block记录
+        delete_blocks_from_db(tmp);
         HANDLE_EAGAIN(fm_batchdelete(std::move(tmp)));
     }
 }
@@ -55,16 +58,21 @@ void stop_gc() {
     gc_stop = true;
 }
 
-static int tempfile() {
-    int fd;
-    char tmpfilename[PATHLEN];
-    snprintf(tmpfilename, sizeof(tmpfilename), "%s/.fm_fuse_XXXXXX", opt.cache_dir);
-    if ((fd = mkstemp(tmpfilename)) != -1) {
-        /*Unlink the temp file.*/
-        unlink(tmpfilename);
-    } else {
-        fprintf(stderr, "mkstem failed: %s", strerror(errno));
-        abort();
+static int persistent_cache_file(const string& remote_path) {
+    string cache_path = get_cache_path(remote_path);
+
+    // 确保目录存在
+    string cache_dir = dirname(cache_path);
+    if(create_dirs_recursive(cache_dir) != 0) {
+        fprintf(stderr, "create dirs failed for %s: %s\n", cache_dir.c_str(), strerror(errno));
+        return -1;
+    }
+
+    // 尝试打开现有文件，如果不存在则创建
+    int fd = open(cache_path.c_str(), O_RDWR | O_CREAT, 0644);
+    if (fd == -1) {
+        fprintf(stderr, "open cache file failed %s: %s\n", cache_path.c_str(), strerror(errno));
+        return -1;
     }
     return fd;
 }
@@ -86,6 +94,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     if(flags & ENTRY_CHUNCED_F){
         fk = decodepath(fk);
     }
+    fd = persistent_cache_file(getcwd());
     if(flags & META_KEY_ONLY_F) {
         return;
     }
@@ -95,19 +104,19 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
         assert(meta.size == 0);
         inline_data = new char[INLINE_DLEN];
         private_key = nullptr;
-//        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC));
         return;
     }
+    TEMP_FAILURE_RETRY(ftruncate(fd, length));
     //for the non-chunk file
     for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
-        blocks.emplace(i, new block_t(this, filekey{"", meta.key.private_key}, i, blksize * i, blksize, 0));
+        blocks.emplace(i, new block_t(fd, filekey{"", meta.key.private_key}, i, blksize * i, blksize, flags & FILE_ENCODE_F));
     }
 }
 
 file_t::~file_t() {
     auto_wlock(this);
     for(auto i: blocks){
-        i.second->flags |= BLOCK_STALE;
+        i.second->markstale();
         delete i.second;
     }
     if(fd >= 0){
@@ -124,13 +133,6 @@ int file_t::open(){
         pull_wlocked();
     }
     opened++;
-    if(fd >= 0){
-        return 0;
-    }
-    fd = tempfile();
-    if(fd >= 0){
-        TEMP_FAILURE_RETRY(ftruncate(fd, length));
-    }
     return 0;
 }
 
@@ -148,15 +150,6 @@ void file_t::clean(file_t* file) {
         }
         __w.unlock();
         delete file;
-    }else{
-        assert((file->flags & FILE_DIRTY_F) == 0);
-        for(auto i: file->blocks){
-            i.second->reset();
-        }
-        if(file->fd >= 0){
-            close(file->fd);
-        }
-        file->fd = -1;
     }
 }
 
@@ -176,6 +169,7 @@ void file_t::pull_wlocked() {
     filemeta meta;
     std::vector<filekey> fblocks;
     entry_t::pull_wlocked(meta, fblocks);
+    TEMP_FAILURE_RETRY(ftruncate(fd, length));
     private_key = meta.key.private_key;
     blksize = meta.blksize;
     flags |= meta.flags;
@@ -192,11 +186,11 @@ void file_t::pull_wlocked() {
             assert(fblocks.size() == GetBlkNo(length, blksize)+1);
         }
         for(size_t i = 0; i < fblocks.size(); i++ ){
-            blocks.emplace(i, new block_t(this, fblocks[i], i, blksize * i, blksize, 0));
+            blocks.emplace(i, new block_t(fd, fblocks[i], i, blksize * i, blksize, FILE_ENCODE_F));
         }
     } else {
         for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
-            blocks.emplace(i, new block_t(this, filekey{"", meta.key.private_key}, i, blksize * i, blksize, 0));
+            blocks.emplace(i, new block_t(fd, filekey{"", meta.key.private_key}, i, blksize * i, blksize, 0));
         }
     }
 }
@@ -238,11 +232,11 @@ int file_t::truncate_rlocked(off_t offset){
         }
         upgrade();
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks.emplace(i, new block_t(this, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC));
+            blocks.emplace(i, new block_t(fd, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
-        if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->makedirty();
+        if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->markdirty();
         upgrade();
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
@@ -258,10 +252,10 @@ int file_t::truncate_rlocked(off_t offset){
             return ret;
         }
         assert(blocks.count(0) == 0);
-        blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC));
+        blocks.emplace(0, new block_t(fd, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         delete[] inline_data;
         inline_data = nullptr;
-        if((flags & ENTRY_DELETED_F) == 0) blocks[0]->makedirty();
+        if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
     }
     length = offset;
     if(length == 0 && inline_data == nullptr){
@@ -322,7 +316,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         __r.upgrade();
     } else {
         for(size_t i =  startc; i <= endc; i++){
-            blocks[i]->makedirty();
+            blocks[i]->markdirty();
         }
         __r.upgrade();
     }
@@ -336,11 +330,14 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
 }
 
 int file_t::remove_and_release_wlock() {
-    parent = nullptr;
+    // 删除持久化缓存文件
+    string cache_path = get_cache_path(getcwd());
+    if(unlink(cache_path.c_str()) != 0 && errno != ENOENT) {
+        fprintf(stderr, "failed to unlink cache file %s: %s\n", cache_path.c_str(), strerror(errno));
+    }
     flags |= ENTRY_DELETED_F;
     if(opened || (flags & ENTRY_REASEWAIT_F)) {
         //do this in clean
-        unwlock();
         return 0;
     }
     if(opt.flags & FM_DELETE_NEED_PURGE) {
@@ -348,57 +345,22 @@ int file_t::remove_and_release_wlock() {
     }else{
         HANDLE_EAGAIN(fm_delete(getkey()));
     }
-    unwlock();
-    delete this;
-    return 0;
+    return 1;
 }
 
 std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
     if(inline_data){
-        return std::vector<filekey>();
+        return {};
     }
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
         if(i.second->dummy()){
             continue;
         }
-        fblocks[i.first] = basename(i.second->getkey());
+        fblocks[i.first] = std::get<0>(i.second->getmeta());
     }
     return fblocks;
-}
-
-int file_t::getbuffer(void* buffer, off_t offset, size_t size) {
-    auto_rlock(this);
-    if(fd < 0){
-        return -1;
-    }
-    int ret = TEMP_FAILURE_RETRY(pread(fd, buffer, size, offset));
-    bool allzero = true;
-    for(size_t i = 0; i < size; i++){
-        if(((char*)buffer)[i]){
-            allzero = false;
-            break;
-        }
-    }
-    if(allzero){
-        return 0;
-    }
-    if(flags & FILE_ENCODE_F){
-        xorcode(buffer, offset, ret, opt.secret);
-    }
-    return ret;
-}
-
-int file_t::putbuffer(void* buffer, off_t offset, size_t size) {
-    auto_rlock(this);
-    if(fd < 0){
-        return -1;
-    }
-    if(flags & FILE_ENCODE_F){
-        xorcode(buffer, offset, size, opt.secret);
-    }
-    return TEMP_FAILURE_RETRY(pwrite(fd, buffer, size, offset));
 }
 
 filekey file_t::getmetakey(){
@@ -510,6 +472,7 @@ int file_t::utime(const struct timespec tv[2]) {
         if(ret){
             return -errno;
         }
+        private_key = meta.key.private_key;
     } else {
         int ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
         if(ret){
@@ -554,7 +517,7 @@ int file_t::drop_mem_cache() {
     }
     __r.upgrade();
     for(auto i: blocks){
-        i.second->flags |= BLOCK_STALE;
+        i.second->markstale();
         delete i.second;
     }
     blocks.clear();

@@ -2,11 +2,29 @@
 #include "threadpool.h"
 #include "block.h"
 #include "file.h"
+#include "sqlite.h"
+
+#include <string.h>
 
 #include <semaphore.h>
 #include <list>
 #include <random>
 #include <algorithm>
+
+static std::string getPathFromFd(int fd) {
+    if (fd < 0) {
+        throw std::invalid_argument("File descriptor cannot be negative.");
+    }
+
+    std::string procPath = "/proc/self/fd/" + std::to_string(fd);
+    std::vector<char> buffer(PATH_MAX);
+    ssize_t len = readlink(procPath.c_str(), buffer.data(), buffer.size() - 1);
+
+    if (len == -1) {
+        throw std::runtime_error("Failed to readlink for " + procPath + ": " + strerror(errno));
+    }
+    return std::string(buffer.data(), len);
+}
 
 sem_t dirty_sem;
 std::list<block_t*> dblocks; // dirty blocks
@@ -39,14 +57,20 @@ void writeback_thread(){
 }
 
 
-block_t::block_t(file_t* file, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
-    file(file),
+block_t::block_t(int fd, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
+    fd(fd),
     fk(basename(fk)),
     no(no),
     offset(offset),
     size(size),
     flags(flags)
 {
+    assert(fd >= 0);
+
+    // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
+    if(is_block_synced_in_db(fk.private_key, no)) {
+        this->flags |= BLOCK_SYNC;
+    }
 }
 
 //两种情况下会被调用
@@ -70,13 +94,35 @@ block_t::~block_t() {
     }
 }
 
-filekey block_t::getkey(){
-    filekey key = file->getkey();
-    if(fk.path.empty()) {
-        return filekey{key.path, fk.private_key};
+std::string block_t::getpath() {
+    // 从 fd 获取当前路径
+    string cache_path = getPathFromFd(fd);
+
+    // 从缓存路径推导出远程路径: /cache_dir/cache/a/b/c -> /a/b/c
+    string remote_path;
+    string cache_prefix = pathjoin(opt.cache_dir, "cache");
+    if(cache_path.find(cache_prefix) == 0) {
+        remote_path = cache_path.substr(cache_prefix.length());
+        if(remote_path.empty()) {
+            remote_path = "/";
+        }
     } else {
-        return filekey{pathjoin(key.path, fk.path), fk.private_key};
+        throw std::runtime_error("Cache path does not start with expected prefix: " + cache_path);
     }
+    return remote_path;
+}
+
+filekey block_t::getkey(){
+    if(fk.path.empty()) {
+        return filekey{getpath(), fk.private_key};
+    } else {
+        return filekey{pathjoin(getpath(), fk.path), fk.private_key};
+    }
+}
+
+std::tuple<filekey, uint> block_t::getmeta() {
+    auto_rlock(this);
+    return {fk, flags};
 }
 
 void block_t::pull(block_t* b) {
@@ -91,8 +137,15 @@ void block_t::pull(block_t* b) {
         throw "fm_download IO Error";
     }
     assert(bs.size() <= (size_t)b->size);
-    if(b->file->putbuffer(bs.mutable_data(), b->offset, bs.size()) >= 0){
+    // 直接写入缓存文件
+    if(b->flags & FILE_ENCODE_F){
+        xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
+    }
+    int ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
+    if(ret >= 0){
         b->flags |= BLOCK_SYNC;
+        // 更新数据库中的sync状态
+        save_block_sync_status_to_db(b->fk.private_key, b->no, true);
     }
 }
 
@@ -114,9 +167,25 @@ void block_t::push(block_t* b) {
         return;
     }
     char *buff = (char*)malloc(b->size);
-    size_t len = b->file->getbuffer(buff, b->offset, b->size);
-    if(len < 0){
+    int ret = TEMP_FAILURE_RETRY(pread(b->fd, buff, b->size, b->offset));
+    if(ret < 0){
+        free(buff);
         return;
+    }
+    size_t len = ret;
+
+    // 检查是否全零
+    bool allzero = true;
+    for(size_t i = 0; i < len; i++){
+        if(buff[i]){
+            allzero = false;
+            break;
+        }
+    }
+    if (allzero) {
+        len = 0;
+    } else if(b->flags & FILE_ENCODE_F){
+        xorcode(buff, b->offset, len, opt.secret);
     }
     trim(b->getkey());
     if(len){
@@ -131,7 +200,7 @@ void block_t::push(block_t* b) {
         path +=  '_' + std::to_string(time(nullptr)) + '_' + random_string();
         filekey file{path, 0};
 retry:
-        int ret = HANDLE_EAGAIN(fm_upload(b->file->getkey(), file, buff, len, false));
+        int ret = HANDLE_EAGAIN(fm_upload({b->getpath(), nullptr}, file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
@@ -144,6 +213,7 @@ retry:
         free(buff);
         b->fk = filekey{"x", 0};
     }
+    save_block_sync_status_to_db(b->fk.private_key, b->no, true);
     b->flags &= ~BLOCK_DIRTY;
     sem_post(&dirty_sem);
 }
@@ -166,7 +236,7 @@ void block_t::prefetch(bool wait) {
     }
 }
 
-void block_t::makedirty() {
+void block_t::markdirty() {
     wlock();
     atime = time(0);
     if(flags & BLOCK_DIRTY){
@@ -186,6 +256,11 @@ void block_t::makedirty() {
     dblocks.push_back(this);
     pthread_mutex_unlock(&dblocks_lock);
     sem_wait(&dirty_sem);
+}
+
+void block_t::markstale() {
+    auto_wlock(this);
+    flags |= BLOCK_STALE;
 }
 
 void block_t::sync(){
@@ -221,8 +296,4 @@ bool block_t::dummy() {
 int block_t::staled(){
     auto_rlock(this);
     return time(0) - atime;
-}
-
-
-void recover_dirty_blocks() {
 }

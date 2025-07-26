@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <assert.h>
+#include <sys/stat.h>
 
 static string childname(const string& path) {
     size_t pos = path.find_first_of("/");
@@ -106,7 +107,7 @@ void dir_t::pull_entrys_wlocked() {
         if(!cached){
             save_entry_to_db(getkey(), i);
             if((i.flags & META_KEY_ONLY_F) == 0){
-                save_file_to_db(entrys[bname]->getkey().path, i, std::vector<filekey>{});
+                save_file_to_db(entrys[bname]->getkey().path, i, {});
             }
         }
     }
@@ -178,6 +179,12 @@ entry_t* dir_t::insert_child_wlocked(string name, entry_t* entry){
 void dir_t::erase_child_wlocked(string name, entry_t* child) {
     assert(entrys.count(name));
     auto path = child->getkey().path;
+
+    // 如果是文件，删除相关的block记录
+    if(!child->isDir()) {
+        delete_blocks_from_db(dynamic_cast<file_t*>(child)->getfblocks());
+    }
+
     delete_entry_from_db(path);
     delete_entry_prefix_from_db(path);
     entrys.erase(name);
@@ -251,8 +258,17 @@ int dir_t::unlink(const string& name) {
         entry->unwlock();
         return -EISDIR;
     }
+    int ret = dynamic_cast<file_t*>(entry)->remove_and_release_wlock();
+    if(ret < 0) {
+        entry->unwlock();
+        return ret;
+    }
     erase_child_wlocked(name, entry);
-    dynamic_cast<file_t*>(entry)->remove_and_release_wlock();
+    entry->parent = nullptr;
+    entry->unwlock();
+    if(ret > 0) {
+        delete entry;
+    }
     mtime = time(NULL);
     flags |= DIR_DIRTY_F;
     return 0;
@@ -286,8 +302,9 @@ int dir_t::rmdir(const string& name) {
     erase_child_wlocked(name, entry);
     mtime = time(NULL);
     flags |= DIR_DIRTY_F;
+    ::rmdir(get_cache_path(child->getcwd()).c_str());
 
-    //entry->parent = nullptr;
+    entry->parent = nullptr;
     entry->flags |= ENTRY_DELETED_F;
     if(entry->opened ||
       (entry->flags & ENTRY_REASEWAIT_F)||
@@ -346,6 +363,27 @@ int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
     if(ret){
         return ret;
     }
+
+    // 如果是文件，需要移动持久化缓存文件
+    if(!entry->isDir()) {
+        string old_remote_path = pathjoin(this->getcwd(), oldname);
+        string new_remote_path = pathjoin(newparent->getcwd(), newname);
+        string old_cache_path = pathjoin(pathjoin(opt.cache_dir, "cache"), old_remote_path);
+        string new_cache_path = pathjoin(pathjoin(opt.cache_dir, "cache"), new_remote_path);
+
+        // 确保新缓存目录存在
+        string new_cache_dir = dirname(new_cache_path);
+        if(create_dirs_recursive(new_cache_dir) != 0) {
+            fprintf(stderr, "failed to create cache dir %s: %s\n", new_cache_dir.c_str(), strerror(errno));
+        }
+
+        // 移动缓存文件
+        if(rename(old_cache_path.c_str(), new_cache_path.c_str()) != 0 && errno != ENOENT) {
+            fprintf(stderr, "failed to rename cache file %s to %s: %s\n",
+                    old_cache_path.c_str(), new_cache_path.c_str(), strerror(errno));
+        }
+    }
+
     flags |= DIR_DIRTY_F;
     mtime = time(NULL);
     erase_child_wlocked(oldname, entry);
@@ -405,7 +443,7 @@ void dir_t::dump_to_disk_cache(){
     }
     filemeta meta = getmeta();
     save_entry_to_db(parent->getkey(), meta);
-    save_file_to_db(meta.key.path, meta, std::vector<filekey>{});
+    save_file_to_db(meta.key.path, meta, {});
     if((flags & DIR_PULLED_F) == 0){
         return;
     }

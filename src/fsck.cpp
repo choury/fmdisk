@@ -90,7 +90,7 @@ filekey fixMissBlock(const filekey& file, const std::map<std::string, struct fil
     filemeta meta{file};
     if (fit.empty()) {
         cout<<decodepath(file.path) << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
-        return filekey{"x"};
+        return {{"x"}, 0};
     }
     size_t n = 0;
 pick:
