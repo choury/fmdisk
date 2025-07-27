@@ -25,6 +25,7 @@ struct fmoption{
     const char* secret;
     unsigned int block_len;
     unsigned int flags;
+    long long cache_size;  // 缓存大小限制（字节），<0不限制，=0立即回收，>0按大小限制
 };
 
 extern struct fmoption opt;

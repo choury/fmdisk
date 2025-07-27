@@ -57,8 +57,9 @@ void writeback_thread(){
 }
 
 
-block_t::block_t(int fd, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
+block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
     fd(fd),
+    inode(inode),
     fk(basename(fk)),
     no(no),
     offset(offset),
@@ -68,7 +69,7 @@ block_t::block_t(int fd, filekey fk, size_t no, off_t offset, size_t size, unsig
     assert(fd >= 0);
 
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
-    if(is_block_synced_in_db(fk.private_key, no)) {
+    if(is_block_synced_in_db(inode, no)) {
         this->flags |= BLOCK_SYNC;
     }
 }
@@ -145,7 +146,7 @@ void block_t::pull(block_t* b) {
     if(ret >= 0){
         b->flags |= BLOCK_SYNC;
         // 更新数据库中的sync状态
-        save_block_sync_status_to_db(b->fk.private_key, b->no, true);
+        save_block_sync_status_to_db(b->inode, b->no, b->fk.private_key, true);
     }
 }
 
@@ -213,7 +214,7 @@ retry:
         free(buff);
         b->fk = filekey{"x", 0};
     }
-    save_block_sync_status_to_db(b->fk.private_key, b->no, true);
+    save_block_sync_status_to_db(b->inode, b->no, b->fk.private_key, true);
     b->flags &= ~BLOCK_DIRTY;
     sem_post(&dirty_sem);
 }

@@ -14,7 +14,8 @@ int load_entry_from_db(const std::string& path, std::vector<filemeta>& flist);
 int delete_entry_from_db(const std::string& path);
 int delete_entry_prefix_from_db(const std::string& path);
 
-void save_block_sync_status_to_db(std::shared_ptr<void> file_private_key, size_t block_no, bool synced);
-bool is_block_synced_in_db(std::shared_ptr<void> file_private_key, size_t block_no);
-int delete_blocks_from_db(const std::vector<filekey>& filekeys);
+void save_block_sync_status_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool synced);
+bool is_block_synced_in_db(ino_t inode, size_t block_no);
+int delete_blocks_from_db(ino_t inode);
+int delete_blocks_by_key(const std::vector<filekey>& filekeys);
 #endif

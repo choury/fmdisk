@@ -9,6 +9,7 @@
 
 class file_t: public entry_t {
     int fd = -1;
+    ino_t inode = 0;
     std::shared_ptr<void> private_key; //for meta.json
     char* inline_data = nullptr;
     blksize_t blksize;
@@ -20,6 +21,7 @@ class file_t: public entry_t {
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();
+    void reset_wlocked();
 
     filekey getmetakey();
     std::vector<filekey> getkeys();

@@ -114,11 +114,12 @@ string entry_t::getcwd() {
     return pathjoin(parent->getcwd(), fk.path);
 }
 
-void entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks){
+void entry_t::pull_wlocked(filemeta& meta){
     const filekey& key = getkey();
     meta = initfilemeta(key);
     meta.mode = this->mode;
     assert((flags & ENTRY_INITED_F) == 0);
+    std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
     if(flags & ENTRY_CHUNCED_F){
         if(meta.blksize == 0){
@@ -161,7 +162,7 @@ void entry_t::pull(entry_t* entry){
 int entry_t::drop_disk_cache(){
     auto_rlock(this);
     if(!isDir()) {
-        delete_blocks_from_db(dynamic_cast<file_t*>(this)->getfblocks());
+        delete_blocks_by_key(dynamic_cast<file_t*>(this)->getfblocks());
     }
     string path = getkey().path;
     if(S_ISREG(mode)){

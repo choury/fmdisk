@@ -182,7 +182,7 @@ void dir_t::erase_child_wlocked(string name, entry_t* child) {
 
     // 如果是文件，删除相关的block记录
     if(!child->isDir()) {
-        delete_blocks_from_db(dynamic_cast<file_t*>(child)->getfblocks());
+        delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
     }
 
     delete_entry_from_db(path);

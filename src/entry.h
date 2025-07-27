@@ -23,7 +23,7 @@ protected:
     uint32_t opened = 0;
     string getcwd();
     virtual void pull_wlocked() = 0;
-    void pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
+    void pull_wlocked(filemeta& meta);
     static void pull(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);

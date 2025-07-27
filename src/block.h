@@ -5,6 +5,7 @@
 
 class block_t: locker {
     int fd;
+    ino_t inode;  // 缓存文件的inode
     filekey fk;
     const size_t no;
     const off_t offset;
@@ -18,7 +19,7 @@ class block_t: locker {
     std::string getpath();
     filekey getkey();
 public:
-    block_t(int fd, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
+    block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
     ~block_t();
     std::tuple<filekey, uint> getmeta();
     void prefetch(bool wait);
