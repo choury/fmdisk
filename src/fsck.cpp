@@ -12,6 +12,9 @@
 #include <string>
 #include <json.h>
 #include <string.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <functional>
 #include "sqlite.h"
 
 using namespace std;
@@ -24,6 +27,24 @@ static bool deleteall = false;
 static thrdpool *pool;
 static std::unordered_map<std::string, filemeta> objs;
 
+// 全局变量存储本地缓存文件信息
+
+struct local_cache_file {
+    string path;           // 本地缓存文件路径
+    string remote_path;    // 对应的远程路径
+    ino_t inode;          // 文件inode
+    size_t size;          // 文件大小
+    time_t mtime;         // 修改时间
+    bool checked;         // 是否已被远程文件检查过
+
+    local_cache_file(const string& p, const string& rp, ino_t i, size_t s, time_t m)
+        : path(p), remote_path(rp), inode(i), size(s), mtime(m), checked(false) {}
+};
+
+static std::vector<local_cache_file> local_cache_files;
+static std::map<string, local_cache_file*> remote_path_to_cache; // 远程路径到缓存文件的映射
+static std::map<ino_t, local_cache_file*> inode_to_cache;        // inode到缓存文件的映射
+
 static mutex console_lock;
 
 std::ostream& lock(std::ostream& os) {
@@ -35,6 +56,9 @@ std::ostream& unlock(std::ostream& os) {
     console_lock.unlock();
     return os;
 }
+
+// 前向声明
+void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks);
 
 void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>& flist) {
     cerr << lock;
@@ -225,6 +249,9 @@ void checkchunk(filekey* file) {
             cerr<<lock<< "delete lagecy block in: "<<file->path<<" failed"<<endl<<unlock;
         }
     }
+
+    // 检查本地缓存一致性
+    checkcache(*file, meta, blks);
     if (verbose) {
         cout <<lock<< decodepath(file->path) << " check finish" << endl<<unlock;
     }
@@ -270,6 +297,186 @@ void checkdir(filekey* file) {
         }else if(recursive){
             addtask(pool, (taskfunc)checkdir, new filekey(f.key), 0);
         }
+    }
+}
+
+// 删除不一致的缓存文件和相关block条目
+void fixCacheInconsistency(local_cache_file* cache_file) {
+    if (verbose) {
+        cout << lock << "Deleted inconsistent cache file: " << cache_file->path << endl << unlock;
+    }
+
+    // 删除本地缓存文件
+    if (unlink(cache_file->path.c_str()) != 0) {
+        cerr << lock << "Failed to delete cache file: " << cache_file->path
+             << " error: " << strerror(errno) << endl << unlock;
+    }
+
+    delete_blocks_from_db(cache_file->inode);
+    inode_to_cache.erase(cache_file->inode);
+}
+
+// 检查本地缓存文件与远程meta信息的一致性
+void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks) {
+    string remote_path = file.path;
+
+    // 查找对应的本地缓存文件
+    auto it = remote_path_to_cache.find(remote_path);
+    if (it == remote_path_to_cache.end()) {
+        return;
+    }
+
+    local_cache_file* cache_file = it->second;
+    cache_file->checked = true;  // 标记为已检查
+
+    // 1. 验证文件大小是否一致
+    if (cache_file->size != meta.size) {
+        cerr << lock << "Cache file size mismatch: [" << remote_path
+             << "] local=" << cache_file->size << " remote=" << meta.size << endl << unlock;
+        if (autofix) {
+            fixCacheInconsistency(cache_file);
+            return;
+        }
+    }
+
+    // 2. 验证数据库blocks表中该文件相关记录的private_key
+    std::vector<block_record> db_blocks;
+    if (get_blocks_for_inode(cache_file->inode, db_blocks) <= 0) {
+        cerr << lock << "blocks for: [" << remote_path << "] not found"<< endl << unlock;
+        if(autofix) {
+            fixCacheInconsistency(cache_file);
+            return;
+        }
+    }
+    // 为每个数据库中的block找到对应的远程block并比较private_key
+    for (const auto& db_block : db_blocks) {
+        if (db_block.block_no >= blks.size()) {
+            cerr << lock << "Block table has invalid block_no: [" << remote_path
+                    << "] block_no=" << db_block.block_no << " max_blocks=" << blks.size() << endl << unlock;
+            if (autofix) {
+                fixCacheInconsistency(cache_file);
+                return;
+            }
+        }
+        string expected_key = fm_private_key_tostring(blks[db_block.block_no].private_key);
+        if (db_block.private_key != expected_key) {
+            cerr << lock << "Block table private_key mismatch: [" << remote_path
+                    << "] block_no=" << db_block.block_no << " db_key=" << db_block.private_key
+                    << " expected=" << expected_key << endl << unlock;
+
+            if (autofix) {
+                fixCacheInconsistency(cache_file);
+                return;  // 修复后直接返回
+            }
+        }
+    }
+    if (verbose) {
+        cout << lock << "Cache check completed for: [" << remote_path << "] (consistent)" << endl << unlock;
+    }
+}
+
+// 检查孤儿文件和孤儿block条目
+void checkOrphanedFiles(const char* checkpath) {
+    cout << lock << "Checking for orphaned cache files and block entries..." << endl << unlock;
+
+    // 1. 检查孤儿缓存文件（没有被任何远程文件引用的本地缓存文件）
+    for (auto& cache_file : local_cache_files) {
+        if (cache_file.checked) {
+            continue;
+        }
+        cerr << lock << "Found arphaned cache file  " << cache_file.path << ", inode: "
+             << cache_file.inode << ", size: " << cache_file.size << endl << unlock;
+
+        if (autofix) {
+            fixCacheInconsistency(&cache_file);
+        }
+    }
+
+    // 2. 检查孤儿block条目（blocks表中对应的inode在本地缓存中不存在）
+    // 只有在检查根路径时才进行孤儿block条目检查，避免误删其他路径下的正常文件对应的block
+    if (strcmp(checkpath, "/") != 0) {
+        return;
+    }
+    std::vector<ino_t> db_inodes;
+    if (get_all_block_inodes(db_inodes) <= 0) {
+        return;
+    }
+    for (ino_t db_inode : db_inodes) {
+        if (inode_to_cache.count(db_inode) ) {
+            continue;
+        }
+        cerr << lock << "inode=" << db_inode << " (no corresponding cache file)" << endl << unlock;
+        if (autofix) {
+            // 删除孤儿block条目
+            delete_blocks_from_db(db_inode);
+        }
+    }
+}
+
+// 扫描本地缓存目录，收集指定路径下的文件信息
+void scanLocalCacheFiles(const char* checkpath) {
+    string cache_dir = pathjoin(opt.cache_dir, "cache");
+    string target_cache_dir;
+
+    // 如果检查根路径，扫描整个缓存目录；否则只扫描对应的子目录
+    if (strcmp(checkpath, "/") == 0) {
+        target_cache_dir = cache_dir;
+    } else {
+        target_cache_dir = pathjoin(cache_dir, checkpath);
+    }
+
+    std::function<void(const string&)> scan_dir = [&](const string& dir) {
+        DIR* d = opendir(dir.c_str());
+        if (!d) return;
+
+        defer([d]() { closedir(d); });
+
+        struct dirent* entry;
+        while ((entry = readdir(d)) != nullptr) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+
+            string full_path = pathjoin(dir, entry->d_name);
+            struct stat st;
+            if (stat(full_path.c_str(), &st) < 0) {
+                cerr << lock << "Failed to stat file: " << full_path
+                     << " error: " << strerror(errno) << endl << unlock;
+                abort();
+            }
+            if (S_ISDIR(st.st_mode)) {
+                scan_dir(full_path);
+                continue;
+            }
+            if (S_ISREG(st.st_mode)) {
+                // 计算对应的远程路径：去掉cache_dir/cache前缀
+                string remote_path;
+                string cache_prefix = pathjoin(opt.cache_dir, "cache");
+                if (full_path.find(cache_prefix) == 0) {
+                    remote_path = full_path.substr(cache_prefix.length());
+                    if (remote_path.empty()) {
+                        remote_path = "/";
+                    }
+                } else {
+                    // 不应该发生，但为了安全起见
+                    remote_path = full_path;
+                }
+
+                // 添加到全局列表
+                local_cache_files.emplace_back(full_path, remote_path, st.st_ino, st.st_size, st.st_mtime);
+
+                // 建立映射关系
+                local_cache_file* file_ptr = &local_cache_files.back();
+                remote_path_to_cache[remote_path] = file_ptr;
+                inode_to_cache[st.st_ino] = file_ptr;
+            }
+        }
+    };
+
+    scan_dir(target_cache_dir);
+
+    if (verbose) {
+        cout << lock << "Scanned " << local_cache_files.size() << " local cache files under " << checkpath << endl << unlock;
     }
 }
 
@@ -338,6 +545,10 @@ int main(int argc, char **argv) {
         checkpath = "/";
     }
     cout << "will check path: " << checkpath << endl;
+
+    // 扫描本地缓存文件
+    scanLocalCacheFiles(checkpath);
+
     pool = creatpool(concurrent);
     filekey* file = nullptr;
     if(isfile){
@@ -392,6 +603,11 @@ int main(int argc, char **argv) {
                 cerr<< "delete lagecy block in: "<<file->path<<" failed"<<endl;
             }
         }
+    }
+
+    if(recursive) {
+        // 检查孤儿文件和block条目
+        checkOrphanedFiles(checkpath);
     }
     return 0;
 }

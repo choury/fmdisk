@@ -18,4 +18,14 @@ void save_block_sync_status_to_db(ino_t inode, size_t block_no, std::shared_ptr<
 bool is_block_synced_in_db(ino_t inode, size_t block_no);
 int delete_blocks_from_db(ino_t inode);
 int delete_blocks_by_key(const std::vector<filekey>& filekeys);
+
+// fsck相关的数据库获取函数
+struct block_record {
+    ino_t inode;
+    size_t block_no;
+    std::string private_key;
+};
+
+int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks);
+int get_all_block_inodes(std::vector<ino_t>& inodes);
 #endif

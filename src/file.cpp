@@ -251,7 +251,7 @@ int file_t::open(){
         return 0;
     }
     assert(opened == 1 && blocks.empty());
-    fd = persistent_cache_file(fk.path);
+    fd = persistent_cache_file(getcwd());
     TEMP_FAILURE_RETRY(ftruncate(fd, length));
     struct stat st;
     fstat(fd, &st);

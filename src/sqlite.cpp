@@ -331,3 +331,55 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     }
     return 0;
 }
+
+int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
+    if(cachedb == nullptr) {
+        return -1;
+    }
+
+    string sql = "SELECT inode, block_no, private_key FROM blocks WHERE inode = " + std::to_string(inode);
+    char* err_msg;
+
+    auto blocks_callback = [](void *data, int columns, char **field, char **colum) -> int {
+        std::vector<block_record>* blocks = (std::vector<block_record>*)data;
+        if (field[0] && field[1] && field[2]) {
+            block_record record;
+            record.inode = std::stoll(field[0]);
+            record.block_no = std::stoull(field[1]);
+            record.private_key = field[2];
+            blocks->push_back(record);
+        }
+        return 0;
+    };
+
+    if(sqlite3_exec(cachedb, sql.c_str(), blocks_callback, &blocks, &err_msg)) {
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return blocks.size();
+}
+
+int get_all_block_inodes(std::vector<ino_t>& inodes) {
+    if(cachedb == nullptr) {
+        return -1;
+    }
+
+    string sql = "SELECT DISTINCT inode FROM blocks WHERE inode > 0";
+    char* err_msg;
+
+    auto inodes_callback = [](void *data, int columns, char **field, char **colum) -> int {
+        std::vector<ino_t>* inodes = (std::vector<ino_t>*)data;
+        if (field[0]) {
+            inodes->push_back(std::stoll(field[0]));
+        }
+        return 0;
+    };
+
+    if(sqlite3_exec(cachedb, sql.c_str(), inodes_callback, &inodes, &err_msg)) {
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return inodes.size();
+}
