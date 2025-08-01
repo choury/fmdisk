@@ -2,9 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include <errno.h>
 #include <sys/stat.h>
 #include <json.h>
+#include <dirent.h>
+#include <functional>
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -537,4 +538,60 @@ retry:
     }
     json_object_put(jobj);
     return ret;
+}
+
+// 从缓存路径推导远程路径
+string get_remote_path(const string& cache_path) {
+    string cache_prefix = pathjoin(opt.cache_dir, "cache");
+    if (cache_path.find(cache_prefix) == 0) {
+        string remote_path = cache_path.substr(cache_prefix.length());
+        if (remote_path.empty()) {
+            remote_path = "/";
+        }
+        return remote_path;
+    }
+    return ""; // 无效路径
+}
+
+string get_cache_path(const string& remote_path) {
+    return pathjoin(opt.cache_dir, "cache", remote_path);
+}
+
+cache_file_info::cache_file_info(const string& p, struct stat& st)
+    : path(p), remote_path(get_remote_path(p)), st(st), checked(false) {
+}
+
+// 扫描缓存目录，获取所有缓存文件的信息
+std::vector<cache_file_info> scan_cache_directory(const string& checkpath) {
+    std::vector<cache_file_info> cache_files;
+    string cache_dir = pathjoin(opt.cache_dir, "cache", checkpath);
+
+    // 递归扫描缓存目录
+    std::function<void(const string&)> scan_dir = [&](const string& dir) {
+        DIR* d = opendir(dir.c_str());
+        if (!d) return;
+
+        struct dirent* entry;
+        while ((entry = readdir(d)) != nullptr) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+                continue;
+            }
+
+            string full_path = pathjoin(dir, entry->d_name);
+            struct stat st;
+            if (stat(full_path.c_str(), &st) < 0) {
+                continue;
+            }
+            if (S_ISDIR(st.st_mode)) {
+                scan_dir(full_path);  // 递归扫描子目录
+            } else if (S_ISREG(st.st_mode)) {
+                // 常规文件，记录其信息
+                cache_files.emplace_back(full_path, st);
+            }
+        }
+        closedir(d);
+    };
+
+    scan_dir(cache_dir);
+    return cache_files;
 }

@@ -2,7 +2,7 @@
 #define COMMON_H__
 
 #define INLINE_DLEN    (uint64_t)0x1000            //inline data limit (4K)
-#define UPLOADTHREADS  10
+#define UPLOADTHREADS  10ll
 #define DOWNLOADTHREADS    20
 #define CHECKTHREADS   20
 

@@ -23,7 +23,7 @@ static std::string getPathFromFd(int fd) {
     if (len == -1) {
         throw std::runtime_error("Failed to readlink for " + procPath + ": " + strerror(errno));
     }
-    return std::string(buffer.data(), len);
+    return {buffer.data(), (size_t)len};
 }
 
 sem_t dirty_sem;
@@ -32,15 +32,16 @@ pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
-void writeback_thread(){
-    sem_init(&dirty_sem, 0, UPLOADTHREADS*2);
-    while(true){
+void writeback_thread(bool* done){
+    sem_init(&dirty_sem, 0, std::max(UPLOADTHREADS*2, opt.cache_size / opt.block_len));
+    while(!*done){
         usleep(100000);
         pthread_mutex_lock(&dblocks_lock);
         if(dblocks.empty()){
             pthread_mutex_unlock(&dblocks_lock);
             continue;
-        }else if(taskinqueu(upool) == 0 && dblocks.size() >= UPLOADTHREADS){
+        }
+        if(taskinqueu(upool) == 0 && dblocks.size() >= UPLOADTHREADS){
             addtask(upool, (taskfunc)block_t::push, dblocks.front(), 0);
             dblocks.pop_front();
         }
@@ -49,7 +50,7 @@ void writeback_thread(){
                 addtask(upool, (taskfunc)block_t::push, *i, 0);
                 i = dblocks.erase(i);
             }else{
-                break;
+                i++;
             }
         }
         pthread_mutex_unlock(&dblocks_lock);
@@ -64,13 +65,23 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     no(no),
     offset(offset),
     size(size),
-    flags(flags)
+    flags(flags),
+    atime(0)
 {
     assert(fd >= 0);
 
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
-    if(is_block_synced_in_db(inode, no)) {
-        this->flags |= BLOCK_SYNC;
+    struct block_record record;
+    if(!load_block_from_db(inode, no, record)) {
+        return;
+    }
+    this->flags |= BLOCK_SYNC;
+    if (record.dirty || record.private_key != fm_private_key_tostring(fk.private_key)) {
+        this->flags |= BLOCK_DIRTY;
+        pthread_mutex_lock(&dblocks_lock);
+        dblocks.push_back(this);
+        pthread_mutex_unlock(&dblocks_lock);
+        sem_wait(&dirty_sem);
     }
 }
 
@@ -95,35 +106,20 @@ block_t::~block_t() {
     }
 }
 
-std::string block_t::getpath() {
+std::string block_t::getpath() const {
     // 从 fd 获取当前路径
     string cache_path = getPathFromFd(fd);
 
     // 从缓存路径推导出远程路径: /cache_dir/cache/a/b/c -> /a/b/c
-    string remote_path;
-    string cache_prefix = pathjoin(opt.cache_dir, "cache");
-    if(cache_path.find(cache_prefix) == 0) {
-        remote_path = cache_path.substr(cache_prefix.length());
-        if(remote_path.empty()) {
-            remote_path = "/";
-        }
-    } else {
-        throw std::runtime_error("Cache path does not start with expected prefix: " + cache_path);
-    }
-    return remote_path;
+    return get_remote_path(cache_path);
 }
 
-filekey block_t::getkey(){
+filekey block_t::getkey() const {
     if(fk.path.empty()) {
         return filekey{getpath(), fk.private_key};
     } else {
         return filekey{pathjoin(getpath(), fk.path), fk.private_key};
     }
-}
-
-std::tuple<filekey, uint> block_t::getmeta() {
-    auto_rlock(this);
-    return {fk, flags};
 }
 
 void block_t::pull(block_t* b) {
@@ -145,8 +141,7 @@ void block_t::pull(block_t* b) {
     int ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
         b->flags |= BLOCK_SYNC;
-        // 更新数据库中的sync状态
-        save_block_sync_status_to_db(b->inode, b->no, b->fk.private_key, true);
+        save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     }
 }
 
@@ -160,10 +155,9 @@ static std::string random_string() {
      return str.substr(0, 16);    // assumes 16 < number of characters in str
 }
 
-
-
 void block_t::push(block_t* b) {
-    auto_wlock(b);
+    auto_rlock(b);
+    size_t version = b->version;
     if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
         return;
     }
@@ -189,6 +183,7 @@ void block_t::push(block_t* b) {
         xorcode(buff, b->offset, len, opt.secret);
     }
     trim(b->getkey());
+    filekey file;
     if(len){
         //It must be chunk file, because native file can't be written
         string path;
@@ -199,7 +194,7 @@ void block_t::push(block_t* b) {
             path = std::to_string(b->no);
         }
         path +=  '_' + std::to_string(time(nullptr)) + '_' + random_string();
-        filekey file{path, 0};
+        file = {path, nullptr};
 retry:
         int ret = HANDLE_EAGAIN(fm_upload({b->getpath(), nullptr}, file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
@@ -209,12 +204,19 @@ retry:
         if(ret != 0){
             throw "fm_upload IO Error";
         }
-        b->fk = basename(file);
+        file = basename(file);
     }else{
         free(buff);
-        b->fk = filekey{"x", 0};
+        file = filekey{"x", 0};
     }
-    save_block_sync_status_to_db(b->inode, b->no, b->fk.private_key, true);
+    __r.upgrade();
+    if (version != b->version) {
+        trim(file);
+        return;
+    }
+    b->fk = file;
+    // 上传成功，清除dirty标记
+    save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     b->flags &= ~BLOCK_DIRTY;
     sem_post(&dirty_sem);
 }
@@ -233,30 +235,28 @@ void block_t::prefetch(bool wait) {
     }
     unrlock();
     if(taskinqueu(dpool) < DOWNLOADTHREADS){
-        addtask(dpool, (taskfunc)block_t::pull, this, 0);
+        addtask(dpool, (taskfunc)pull, this, 0);
     }
 }
 
 void block_t::markdirty() {
     wlock();
-    atime = time(0);
-    if(flags & BLOCK_DIRTY){
-        unwlock();
-        return;
+    atime = time(nullptr);
+    version++;
+    bool isDirty = (flags & BLOCK_DIRTY) != 0;
+    if(!isDirty){
+        flags |=  BLOCK_DIRTY;
+        // 保存到数据库并标记为dirty
+        save_block_to_db(inode, no, fk.private_key, true);
     }
-    flags |=  BLOCK_DIRTY;
     unwlock();
-    pthread_mutex_lock(&dblocks_lock);
-    // 挪到队尾
-    for(auto i = dblocks.begin(); i != dblocks.end(); i++ ){
-        if(*i == this){
-            dblocks.erase(i);
-            break;
-        }
+    if(!isDirty) {
+        pthread_mutex_lock(&dblocks_lock);
+        dblocks.push_back(this);
+        pthread_mutex_unlock(&dblocks_lock);
+        // 只有变为dirty时才等
+        sem_wait(&dirty_sem);
     }
-    dblocks.push_back(this);
-    pthread_mutex_unlock(&dblocks_lock);
-    sem_wait(&dirty_sem);
 }
 
 void block_t::markstale() {
@@ -264,19 +264,22 @@ void block_t::markstale() {
     flags |= BLOCK_STALE;
 }
 
-void block_t::sync(){
+bool block_t::sync(){
     pthread_mutex_lock(&dblocks_lock);
-    // dblocks 是异步搞的，所以挪出来同步搞
     for(auto i = dblocks.begin(); i != dblocks.end();){
         if(*i ==  this){
             i = dblocks.erase(i);
-            break;
         }else{
             i++;
         }
     }
     pthread_mutex_unlock(&dblocks_lock);
-    push(this);
+    auto_rlock(this);
+    if ((flags & BLOCK_DIRTY) == 0) {
+        return false;
+    }
+    dblocks.emplace_back(this);
+    return true;
 }
 
 void block_t::reset(){
@@ -290,11 +293,12 @@ void block_t::reset(){
 }
 
 bool block_t::dummy() {
+    auto_rlock(this);
     return fk.path == "x";
 }
 
 
 int block_t::staled(){
     auto_rlock(this);
-    return time(0) - atime;
+    return time(nullptr) - atime;
 }

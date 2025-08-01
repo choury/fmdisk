@@ -65,6 +65,26 @@ struct filemeta{
 
 std::string URLEncode(const std::string& str);
 std::string URLDecode(const std::string& str);
+
+// 缓存文件信息，用于GC和fsck
+struct cache_file_info {
+    std::string path;
+    std::string remote_path; // 对应的远程路径
+    struct stat st;
+    bool checked;  // 是否已被检查过（用于fsck）
+
+    cache_file_info(const std::string& p, struct stat& st);
+
+    // 按访问时间排序，最旧的在前
+    bool operator<(const cache_file_info& other) const {
+        return st.st_atime < other.st.st_atime;
+    }
+};
+
+std::string get_cache_path(const std::string& remote_path);
+std::string get_remote_path(const std::string& cache_path);
+// 扫描缓存目录，获取所有缓存文件的信息
+std::vector<cache_file_info> scan_cache_directory(const std::string& checkpath = "/");
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);
 extern "C" size_t Base64En(const char *src, size_t len, char *dst);

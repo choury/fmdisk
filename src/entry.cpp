@@ -11,6 +11,7 @@
 thrdpool* upool;
 thrdpool* dpool;
 std::thread gc;
+bool writeback_done = false;
 
 int cache_prepare() {
     int ret = fm_prepare();
@@ -20,20 +21,23 @@ int cache_prepare() {
     assert(opt.block_len > INLINE_DLEN);
     upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
     dpool = creatpool(DOWNLOADTHREADS);
-    addtask(upool, (taskfunc)writeback_thread, 0, 0);
+    addtask(upool, (taskfunc)writeback_thread, &writeback_done, 0);
     gc = std::thread(start_gc);
     start_delay_thread();
     return sqlinit();
 }
 
 void cache_destroy(dir_t* root){
-    sqldeinit();
-    stop_delay_thread();
     stop_gc();
+    writeback_done = true;
+    destroypool(upool);
+    destroypool(dpool);
     if(gc.joinable()){
         gc.join();
     }
+    stop_delay_thread();
     delete root;
+    sqldeinit();
 }
 
 int create_dirs_recursive(const string& path) {
@@ -58,20 +62,11 @@ int create_dirs_recursive(const string& path) {
     return 0;
 }
 
-string get_cache_path(const string& remote_path) {
-    string cache_path = pathjoin(opt.cache_dir, "cache");
-    cache_path = pathjoin(cache_path, remote_path);
-    return cache_path;
-}
-
-
-
-
 int entry_t::statfs(const char*, struct statvfs* sf) {
     return HANDLE_EAGAIN(fm_statfs(sf));
 }
 
-entry_t::entry_t(dir_t* parent, filemeta meta):
+entry_t::entry_t(dir_t* parent, const filemeta& meta):
     parent(parent),
     fk(basename(meta.key)),
     mode(meta.mode),
@@ -156,7 +151,6 @@ void entry_t::pull(entry_t* entry){
         entry->pull_wlocked();
     }
     entry->flags &= ~ENTRY_PULLING_F;
-    return;
 }
 
 int entry_t::drop_disk_cache(){
@@ -167,10 +161,12 @@ int entry_t::drop_disk_cache(){
     string path = getkey().path;
     if(S_ISREG(mode)){
         return delete_file_from_db(path);
-    }else{
-        if(parent == nullptr){
-            return delete_entry_prefix_from_db("");
-        }
-        return delete_entry_prefix_from_db(path);
     }
+    if (flags & FILE_DIRTY_F) {
+        return -EAGAIN;
+    }
+    if(parent == nullptr){
+        return delete_entry_prefix_from_db("");
+    }
+    return delete_entry_prefix_from_db(path);
 }

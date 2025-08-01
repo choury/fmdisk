@@ -12,20 +12,24 @@ class block_t: locker {
     const size_t size;
     unsigned int flags;
     time_t atime;
+    size_t version = 0;
     int staled();
     static void pull(block_t* b);
     static void push(block_t* b);
-    friend void writeback_thread();
-    std::string getpath();
-    filekey getkey();
+    friend void writeback_thread(bool* done);
+    [[nodiscard]] std::string getpath() const;
+    [[nodiscard]] filekey getkey() const;
 public:
     block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
-    ~block_t();
-    std::tuple<filekey, uint> getmeta();
+    ~block_t() override;
+    filekey getfk() {
+        auto_rlock(this);
+        return fk;
+    }
     void prefetch(bool wait);
     void markdirty();
     void markstale();
-    void sync();
+    bool sync();
     void reset();
     bool dummy();
 };

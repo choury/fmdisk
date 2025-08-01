@@ -27,11 +27,11 @@ protected:
     static void pull(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
-    entry_t(dir_t* parent, const filemeta meta);
-    virtual ~entry_t();
+    entry_t(dir_t* parent, const filemeta& meta);
+    virtual ~entry_t() override;
     filekey getkey();
     virtual filemeta getmeta() = 0;
-    size_t size() {
+    [[nodiscard]] size_t size() const {
         return length;
     }
     virtual bool isDir() = 0;
@@ -53,6 +53,5 @@ extern thrdpool* dpool;
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
 int create_dirs_recursive(const string& path);
-string get_cache_path(const string& remote_path);
 
 #endif

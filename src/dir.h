@@ -14,11 +14,11 @@ class dir_t: public entry_t {
         entry_t::pull_wlocked(meta);
     }
     void pull_entrys_wlocked();
-    entry_t* insert_child_wlocked(std::string name, entry_t* entry);
-    void erase_child_wlocked(std::string name, entry_t* child);
+    entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
+    void erase_child_wlocked(const std::string& name, entry_t* child);
 public:
     dir_t(dir_t* parent, const filemeta& meta);
-    virtual ~dir_t();
+    virtual ~dir_t() override;
     virtual filemeta getmeta() override;
     entry_t* find(std::string path);
     const std::map<string, entry_t*>& get_entrys();
@@ -48,11 +48,11 @@ public:
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
 
-    file_t* create(string name);
-    dir_t*  mkdir(string name);
+    file_t* create(const string& name);
+    dir_t*  mkdir(const string& name);
     int unlink(const string& name);
     int rmdir(const string& name);
-    int moveto(dir_t* newparent, string oldname, string newname);
+    int moveto(dir_t* newparent, const string& oldname, const string& newname);
 
     virtual void dump_to_disk_cache() override;
     virtual int drop_mem_cache() override;

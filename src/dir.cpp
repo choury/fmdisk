@@ -60,8 +60,8 @@ dir_t::dir_t(dir_t* parent, const filemeta& meta): entry_t(parent, meta) {
 }
 
 dir_t::~dir_t(){
-    this->wlock();
-    for(auto i: entrys){
+    locker::wlock();
+    for(const auto& i: entrys){
         if(i.first != "." && i.first != ".."){
             delete i.second;
         }
@@ -83,7 +83,7 @@ void dir_t::pull_entrys_wlocked() {
     }else{
         cached = true;
     }
-    assert(entrys.size() == 0);
+    assert(entrys.empty());
     entrys.emplace(".", this);
     entrys.emplace("..", parent);
     for(auto i: flist){
@@ -97,7 +97,7 @@ void dir_t::pull_entrys_wlocked() {
             i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
             is_dir = false;
         }
-        if(entrys.count(bname) == 0){
+        if(!entrys.contains(bname)){
             if(is_dir){
                 entrys.emplace(bname, new dir_t(this, i));
             }else{
@@ -127,7 +127,7 @@ entry_t* dir_t::find(std::string path) {
         pull_entrys_wlocked();
     }
     string cname = childname(path);
-    if(!entrys.count(cname)) {
+    if(!entrys.contains(cname)) {
         return nullptr;
     }
     if(cname == path) {
@@ -161,7 +161,7 @@ filemeta dir_t::getmeta() {
     meta.mode = S_IFDIR | (mode & 0777);
     meta.flags = flags;
     meta.size = length;
-    meta.inline_data = 0;
+    meta.inline_data = nullptr;
     meta.blksize = opt.block_len;
     meta.blocks = 1;
     meta.ctime = ctime;
@@ -169,14 +169,14 @@ filemeta dir_t::getmeta() {
     return meta;
 }
 
-entry_t* dir_t::insert_child_wlocked(string name, entry_t* entry){
-    assert(entrys.count(name) == 0);
+entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
+    assert(!entrys.contains(name));
     assert(entrys.size() < MAXFILE);
     entry->dump_to_disk_cache();
     return entrys[name] = entry;
 }
 
-void dir_t::erase_child_wlocked(string name, entry_t* child) {
+void dir_t::erase_child_wlocked(const string& name, entry_t* child) {
     assert(entrys.count(name));
     auto path = child->getkey().path;
 
@@ -196,7 +196,7 @@ size_t dir_t::children() {
     return entrys.size();
 }
 
-dir_t* dir_t::mkdir(string name) {
+dir_t* dir_t::mkdir(const string& name) {
     if(endwith(name, ".def")){
         errno = EINVAL;
         return nullptr;
@@ -216,13 +216,13 @@ dir_t* dir_t::mkdir(string name) {
         return nullptr;
     }
     flags |= DIR_DIRTY_F;
-    ctime = mtime = meta.ctime = meta.mtime = time(NULL);
+    ctime = mtime = meta.ctime = meta.mtime = time(nullptr);
     meta.flags = ENTRY_CREATE_F | DIR_PULLED_F;
     meta.mode = S_IFDIR | 0755;
     return dynamic_cast<dir_t*>(insert_child_wlocked(name, new dir_t(this, meta)));
 }
 
-file_t* dir_t::create(string name){
+file_t* dir_t::create(const string& name){
     auto_wlock(this);
     if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && name == ".objs"){
         errno = EINVAL;
@@ -238,7 +238,7 @@ file_t* dir_t::create(string name){
         return nullptr;
     }
     flags |= DIR_DIRTY_F;
-    mtime = ctime = meta.ctime = meta.mtime = time(NULL);
+    mtime = ctime = meta.ctime = meta.mtime = time(nullptr);
     meta.flags =  ENTRY_CHUNCED_F | ENTRY_CREATE_F | FILE_ENCODE_F | FILE_DIRTY_F ;
     meta.blksize = opt.block_len;
     meta.mode = S_IFREG | 0644;
@@ -248,7 +248,7 @@ file_t* dir_t::create(string name){
 int dir_t::unlink(const string& name) {
     auto_wlock(this);
     assert(flags & DIR_PULLED_F);
-    if(entrys.count(name) == 0){
+    if(!entrys.contains(name)){
         return -ENOENT;
     }
     entry_t* entry = entrys[name];
@@ -269,7 +269,7 @@ int dir_t::unlink(const string& name) {
     if(ret > 0) {
         delete entry;
     }
-    mtime = time(NULL);
+    mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
     return 0;
 }
@@ -277,7 +277,7 @@ int dir_t::unlink(const string& name) {
 int dir_t::rmdir(const string& name) {
     auto_wlock(this);
     assert(flags & DIR_PULLED_F);
-    if(entrys.count(name) == 0){
+    if(!entrys.contains(name)){
         return -ENOENT;
     }
     entry_t* entry = entrys[name];
@@ -300,7 +300,7 @@ int dir_t::rmdir(const string& name) {
         return ret;
     }
     erase_child_wlocked(name, entry);
-    mtime = time(NULL);
+    mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
     ::rmdir(get_cache_path(child->getcwd()).c_str());
 
@@ -318,10 +318,10 @@ int dir_t::rmdir(const string& name) {
     return 0;
 }
 
-int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
+int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname) {
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
-    if(entrys.count(oldname) == 0){
+    if(!entrys.contains(oldname)){
         return -ENOENT;
     }
 
@@ -366,10 +366,8 @@ int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
 
     // 如果是文件，需要移动持久化缓存文件
     if(!entry->isDir()) {
-        string old_remote_path = pathjoin(this->getcwd(), oldname);
-        string new_remote_path = pathjoin(newparent->getcwd(), newname);
-        string old_cache_path = pathjoin(pathjoin(opt.cache_dir, "cache"), old_remote_path);
-        string new_cache_path = pathjoin(pathjoin(opt.cache_dir, "cache"), new_remote_path);
+        string old_cache_path = pathjoin(opt.cache_dir, "cache", this->getcwd(), oldname);
+        string new_cache_path = pathjoin(opt.cache_dir, "cache", newparent->getcwd(), newname);
 
         // 确保新缓存目录存在
         string new_cache_dir = dirname(new_cache_path);
@@ -385,13 +383,13 @@ int dir_t::moveto(dir_t* newparent, string oldname, string newname) {
     }
 
     flags |= DIR_DIRTY_F;
-    mtime = time(NULL);
+    mtime = time(nullptr);
     erase_child_wlocked(oldname, entry);
     entry->parent = newparent;
     entry->fk = filekey{newname, newfile.private_key};
     newparent->unlink(newname);
     newparent->insert_child_wlocked(newname, entry);
-    newparent->mtime = time(NULL);
+    newparent->mtime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
     return 0;
 }

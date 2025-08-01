@@ -19,7 +19,10 @@ void *fm_fuse_init(struct fuse_conn_info *conn){
     conn->max_background = 20;
 #endif
     conn->max_readahead = 10*1024*1024;
-    return cache_root();
+    dir_t* root = cache_root();
+    // 恢夏dirty数据并重新上传
+    recover_dirty_data(root);
+    return root;
 }
 
 void fm_fuse_destroy(void* root){
@@ -32,10 +35,9 @@ int fm_fuse_statfs(const char *path, struct statvfs *sf){
         memcpy(sf, fs.get(), sizeof(struct statvfs));
         return 0;
     }
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    auto ret = root->statfs(path, sf);
+    auto ret = dir_t::statfs(path, sf);
     if(ret >= 0) {
-        fs = std::unique_ptr<struct statvfs>(new struct statvfs);
+        fs = std::make_unique<struct statvfs>();
         memcpy(fs.get(), sf, sizeof(struct statvfs));
     }
     return ret;
@@ -48,7 +50,7 @@ int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
 int fm_fuse_readdir(const char*, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi){
     dir_t* dir = (dir_t*)fi->fh;
     auto entrys = dir->get_entrys();
-    for(auto i: entrys){
+    for(const auto& i: entrys){
     /*
         struct stat st;
         i.second->getattr(&st);
@@ -279,7 +281,7 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
     if(entry == nullptr){
         return -ENOENT;
     }
-    if(strcmp(name, "user.underlay_path")){
+    if(strcmp(name, "user.underlay_path") != 0){
         return -ENODATA;
     }
     string underlay_path = entry->getkey().path;

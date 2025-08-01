@@ -12,10 +12,8 @@
 #include <string>
 #include <json.h>
 #include <string.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <functional>
 #include "sqlite.h"
+#include "utils.h"
 
 using namespace std;
 
@@ -29,21 +27,10 @@ static std::unordered_map<std::string, filemeta> objs;
 
 // 全局变量存储本地缓存文件信息
 
-struct local_cache_file {
-    string path;           // 本地缓存文件路径
-    string remote_path;    // 对应的远程路径
-    ino_t inode;          // 文件inode
-    size_t size;          // 文件大小
-    time_t mtime;         // 修改时间
-    bool checked;         // 是否已被远程文件检查过
-
-    local_cache_file(const string& p, const string& rp, ino_t i, size_t s, time_t m)
-        : path(p), remote_path(rp), inode(i), size(s), mtime(m), checked(false) {}
-};
-
-static std::vector<local_cache_file> local_cache_files;
-static std::map<string, local_cache_file*> remote_path_to_cache; // 远程路径到缓存文件的映射
-static std::map<ino_t, local_cache_file*> inode_to_cache;        // inode到缓存文件的映射
+// 直接使用utils.h中的cache_file_info
+static std::vector<cache_file_info> local_cache_files;
+static std::map<string, cache_file_info*> remote_path_to_cache; // 远程路径到缓存文件的映射
+static std::map<ino_t, cache_file_info*> inode_to_cache;        // inode到缓存文件的映射
 
 static mutex console_lock;
 
@@ -301,7 +288,7 @@ void checkdir(filekey* file) {
 }
 
 // 删除不一致的缓存文件和相关block条目
-void fixCacheInconsistency(local_cache_file* cache_file) {
+void fixCacheInconsistency(cache_file_info* cache_file) {
     if (verbose) {
         cout << lock << "Deleted inconsistent cache file: " << cache_file->path << endl << unlock;
     }
@@ -312,8 +299,8 @@ void fixCacheInconsistency(local_cache_file* cache_file) {
              << " error: " << strerror(errno) << endl << unlock;
     }
 
-    delete_blocks_from_db(cache_file->inode);
-    inode_to_cache.erase(cache_file->inode);
+    delete_blocks_from_db(cache_file->st.st_ino);
+    inode_to_cache.erase(cache_file->st.st_ino);
 }
 
 // 检查本地缓存文件与远程meta信息的一致性
@@ -326,13 +313,13 @@ void checkcache(const filekey& file, const filemeta& meta, const std::vector<fil
         return;
     }
 
-    local_cache_file* cache_file = it->second;
+    cache_file_info* cache_file = it->second;
     cache_file->checked = true;  // 标记为已检查
 
     // 1. 验证文件大小是否一致
-    if (cache_file->size != meta.size) {
+    if ((size_t)cache_file->st.st_size != meta.size) {
         cerr << lock << "Cache file size mismatch: [" << remote_path
-             << "] local=" << cache_file->size << " remote=" << meta.size << endl << unlock;
+             << "] local=" << cache_file->st.st_size << " remote=" << meta.size << endl << unlock;
         if (autofix) {
             fixCacheInconsistency(cache_file);
             return;
@@ -341,7 +328,7 @@ void checkcache(const filekey& file, const filemeta& meta, const std::vector<fil
 
     // 2. 验证数据库blocks表中该文件相关记录的private_key
     std::vector<block_record> db_blocks;
-    if (get_blocks_for_inode(cache_file->inode, db_blocks) <= 0) {
+    if (get_blocks_for_inode(cache_file->st.st_ino, db_blocks) <= 0) {
         cerr << lock << "blocks for: [" << remote_path << "] not found"<< endl << unlock;
         if(autofix) {
             fixCacheInconsistency(cache_file);
@@ -385,7 +372,7 @@ void checkOrphanedFiles(const char* checkpath) {
             continue;
         }
         cerr << lock << "Found arphaned cache file  " << cache_file.path << ", inode: "
-             << cache_file.inode << ", size: " << cache_file.size << endl << unlock;
+             << cache_file.st.st_ino << ", size: " << cache_file.st.st_size << endl << unlock;
 
         if (autofix) {
             fixCacheInconsistency(&cache_file);
@@ -415,65 +402,17 @@ void checkOrphanedFiles(const char* checkpath) {
 
 // 扫描本地缓存目录，收集指定路径下的文件信息
 void scanLocalCacheFiles(const char* checkpath) {
-    string cache_dir = pathjoin(opt.cache_dir, "cache");
-    string target_cache_dir;
+    // 获取指定路径下的缓存文件
+    local_cache_files = scan_cache_directory(checkpath);
 
-    // 如果检查根路径，扫描整个缓存目录；否则只扫描对应的子目录
-    if (strcmp(checkpath, "/") == 0) {
-        target_cache_dir = cache_dir;
-    } else {
-        target_cache_dir = pathjoin(cache_dir, checkpath);
+    // 构建映射关系
+    remote_path_to_cache.clear();
+    inode_to_cache.clear();
+
+    for (auto& cache_file : local_cache_files) {
+        remote_path_to_cache[cache_file.remote_path] = &cache_file;
+        inode_to_cache[cache_file.st.st_ino] = &cache_file;
     }
-
-    std::function<void(const string&)> scan_dir = [&](const string& dir) {
-        DIR* d = opendir(dir.c_str());
-        if (!d) return;
-
-        defer([d]() { closedir(d); });
-
-        struct dirent* entry;
-        while ((entry = readdir(d)) != nullptr) {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                continue;
-            }
-
-            string full_path = pathjoin(dir, entry->d_name);
-            struct stat st;
-            if (stat(full_path.c_str(), &st) < 0) {
-                cerr << lock << "Failed to stat file: " << full_path
-                     << " error: " << strerror(errno) << endl << unlock;
-                abort();
-            }
-            if (S_ISDIR(st.st_mode)) {
-                scan_dir(full_path);
-                continue;
-            }
-            if (S_ISREG(st.st_mode)) {
-                // 计算对应的远程路径：去掉cache_dir/cache前缀
-                string remote_path;
-                string cache_prefix = pathjoin(opt.cache_dir, "cache");
-                if (full_path.find(cache_prefix) == 0) {
-                    remote_path = full_path.substr(cache_prefix.length());
-                    if (remote_path.empty()) {
-                        remote_path = "/";
-                    }
-                } else {
-                    // 不应该发生，但为了安全起见
-                    remote_path = full_path;
-                }
-
-                // 添加到全局列表
-                local_cache_files.emplace_back(full_path, remote_path, st.st_ino, st.st_size, st.st_mtime);
-
-                // 建立映射关系
-                local_cache_file* file_ptr = &local_cache_files.back();
-                remote_path_to_cache[remote_path] = file_ptr;
-                inode_to_cache[st.st_ino] = file_ptr;
-            }
-        }
-    };
-
-    scan_dir(target_cache_dir);
 
     if (verbose) {
         cout << lock << "Scanned " << local_cache_files.size() << " local cache files under " << checkpath << endl << unlock;

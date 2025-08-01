@@ -3,10 +3,10 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <assert.h>
-#include <errno.h>
 #include <sys/resource.h>
 #include <unordered_map>
 #include <queue>
+#include <atomic>
 
 using namespace std;
 
@@ -26,20 +26,24 @@ struct val_t{
 };
 
 struct thrdpool{
-    int              num;
-    int              doing;
+    size_t           num;
+    size_t           doing;
     task_id          curid;     //下一任务分配id
     sem_t            wait;      //每个线程等待信号量
     pthread_t*       id;        //线程池各线程
     pthread_mutex_t  lock;      //给tasks和valmap的锁
     queue<task_t *>  tasks;
     unordered_map<task_id, val_t*> valmap;   //结果集合
+    std::atomic<bool>       done;
 };
 
 
 void* dotask(thrdpool* pool) {                                //执行任务
     while (1) {
         sem_wait(&pool->wait);
+        if (pool->done) {
+            return nullptr;
+        }
         pthread_mutex_lock(&pool->lock);
         task_t* task = pool->tasks.front();
         pool->tasks.pop();
@@ -65,11 +69,7 @@ void* dotask(thrdpool* pool) {                                //执行任务
         pool->doing--;
         pthread_mutex_unlock(&pool->lock);
     }
-
-    return NULL;
 }
-
-
 
 thrdpool* creatpool(size_t threadnum) {
     struct rlimit limit;
@@ -93,6 +93,31 @@ thrdpool* creatpool(size_t threadnum) {
     }
     pthread_attr_destroy(&attr);
     return pool;
+}
+
+void destroypool(struct thrdpool* pool) {
+    pool->done.store(true);
+    for (size_t i = 0; i < pool->num; ++i) {
+        sem_post(&pool->wait);
+    }
+    for (size_t i = 0; i < pool->num; ++i) {
+        pthread_join(pool->id[i], nullptr);
+    }
+    while (!pool->tasks.empty()) {
+        task_t* task = pool->tasks.front();
+        pool->tasks.pop();
+        val_t *val = pool->valmap.at(task->taskid);
+        if(val){
+            pthread_cond_destroy(&val->cond);
+            free(val);
+            pool->valmap.erase(task->taskid);
+        }
+        free(task);
+    }
+    sem_destroy(&pool->wait);
+    pthread_mutex_destroy(&pool->lock);
+    free(pool->id);
+    delete pool;
 }
 
 
@@ -145,7 +170,7 @@ recheck:
         pthread_mutex_unlock(&pool->lock);
         return -ENOENT;
     }
-    
+
     val_t *val = pool->valmap.at(id);
     val->waitc++;
     while(val->done == 0){
@@ -156,7 +181,7 @@ recheck:
     *result = val->val;
     val->waitc -- ;
     if(val->waitc == 0){                             //没有其他线程在等待结果，做清理操作
-        pthread_cond_destroy(&val->cond); 
+        pthread_cond_destroy(&val->cond);
         free(val);
         pool->valmap.erase(id);
     }
@@ -216,13 +241,6 @@ static void do_delay_task() {
             free(task);
         }
     }
-    pthread_mutex_lock(&delay_task_lock);
-    for(auto i: delay_tasks){
-        i->func(i->param);
-        free(i);
-    }
-    delay_tasks.clear();
-    pthread_mutex_unlock(&delay_task_lock);
 }
 
 
@@ -239,10 +257,17 @@ void stop_delay_thread() {
     delete delay_thread;
     sem_destroy(&delay_task);
     pthread_mutex_destroy(&delay_task_lock);
+    for(auto i: delay_tasks){
+        free(i);
+    }
+    delay_tasks.clear();
 }
 
 
 void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
+    if (delay_task_stop) {
+        return;
+    }
     task_t* task = nullptr;
     pthread_mutex_lock(&delay_task_lock);
     for(auto i = delay_tasks.begin(); i != delay_tasks.end(); i++){

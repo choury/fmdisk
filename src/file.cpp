@@ -23,57 +23,6 @@ static std::vector<filekey> droped;
 static std::set<ino_t> opened_inodes;
 static std::atomic<bool> gc_stop(false);
 
-// 缓存文件信息，用于GC时扫描
-struct cache_file_info {
-    string path;
-    ino_t inode;   // inode号，用于删除blocks表记录
-    time_t atime;  // 访问时间
-    size_t size;    // 磁盘占用大小
-
-    cache_file_info(const string& p, ino_t i, time_t a, size_t s) : path(p), inode(i), atime(a), size(s){}
-
-    // 按访问时间排序，最旧的在前
-    bool operator<(const cache_file_info& other) const {
-        return atime < other.atime;
-    }
-};
-
-// 扫描缓存目录，获取所有缓存文件的信息
-static std::vector<cache_file_info> scan_cache_directory() {
-    std::vector<cache_file_info> cache_files;
-    string cache_dir = pathjoin(opt.cache_dir, "cache");
-
-    // 递归扫描缓存目录
-    std::function<void(const string&)> scan_dir = [&](const string& dir) {
-        DIR* d = opendir(dir.c_str());
-        if (!d) return;
-
-        defer([d]() { closedir(d); });
-
-        struct dirent* entry;
-        while ((entry = readdir(d)) != nullptr) {
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-                continue;
-            }
-
-            string full_path = pathjoin(dir, entry->d_name);
-            struct stat st;
-            if (stat(full_path.c_str(), &st) == 0) {
-                if (S_ISDIR(st.st_mode)) {
-                    scan_dir(full_path);  // 递归扫描子目录
-                } else if (S_ISREG(st.st_mode)) {
-                    // 常规文件，记录其信息, 实际磁盘占用
-                    cache_files.emplace_back(full_path, st.st_ino, st.st_atime, st.st_blksize * 512);
-                }
-            }
-        }
-    };
-
-    scan_dir(cache_dir);
-    return cache_files;
-}
-
-
 // 清理缓存直到满足大小限制
 static bool cleanup_cache_by_size() {
     if (opt.cache_size < 0) {
@@ -85,10 +34,10 @@ static bool cleanup_cache_by_size() {
     // 扫描缓存目录获取所有文件信息
     std::vector<cache_file_info> cache_files = scan_cache_directory();
 
-    // 计算总大小
+    // 计算总大小（磁盘占用）
     off_t total_size = 0;
     for (const auto& file : cache_files) {
-        total_size += file.size;
+        total_size += file.st.st_blocks * 512;
     }
 
     if (total_size <= opt.cache_size) {
@@ -106,16 +55,27 @@ static bool cleanup_cache_by_size() {
         if (current_size <= opt.cache_size) {
             break;
         }
-        if(opened_inodes.count(file.inode) > 0) {
+        if(opened_inodes.contains(file.st.st_ino)) {
             continue; // 跳过正在使用的文件
         }
 
+        // 检查文件是否有dirty标记（从数据库加载）
+        if(!file.remote_path.empty()) {
+            filemeta meta;
+            std::vector<filekey> fblocks;
+            load_file_from_db(file.remote_path, meta, fblocks);
+
+            if(meta.flags & FILE_DIRTY_F) {
+                continue; // 跳过有dirty标记的文件
+            }
+        }
+
         // 删除对应的blocks表记录
-        delete_blocks_from_db(file.inode);
+        delete_blocks_from_db(file.st.st_ino);
 
         // 删除缓存文件
         unlink(file.path.c_str());
-        current_size -= file.size;
+        current_size -= file.st.st_blocks * 512;
         success = true;
     }
     return success;
@@ -123,7 +83,7 @@ static bool cleanup_cache_by_size() {
 
 void trim(const filekey& file) {
     string name = basename(file.path);
-    if(name == "" || name == "x"){
+    if(name.empty() || name == "x"){
         return;
     }
     auto_lock(&gcLocker);
@@ -133,6 +93,26 @@ void trim(const filekey& file) {
 static void trim(const std::vector<filekey>& files) {
     auto_lock(&gcLocker);
     droped.insert(droped.end(), files.begin(), files.end());
+}
+
+// 恢复dirty数据并重新上传
+void recover_dirty_data(dir_t* root) {
+    std::vector<std::string> dirty_files;
+    if(get_dirty_files(dirty_files) <= 0) {
+        return;
+    }
+    fprintf(stderr, "Recovering %zu dirty files from previous session\n", dirty_files.size());
+
+    for(const auto& file_path : dirty_files) {
+        string path = decodepath(file_path);
+        file_t* file = dynamic_cast<file_t*>(root->find(path));
+        if(file == nullptr) {
+            fprintf(stderr, "File %s not found in cache, skipping\n", file_path.c_str());
+            continue;
+        }
+        file->open();
+        file->release();
+    }
 }
 
 void start_gc() {
@@ -219,14 +199,13 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
 
 file_t::~file_t() {
     auto_wlock(this);
+    flags |= ENTRY_DELETED_F;
     reset_wlocked();
-    if(inline_data){
-        delete[] inline_data;
-    }
+    delete[] inline_data;
 }
 
 void file_t::reset_wlocked() {
-    assert(opened == 0  && (flags & FILE_DIRTY_F) == 0);
+    assert(opened == 0  && ((flags & FILE_DIRTY_F) == 0 || (flags & ENTRY_DELETED_F)));
     for(auto i: blocks){
         i.second->markstale();
         delete i.second;
@@ -259,7 +238,7 @@ int file_t::open(){
     opened_inodes.insert(inode);
     if(flags & ENTRY_CHUNCED_F) {
         auto fblocks = getfblocks();
-        assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.size() == 0 && length <= INLINE_DLEN));
+        assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
             blocks.emplace(i, new block_t(fd, inode, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
@@ -273,8 +252,8 @@ int file_t::open(){
 
 void file_t::clean(file_t* file) {
     auto_wlock(file);
-    file->flags &= ~ENTRY_REASEWAIT_F;
     if(file->opened > 0){
+        file->flags &= ~ENTRY_REASEWAIT_F;
         return;
     }
     if(file->flags & ENTRY_DELETED_F){
@@ -285,9 +264,14 @@ void file_t::clean(file_t* file) {
         }
         __w.unlock();
         delete file;
-    } else {
-        file->reset_wlocked();
+        return;
     }
+    if (file->flags & FILE_DIRTY_F && file->sync_locked(true)) {
+        add_delay_job((taskfunc)clean, file, 60);
+        return;
+    }
+    file->flags &= ~ENTRY_REASEWAIT_F;
+    file->reset_wlocked();
 }
 
 int file_t::release(){
@@ -373,7 +357,7 @@ int file_t::truncate_rlocked(off_t offset){
         if(ret < 0){
             return ret;
         }
-        assert(blocks.count(0) == 0);
+        assert(!blocks.contains(0));
         blocks.emplace(0, new block_t(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         delete[] inline_data;
         inline_data = nullptr;
@@ -398,10 +382,10 @@ int file_t::truncate(off_t offset){
     if(ret < 0){
         return -errno;
     }
-    mtime = time(NULL);
+    mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 60) {
         last_meta_sync_time = mtime;
-        addtask(upool, (taskfunc)file_t::upload_meta_async_task, this, 0);
+        addtask(upool, (taskfunc)upload_meta_async_task, this, 0);
     }
     return 0;
 }
@@ -443,10 +427,10 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         __r.upgrade();
     }
     flags |= FILE_DIRTY_F;
-    mtime = time(NULL);
+    mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 60) {
         last_meta_sync_time = mtime;
-        addtask(upool, (taskfunc)file_t::upload_meta_async_task, this, 0);
+        addtask(upool, (taskfunc)upload_meta_async_task, this, 0);
     }
     return ret;
 }
@@ -487,7 +471,7 @@ std::vector<filekey> file_t::getfblocks(){
         if(i.second->dummy()){
             continue;
         }
-        fblocks[i.first] = std::get<0>(i.second->getmeta());
+        fblocks[i.first] = i.second->getfk();
     }
     return fblocks;
 }
@@ -514,8 +498,6 @@ std::vector<filekey> file_t::getkeys() {
     return flist;
 }
 
-
-
 filemeta file_t::getmeta() {
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0){
@@ -536,11 +518,12 @@ filemeta file_t::getmeta() {
         meta.blocks = block_size;
     }else {
         meta.blocks = 1; //at least for meta.json
-        for(auto i: blocks){
-            if(i.second->dummy()){
+        const auto fblocks = getfblocks();
+        for(size_t i = 0; i < fblocks.size(); i++){
+            if(fblocks[i].path == "x" || fblocks[i].path.empty()){
                 continue;
             }
-            if(i.first == GetBlkNo(length, blksize)){
+            if(i == GetBlkNo(length, blksize)){
                 break; // last block not full
             }
             meta.blocks += blksize / 512;
@@ -553,6 +536,30 @@ filemeta file_t::getmeta() {
     return meta;
 }
 
+bool file_t::sync_locked(bool isWlock) {
+    bool dirty = false;
+    for(auto i: blocks){
+        dirty |= i.second->sync();
+    }
+    const filekey& key = getkey();
+    filemeta meta = getmeta();
+    meta.key = getmetakey();
+    std::vector<filekey> fblocks = getfblocks();
+    if(upload_meta(key, meta, fblocks)){
+        throw "upload_meta IO Error";
+    }
+    if(!isWlock) upgrade();
+    private_key = meta.key.private_key;
+    if(!dirty){
+        flags &= ~FILE_DIRTY_F;
+        meta.flags = flags;
+    }
+    save_file_to_db(key.path, meta, fblocks);
+    if(!isWlock) downgrade();
+    return dirty;
+}
+
+
 int file_t::sync(int dataonly){
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F) {
@@ -562,22 +569,8 @@ int file_t::sync(int dataonly){
     if((flags & ENTRY_CHUNCED_F) == 0 || (flags & FILE_DIRTY_F) == 0){
         return 0;
     }
-    for(auto i: blocks){
-        i.second->sync();
-    }
-    if(!dataonly){
-        const filekey& key = getkey();
-        filemeta meta = getmeta();
-        meta.key = getmetakey();
-        std::vector<filekey> fblocks = getfblocks();
-        if(upload_meta(key, meta, fblocks)){
-            throw "upload_meta IO Error";
-        }
-        save_file_to_db(key.path, meta, fblocks);
-        __r.upgrade();
-        private_key = meta.key.private_key;
-        flags &= ~FILE_DIRTY_F;
-    }
+    fsync(fd);
+    sync_locked(false);
     return 0;
 }
 
@@ -638,7 +631,7 @@ int file_t::drop_mem_cache() {
     if(opened){
         return -EBUSY;
     }
-    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F)){
+    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F) || (flags & FILE_DIRTY_F)){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
@@ -659,22 +652,8 @@ void file_t::upload_meta_async_task(file_t* file) {
         return;  // 获取不到锁，放弃本次上传
     }
     defer(&file_t::unrlock, dynamic_cast<locker*>(file));
-
-    try {
-        if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
-            return;
-        }
-
-        const filekey& key = file->getkey();
-        filemeta meta = file->getmeta();
-        meta.key = file->getmetakey();
-        std::vector<filekey> fblocks = file->getfblocks();
-
-        if(upload_meta(key, meta, fblocks) != 0) {
-            return;
-        }
-        save_file_to_db(key.path, meta, fblocks);
-    } catch(...) {
-        // 如果上传失败，时间戳不更新，下次check时会重新尝试
+    if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
+        return;
     }
+    file->sync_locked(false);
 }
