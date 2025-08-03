@@ -15,7 +15,7 @@ class dir_t: public entry_t {
     }
     void pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
-    void erase_child_wlocked(const std::string& name, entry_t* child);
+    void erase_child_wlocked(const std::string& path, const std::string& name);
 public:
     dir_t(dir_t* parent, const filemeta& meta);
     virtual ~dir_t() override;

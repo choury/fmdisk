@@ -6,7 +6,6 @@ struct fuse_operations fm_oper = {
     .destroy    = fm_fuse_destroy,
     .access     = fm_fuse_access,
     .getattr    = fm_fuse_getattr,
-    .fgetattr   = fm_fuse_fgetattr,
     .opendir    = fm_fuse_opendir,
     .readdir    = fm_fuse_readdir,
     .releasedir = fm_fuse_releasedir,
@@ -23,17 +22,12 @@ struct fuse_operations fm_oper = {
     .write      = fm_fuse_write,
     .flush      = fm_fuse_flush,
     .release    = fm_fuse_release,
-    .ftruncate  = fm_fuse_ftruncate,
     .fsync      = fm_fuse_fsync,
     .utimens    = fm_fuse_utimens,
     .getxattr   = fm_fuse_getxattr,
     .setxattr   = fm_fuse_setxattr,
     .chmod      = fm_fuse_chmod,
     .chown      = fm_fuse_chown,
-#ifndef __APPLE__
-    .flag_nullpath_ok = 1,
-    .flag_nopath = 1,
-#endif
 };
 
 int fm_main(int argc, char *argv[]) {

@@ -41,12 +41,12 @@ void writeback_thread(bool* done){
             pthread_mutex_unlock(&dblocks_lock);
             continue;
         }
+        int staled_threshold = 30; // seconds
         if(taskinqueu(upool) == 0 && dblocks.size() >= UPLOADTHREADS){
-            addtask(upool, (taskfunc)block_t::push, dblocks.front(), 0);
-            dblocks.pop_front();
+            staled_threshold = 5;
         }
         for(auto i = dblocks.begin(); i!= dblocks.end();){
-            if((*i)->staled() >= 30){
+            if((*i)->staled() >= staled_threshold){
                 addtask(upool, (taskfunc)block_t::push, *i, 0);
                 i = dblocks.erase(i);
             }else{
@@ -182,7 +182,6 @@ void block_t::push(block_t* b) {
     } else if(b->flags & FILE_ENCODE_F){
         xorcode(buff, b->offset, len, opt.secret);
     }
-    trim(b->getkey());
     filekey file;
     if(len){
         //It must be chunk file, because native file can't be written
@@ -210,10 +209,11 @@ retry:
         file = filekey{"x", 0};
     }
     __r.upgrade();
-    if (version != b->version) {
+    if (version != b->version || (b->flags & BLOCK_STALE)) {
         trim(file);
         return;
     }
+    trim(b->getkey());
     b->fk = file;
     // 上传成功，清除dirty标记
     save_block_to_db(b->inode, b->no, b->fk.private_key, false);
@@ -273,12 +273,13 @@ bool block_t::sync(){
             i++;
         }
     }
-    pthread_mutex_unlock(&dblocks_lock);
     auto_rlock(this);
     if ((flags & BLOCK_DIRTY) == 0) {
+        pthread_mutex_unlock(&dblocks_lock);
         return false;
     }
     dblocks.emplace_back(this);
+    pthread_mutex_unlock(&dblocks_lock);
     return true;
 }
 

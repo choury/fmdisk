@@ -15,7 +15,7 @@ class file_t: public entry_t {
     blksize_t blksize;
     std::map<uint32_t, block_t*> blocks;
     size_t block_size = 0; // cache for getmeta
-    int truncate_rlocked(off_t offset);
+    int truncate_wlocked(off_t offset);
     virtual void pull_wlocked() override;
     static void clean(file_t* file);
 public:
@@ -32,8 +32,8 @@ public:
     }
     virtual int open() override;
     virtual int release() override;
-    //如果仍然是dirty状态，返回true, 如果isWlock为true, 说明调用者已经拿到写锁，否则只获得了读锁
-    bool sync_locked(bool isWlock = false);
+    //如果仍然是dirty状态，返回true
+    bool sync_wlocked();
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
     int read(void* buff, off_t offset, size_t size);

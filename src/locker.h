@@ -97,6 +97,7 @@ public:
         pthread_mutex_unlock(&lock);
         return EAGAIN;
     }
+    //upgrade会先释放读锁再获取写锁，因此调用者需要在upgrade后重新检查临界区状态
     virtual int upgrade(){
         pthread_t self = pthread_self();
         pthread_mutex_lock(&lock);

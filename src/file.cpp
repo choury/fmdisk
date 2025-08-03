@@ -206,9 +206,9 @@ file_t::~file_t() {
 
 void file_t::reset_wlocked() {
     assert(opened == 0  && ((flags & FILE_DIRTY_F) == 0 || (flags & ENTRY_DELETED_F)));
-    for(auto i: blocks){
-        i.second->markstale();
-        delete i.second;
+    for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        it->second->markstale();
+        delete it->second;
     }
     blocks.clear();
     if(fd < 0) {
@@ -266,7 +266,7 @@ void file_t::clean(file_t* file) {
         delete file;
         return;
     }
-    if (file->flags & FILE_DIRTY_F && file->sync_locked(true)) {
+    if (file->flags & FILE_DIRTY_F && file->sync_wlocked()) {
         add_delay_job((taskfunc)clean, file, 60);
         return;
     }
@@ -325,7 +325,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     return pread(fd, buff, size, offset);
 }
 
-int file_t::truncate_rlocked(off_t offset){
+int file_t::truncate_wlocked(off_t offset){
     if((size_t)offset == length){
         return 0;
     }
@@ -336,22 +336,17 @@ int file_t::truncate_rlocked(off_t offset){
             errno = EFBIG;
             return -1;
         }
-        upgrade();
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks.emplace(i, new block_t(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
         if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->markdirty();
-        upgrade();
         for(size_t i = newc + 1; i<= oldc; i++){
             delete blocks[i];
             blocks.erase(i);
         }
-    }else{
-        upgrade();
     }
-    defer(&file_t::downgrade, dynamic_cast<locker*>(this));
     if(inline_data && (offset >= (off_t)INLINE_DLEN)){
         int ret = pwrite(fd, inline_data, length, 0);
         if(ret < 0){
@@ -373,12 +368,12 @@ int file_t::truncate_rlocked(off_t offset){
 }
 
 int file_t::truncate(off_t offset){
-    auto_rlock(this);
+    auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
     }
-    int ret = truncate_rlocked(offset);
+    int ret = truncate_wlocked(offset);
     if(ret < 0){
         return -errno;
     }
@@ -391,13 +386,13 @@ int file_t::truncate(off_t offset){
 }
 
 int file_t::write(const void* buff, off_t offset, size_t size) {
-    auto_rlock(this);
+    auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
     }
     if((size_t)offset + size > length){
-        int ret = truncate_rlocked(offset + size);
+        int ret = truncate_wlocked(offset + size);
         if(ret < 0){
             return ret;
         }
@@ -416,15 +411,11 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         return ret;
     }
     if(inline_data){
-        __r.upgrade();
         memcpy(inline_data + offset, buff, size);
-    }else if(flags & ENTRY_DELETED_F) {
-        __r.upgrade();
-    } else {
+    }else if((flags & ENTRY_DELETED_F) == 0) {
         for(size_t i =  startc; i <= endc; i++){
             blocks[i]->markdirty();
         }
-        __r.upgrade();
     }
     flags |= FILE_DIRTY_F;
     mtime = time(nullptr);
@@ -443,7 +434,10 @@ int file_t::remove_and_release_wlock() {
     }
     flags |= ENTRY_DELETED_F;
     if(opened || (flags & ENTRY_REASEWAIT_F)) {
-        //do this in clean
+        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+            it->second->markstale();
+        }
+        //do trim in clean
         return 0;
     }
     if(opt.flags & FM_DELETE_NEED_PURGE) {
@@ -536,10 +530,10 @@ filemeta file_t::getmeta() {
     return meta;
 }
 
-bool file_t::sync_locked(bool isWlock) {
+bool file_t::sync_wlocked() {
     bool dirty = false;
-    for(auto i: blocks){
-        dirty |= i.second->sync();
+    for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        dirty |= it->second->sync();
     }
     const filekey& key = getkey();
     filemeta meta = getmeta();
@@ -548,20 +542,18 @@ bool file_t::sync_locked(bool isWlock) {
     if(upload_meta(key, meta, fblocks)){
         throw "upload_meta IO Error";
     }
-    if(!isWlock) upgrade();
     private_key = meta.key.private_key;
     if(!dirty){
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
     }
     save_file_to_db(key.path, meta, fblocks);
-    if(!isWlock) downgrade();
     return dirty;
 }
 
 
 int file_t::sync(int dataonly){
-    auto_rlock(this);
+    auto_wlock(this);
     if(flags & ENTRY_DELETED_F) {
         return 0;
     }
@@ -570,17 +562,16 @@ int file_t::sync(int dataonly){
         return 0;
     }
     fsync(fd);
-    sync_locked(false);
+    sync_wlocked();
     return 0;
 }
 
 int file_t::utime(const struct timespec tv[2]) {
-    auto_rlock(this);
+    auto_wlock(this);
     if(flags & ENTRY_DELETED_F) {
         return 0;
     }
     if((flags & ENTRY_INITED_F) == 0){
-        __r.upgrade();
         pull_wlocked();
     }
     const filekey& key = getkey();
@@ -627,7 +618,7 @@ void file_t::dump_to_disk_cache(){
 }
 
 int file_t::drop_mem_cache() {
-    auto_rlock(this);
+    auto_wlock(this);
     if(opened){
         return -EBUSY;
     }
@@ -637,7 +628,6 @@ int file_t::drop_mem_cache() {
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
-    __r.upgrade();
     reset_wlocked();
     if(inline_data){
         delete[] inline_data;
@@ -648,12 +638,12 @@ int file_t::drop_mem_cache() {
 }
 
 void file_t::upload_meta_async_task(file_t* file) {
-    if(file->tryrlock()) {
+    if(file->trywlock()) {
         return;  // 获取不到锁，放弃本次上传
     }
-    defer(&file_t::unrlock, dynamic_cast<locker*>(file));
+    defer(&file_t::unwlock, dynamic_cast<locker*>(file));
     if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
         return;
     }
-    file->sync_locked(false);
+    file->sync_wlocked();
 }

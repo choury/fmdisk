@@ -176,17 +176,18 @@ entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
     return entrys[name] = entry;
 }
 
-void dir_t::erase_child_wlocked(const string& name, entry_t* child) {
+void dir_t::erase_child_wlocked(const string& path, const string& name) {
     assert(entrys.count(name));
-    auto path = child->getkey().path;
-
-    // 如果是文件，删除相关的block记录
-    if(!child->isDir()) {
-        delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
-    }
+    entry_t* child = entrys[name];
 
     delete_entry_from_db(path);
-    delete_entry_prefix_from_db(path);
+    delete_file_from_db(path);
+    if(child->isDir()) {
+        delete_entry_prefix_from_db(path);
+    } else {
+        // 如果是文件，删除相关的block记录
+        delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
+    }
     entrys.erase(name);
 }
 
@@ -263,7 +264,7 @@ int dir_t::unlink(const string& name) {
         entry->unwlock();
         return ret;
     }
-    erase_child_wlocked(name, entry);
+    erase_child_wlocked(entry->getkey().path, name);
     entry->parent = nullptr;
     entry->unwlock();
     if(ret > 0) {
@@ -299,7 +300,7 @@ int dir_t::rmdir(const string& name) {
         entry->unwlock();
         return ret;
     }
-    erase_child_wlocked(name, entry);
+    erase_child_wlocked(entry->getkey().path, name);
     mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
     ::rmdir(get_cache_path(child->getcwd()).c_str());
@@ -384,7 +385,7 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
-    erase_child_wlocked(oldname, entry);
+    erase_child_wlocked(entry->getkey().path, oldname);
     entry->parent = newparent;
     entry->fk = filekey{newname, newfile.private_key};
     newparent->unlink(newname);
@@ -412,12 +413,11 @@ int dir_t::sync(int dataonly) {
 }
 
 int dir_t::utime(const struct timespec tv[2]) {
-    auto_rlock(this);
+    auto_wlock(this);
     if(flags & ENTRY_DELETED_F){
         return 0;
     }
     if((flags & ENTRY_INITED_F) == 0){
-        __r.upgrade();
         pull_wlocked();
     }
     int ret = 0;
@@ -455,7 +455,7 @@ void dir_t::dump_to_disk_cache(){
 
 int dir_t::drop_mem_cache(){
     int ret = 0;
-    auto_rlock(this);
+    auto_wlock(this);
     if(opened){
         return -EBUSY;
     }
@@ -465,7 +465,6 @@ int dir_t::drop_mem_cache(){
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
-    __r.upgrade();
     for(auto i : entrys){
         if(i.first == "." || i.first == ".."){
             continue;
