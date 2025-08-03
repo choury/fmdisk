@@ -204,6 +204,14 @@ file_t::~file_t() {
     delete[] inline_data;
 }
 
+string file_t::getrealname() {
+    auto_rlock(this);
+    if(flags & ENTRY_CHUNCED_F) {
+        return encodepath(fk.path);
+    }
+    return fk.path;
+}
+
 void file_t::reset_wlocked() {
     assert(opened == 0  && ((flags & FILE_DIRTY_F) == 0 || (flags & ENTRY_DELETED_F)));
     for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
@@ -598,7 +606,7 @@ int file_t::utime(const struct timespec tv[2]) {
     return 0;
 }
 
-void file_t::dump_to_disk_cache(){
+void file_t::dump_to_disk_cache(const std::string& path, const std::string& name) {
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F) {
         return;
@@ -607,14 +615,18 @@ void file_t::dump_to_disk_cache(){
         return;
     }
     filemeta meta = getmeta();
+    meta.key.private_key = private_key;
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
+        savemeta.key.path = encodepath(name);
         savemeta.mode = S_IFDIR | 0755;
-        save_entry_to_db(parent->getkey(), savemeta);
+        save_entry_to_db(path, savemeta);
+        save_file_to_db(pathjoin(path, encodepath(name)), meta, getfblocks());
     }else{
-        save_entry_to_db(parent->getkey(), meta);
+        meta.key.path = name;
+        save_entry_to_db(path, meta);
+        save_file_to_db(pathjoin(path, name), meta, getfblocks());
     }
-    save_file_to_db(meta.key.path, meta, getfblocks());
 }
 
 int file_t::drop_mem_cache() {

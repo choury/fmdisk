@@ -271,7 +271,7 @@ void checkdir(filekey* file) {
             path.resize(path.size() - 1);
         }
         f.key.path = path;
-        save_entry_to_db(*file, f);
+        save_entry_to_db(file->path, f);
         if (S_ISREG(f.mode)) {
             if (verbose) {
                 cout<<lock << f.key.path << " skip check" << endl<<unlock;

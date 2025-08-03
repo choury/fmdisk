@@ -88,12 +88,12 @@ static string escapQuote(const string& s){
     return replaceAll(s, "'", "''");
 }
 
-static void save_file_to_db(const string& path, const filekey& metakey, const char* json, uint32_t flags){
+static void save_file_to_db(const string& path, std::shared_ptr<void> file_private_key, const char* json, uint32_t flags){
     if(cachedb ==  nullptr){
         return;
     }
     string sql = "replace into files (path, private_key, meta, dirty) values('"
-     + escapQuote(path) + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ escapQuote(json) + "', " + ((flags & FILE_DIRTY_F) ? '1' : '0') + ")";
+     + escapQuote(path) + "', '" + fm_private_key_tostring(file_private_key) + "', '"+ escapQuote(json) + "', " + ((flags & FILE_DIRTY_F) ? '1' : '0') + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -103,7 +103,7 @@ static void save_file_to_db(const string& path, const filekey& metakey, const ch
 
 void save_file_to_db(const string& path, const filemeta& meta, const std::vector<filekey>& fblocks){
     json_object* jobj = marshal_meta(meta, fblocks);
-    save_file_to_db(path, meta.key, json_object_to_json_string(jobj), meta.flags);
+    save_file_to_db(path, meta.key.private_key, json_object_to_json_string(jobj), meta.flags);
     json_object_put(jobj);
 }
 
@@ -164,11 +164,11 @@ int delete_file_from_db(const string& path){
 }
 
 
-void save_entry_to_db(const filekey& fileat, const filemeta& meta){
+void save_entry_to_db(const string& path, const filemeta& meta){
     if(cachedb == nullptr){
         return;
     }
-    string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(fileat.path)
+    string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(path)
     + "', '" + escapQuote(basename(meta.key.path)) + "', '" + fm_private_key_tostring(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
     char* err_msg;

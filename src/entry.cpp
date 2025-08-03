@@ -92,13 +92,11 @@ entry_t::~entry_t() {
 
 filekey entry_t::getkey() {
     auto_rlock(this);
-    string path;
-    if(flags & ENTRY_CHUNCED_F){
-        path = encodepath(getcwd());
+    if(parent == nullptr){
+        return filekey{pathjoin("/", getrealname()), fk.private_key};
     }else{
-        path = getcwd();
+        return filekey{pathjoin(parent->getcwd(), getrealname()), fk.private_key};
     }
-    return filekey{path, fk.private_key};
 }
 
 string entry_t::getcwd() {

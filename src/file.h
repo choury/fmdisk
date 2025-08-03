@@ -18,6 +18,7 @@ class file_t: public entry_t {
     int truncate_wlocked(off_t offset);
     virtual void pull_wlocked() override;
     static void clean(file_t* file);
+    virtual std::string getrealname() override;
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();
@@ -43,7 +44,7 @@ public:
     int remove_and_release_wlock();
     std::vector<filekey> getfblocks();
 
-    virtual void dump_to_disk_cache() override;
+    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
     virtual int drop_mem_cache() override;
 
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间

@@ -15,7 +15,11 @@ class dir_t: public entry_t {
     }
     void pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
-    void erase_child_wlocked(const std::string& path, const std::string& name);
+    void erase_child_wlocked(const std::string& path, const std::string& name, bool keepblocks = false);
+    virtual std::string getrealname() override {
+        auto_rlock(this);
+        return fk.path;
+    }
 public:
     dir_t(dir_t* parent, const filemeta& meta);
     virtual ~dir_t() override;
@@ -52,9 +56,9 @@ public:
     dir_t*  mkdir(const string& name);
     int unlink(const string& name);
     int rmdir(const string& name);
-    int moveto(dir_t* newparent, const string& oldname, const string& newname);
+    int moveto(dir_t* newparent, const string& oldname, const string& newname, uint flags);
 
-    virtual void dump_to_disk_cache() override;
+    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
     virtual int drop_mem_cache() override;
 };
 

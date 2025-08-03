@@ -105,7 +105,7 @@ void dir_t::pull_entrys_wlocked() {
             }
         }
         if(!cached){
-            save_entry_to_db(getkey(), i);
+            save_entry_to_db(getkey().path, i);
             if((i.flags & META_KEY_ONLY_F) == 0){
                 save_file_to_db(entrys[bname]->getkey().path, i, {});
             }
@@ -172,11 +172,11 @@ filemeta dir_t::getmeta() {
 entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
     assert(!entrys.contains(name));
     assert(entrys.size() < MAXFILE);
-    entry->dump_to_disk_cache();
+    entry->dump_to_disk_cache(getcwd(), name);
     return entrys[name] = entry;
 }
 
-void dir_t::erase_child_wlocked(const string& path, const string& name) {
+void dir_t::erase_child_wlocked(const string& path, const string& name, bool keepblocks) {
     assert(entrys.count(name));
     entry_t* child = entrys[name];
 
@@ -184,7 +184,7 @@ void dir_t::erase_child_wlocked(const string& path, const string& name) {
     delete_file_from_db(path);
     if(child->isDir()) {
         delete_entry_prefix_from_db(path);
-    } else {
+    } else if(!keepblocks){
         // 如果是文件，删除相关的block记录
         delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
     }
@@ -319,7 +319,7 @@ int dir_t::rmdir(const string& name) {
     return 0;
 }
 
-int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname) {
+int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname, uint flags) {
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(oldname)){
@@ -329,6 +329,14 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
     auto_wlocker __2(newparent);
     if(newparent->children() >= MAXFILE){
         return -ENOSPC;
+    }
+
+    if(newparent->entrys.contains(newname) && (flags & RENAME_NOREPLACE)){
+        return -EEXIST;
+    }
+
+    if(flags & RENAME_EXCHANGE) {
+        return -EINVAL;  // Not supported in this implementation
     }
 
     entry_t* entry = entrys[oldname];
@@ -385,13 +393,15 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
-    erase_child_wlocked(entry->getkey().path, oldname);
-    entry->parent = newparent;
-    entry->fk = filekey{newname, newfile.private_key};
+    entry->fk.private_key = newfile.private_key;
     newparent->unlink(newname);
     newparent->insert_child_wlocked(newname, entry);
     newparent->mtime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
+
+    erase_child_wlocked(entry->getkey().path, oldname, true);
+    entry->fk.path = newname;
+    entry->parent = newparent;
     return 0;
 }
 
@@ -431,7 +441,7 @@ int dir_t::utime(const struct timespec tv[2]) {
 }
 
 
-void dir_t::dump_to_disk_cache(){
+void dir_t::dump_to_disk_cache(const std::string& path, const std::string& name) {
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F){
         return;
@@ -440,8 +450,9 @@ void dir_t::dump_to_disk_cache(){
         return;
     }
     filemeta meta = getmeta();
-    save_entry_to_db(parent->getkey(), meta);
-    save_file_to_db(meta.key.path, meta, {});
+    meta.key.path = name;
+    save_entry_to_db(path, meta);
+    save_file_to_db(pathjoin(path, name), meta, {});
     if((flags & DIR_PULLED_F) == 0){
         return;
     }
@@ -449,7 +460,7 @@ void dir_t::dump_to_disk_cache(){
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        i.second->dump_to_disk_cache();
+        i.second->dump_to_disk_cache(path, i.first);
     }
 }
 

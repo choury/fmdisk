@@ -154,7 +154,7 @@ int fm_fuse_rename(const char *oldname, const char *newname, unsigned int flags)
         return -ENOENT;
     }
     fs = nullptr;
-    return parent->moveto(newparent, basename(oldname), basename(newname));
+    return parent->moveto(newparent, basename(oldname), basename(newname), flags);
 }
 
 int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){

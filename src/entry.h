@@ -22,6 +22,7 @@ protected:
     uint32_t flags = 0;
     uint32_t opened = 0;
     string getcwd();
+    virtual string getrealname() = 0;
     virtual void pull_wlocked() = 0;
     void pull_wlocked(filemeta& meta);
     static void pull(entry_t* entry);
@@ -39,7 +40,7 @@ public:
     virtual int sync(int dataonly) = 0;
     virtual int release() = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
-    virtual void dump_to_disk_cache() = 0;
+    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) = 0;
     virtual int drop_mem_cache() = 0;
     int drop_disk_cache();
 
