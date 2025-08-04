@@ -54,7 +54,7 @@ endif()
 
 
 pkg_check_modules(JSON-C REQUIRED IMPORTED_TARGET json-c)
-pkg_check_modules(FUSE REQUIRED IMPORTED_TARGET fuse3)
+pkg_check_modules(FUSE REQUIRED "fuse3>=3.11" IMPORTED_TARGET fuse3)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
 #set(CMAKE_C_FLAGS "-D_FILE_OFFSET_BITS=64 -Wall -O2 -DNDEBUG -ggdb")

@@ -18,15 +18,23 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     //conn->max_read = opt.block_len;
     conn->max_write = opt.block_len;
     conn->max_readahead = 10*1024*1024;
+#if FUSE_VERSION >= 317 && FUSE_HOTFIX_VERSION >= 1
     conn->no_interrupt = 1;
+    fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
+    fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
+    fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
+#else
+    conn->want |= conn->capable & (FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_PARALLEL_DIROPS);
+    conn->want &= ~FUSE_CAP_ATOMIC_O_TRUNC;
+#endif
     cfg->hard_remove = 1; // 不隐藏删除的文件
     cfg->direct_io = 1;
     cfg->nullpath_ok = 1;
     cfg->no_rofd_flush = 1;
+#if FUSE_VERSION > 314
+    //这个理论上需要3.14.1，但是FUSE_HOTFIX_VERSION还没有引入，所以只能判断 > 3.14
     cfg->parallel_direct_writes = 1;
-    fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
-    fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
-    fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
+#endif
     dir_t* root = cache_root();
     // 恢夏dirty数据并重新上传
     recover_dirty_data(root);
@@ -181,7 +189,9 @@ int fm_fuse_open(const char *path, struct fuse_file_info *fi){
     }
     fi->fh = (uint64_t)entry;
     fi->direct_io = 1;
+#if FUSE_VERSION > 314
     fi->parallel_direct_writes = 1;
+#endif
     return entry->open();
 }
 

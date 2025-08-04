@@ -305,7 +305,7 @@ void fixCacheInconsistency(cache_file_info* cache_file) {
 
 // 检查本地缓存文件与远程meta信息的一致性
 void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks) {
-    string remote_path = file.path;
+    string remote_path = decodepath(file.path);
 
     // 查找对应的本地缓存文件
     auto it = remote_path_to_cache.find(remote_path);
