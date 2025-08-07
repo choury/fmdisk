@@ -27,7 +27,7 @@ static std::string getPathFromFd(int fd) {
 }
 
 sem_t dirty_sem;
-std::list<block_t*> dblocks; // dirty blocks
+std::set<block_t*> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
@@ -79,7 +79,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     if (record.dirty || record.private_key != fm_private_key_tostring(fk.private_key)) {
         this->flags |= BLOCK_DIRTY;
         pthread_mutex_lock(&dblocks_lock);
-        dblocks.push_back(this);
+        dblocks.emplace(this);
         pthread_mutex_unlock(&dblocks_lock);
         sem_wait(&dirty_sem);
     }
@@ -90,13 +90,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 // 2. file被truncate了，这个时候需要删除数据
 block_t::~block_t() {
     pthread_mutex_lock(&dblocks_lock);
-    for(auto i = dblocks.begin(); i != dblocks.end();){
-        if(*i ==  this){
-            i = dblocks.erase(i);
-        }else{
-            i++;
-        }
-    }
+    dblocks.erase(this);
     pthread_mutex_unlock(&dblocks_lock);
     if(flags & BLOCK_DIRTY){
         sem_post(&dirty_sem);
@@ -252,7 +246,7 @@ void block_t::markdirty() {
     unwlock();
     if(!isDirty) {
         pthread_mutex_lock(&dblocks_lock);
-        dblocks.push_back(this);
+        dblocks.emplace(this);
         pthread_mutex_unlock(&dblocks_lock);
         // 只有变为dirty时才等
         sem_wait(&dirty_sem);
@@ -265,20 +259,12 @@ void block_t::markstale() {
 }
 
 bool block_t::sync(){
-    pthread_mutex_lock(&dblocks_lock);
-    for(auto i = dblocks.begin(); i != dblocks.end();){
-        if(*i ==  this){
-            i = dblocks.erase(i);
-        }else{
-            i++;
-        }
-    }
     auto_rlock(this);
     if ((flags & BLOCK_DIRTY) == 0) {
-        pthread_mutex_unlock(&dblocks_lock);
         return false;
     }
-    dblocks.emplace_back(this);
+    pthread_mutex_lock(&dblocks_lock);
+    dblocks.emplace(this);
     pthread_mutex_unlock(&dblocks_lock);
     return true;
 }

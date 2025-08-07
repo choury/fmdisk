@@ -61,9 +61,12 @@ static bool cleanup_cache_by_size() {
 
         // 检查文件是否有dirty标记（从数据库加载）
         if(!file.remote_path.empty()) {
-            filemeta meta;
+            filemeta meta{};
             std::vector<filekey> fblocks;
-            load_file_from_db(file.remote_path, meta, fblocks);
+            load_file_from_db(encodepath(file.remote_path), meta, fblocks);
+            if(meta.blksize == 0) {
+                load_file_from_db(file.remote_path, meta, fblocks);
+            }
 
             if(meta.flags & FILE_DIRTY_F) {
                 continue; // 跳过有dirty标记的文件
@@ -295,7 +298,7 @@ int file_t::release(){
 }
 
 void file_t::pull_wlocked() {
-    filemeta meta;
+    filemeta meta{};
     entry_t::pull_wlocked(meta);
     private_key = meta.key.private_key;
     blksize = meta.blksize;
@@ -463,9 +466,10 @@ std::vector<filekey> file_t::getfblocks(){
     }
     assert(flags & ENTRY_INITED_F);
     if(blocks.empty()) {
-        filemeta meta;
+        filemeta meta{};
         std::vector<filekey> fblocks;
         load_file_from_db(getkey().path, meta, fblocks);
+        assert(meta.blksize);
         return fblocks;
     }
     std::vector<filekey> fblocks(blocks.size());

@@ -319,7 +319,7 @@ int dir_t::rmdir(const string& name) {
     return 0;
 }
 
-int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname, uint flags) {
+int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname, uint mv_flags) {
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(oldname)){
@@ -331,11 +331,11 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         return -ENOSPC;
     }
 
-    if(newparent->entrys.contains(newname) && (flags & RENAME_NOREPLACE)){
+    if(newparent->entrys.contains(newname) && (mv_flags & RENAME_NOREPLACE)){
         return -EEXIST;
     }
 
-    if(flags & RENAME_EXCHANGE) {
+    if(mv_flags & RENAME_EXCHANGE) {
         return -EINVAL;  // Not supported in this implementation
     }
 
