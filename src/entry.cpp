@@ -2,14 +2,14 @@
 #include "entry.h"
 #include "dir.h"
 #include "file.h"
-#include "threadpool.h"
+#include "trdpool.h"
 #include "sqlite.h"
 
 #include <thread>
 #include <assert.h>
 
-thrdpool* upool;
-thrdpool* dpool;
+TrdPool* upool;
+TrdPool* dpool;
 std::thread gc;
 bool writeback_done = false;
 
@@ -19,9 +19,9 @@ int cache_prepare() {
         return ret;
     }
     assert(opt.block_len > INLINE_DLEN);
-    upool = creatpool(UPLOADTHREADS + 1); //for writeback_thread;
-    dpool = creatpool(DOWNLOADTHREADS);
-    addtask(upool, (taskfunc)writeback_thread, &writeback_done, 0);
+    upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
+    dpool = new TrdPool(DOWNLOADTHREADS);
+    upool->submit_fire_and_forget([&]() { writeback_thread(&writeback_done); });
     gc = std::thread(start_gc);
     start_delay_thread();
     return sqlinit();
@@ -30,8 +30,8 @@ int cache_prepare() {
 void cache_destroy(dir_t* root){
     stop_gc();
     writeback_done = true;
-    destroypool(upool);
-    destroypool(dpool);
+    delete upool;
+    delete dpool;
     if(gc.joinable()){
         gc.join();
     }

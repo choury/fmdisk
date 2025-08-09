@@ -3,7 +3,7 @@
 #include "utils.h"
 #include "entry.h"
 
-class block_t: locker {
+class block_t: locker, public std::enable_shared_from_this<block_t> {
     int fd;
     ino_t inode;  // 缓存文件的inode
     filekey fk;
@@ -14,8 +14,8 @@ class block_t: locker {
     time_t atime;
     size_t version = 0;
     int staled();
-    static void pull(block_t* b);
-    static void push(block_t* b);
+    static void pull(std::weak_ptr<block_t> b);
+    static void push(std::weak_ptr<block_t> b);
     friend void writeback_thread(bool* done);
     [[nodiscard]] std::string getpath() const;
     [[nodiscard]] filekey getkey() const;

@@ -1,5 +1,5 @@
 #include "common.h"
-#include "threadpool.h"
+#include "trdpool.h"
 #include "block.h"
 #include "file.h"
 #include "sqlite.h"
@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <semaphore.h>
-#include <list>
+#include <set>
 #include <random>
 #include <algorithm>
 
@@ -27,7 +27,7 @@ static std::string getPathFromFd(int fd) {
 }
 
 sem_t dirty_sem;
-std::set<block_t*> dblocks; // dirty blocks
+std::set<std::weak_ptr<block_t>, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
@@ -42,12 +42,17 @@ void writeback_thread(bool* done){
             continue;
         }
         int staled_threshold = 30; // seconds
-        if(taskinqueu(upool) == 0 && dblocks.size() >= UPLOADTHREADS){
+        if(upool->tasks_in_queue() == 0 && dblocks.size() >= UPLOADTHREADS){
             staled_threshold = 5;
         }
         for(auto i = dblocks.begin(); i!= dblocks.end();){
-            if((*i)->staled() >= staled_threshold){
-                addtask(upool, (taskfunc)block_t::push, *i, 0);
+            if(i->expired()){
+                i = dblocks.erase(i);
+                continue;
+            }
+            auto b = i->lock();
+            if(b->staled() >= staled_threshold){
+                upool->submit_fire_and_forget([block = *i]{ block_t::push(block); });
                 i = dblocks.erase(i);
             }else{
                 i++;
@@ -82,9 +87,6 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     this->flags |= BLOCK_SYNC;
     if (record.dirty || record.private_key != fm_private_key_tostring(fk.private_key)) {
         this->flags |= BLOCK_DIRTY;
-        pthread_mutex_lock(&dblocks_lock);
-        dblocks.emplace(this);
-        pthread_mutex_unlock(&dblocks_lock);
         sem_wait(&dirty_sem);
     }
 }
@@ -93,9 +95,6 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 // 1. file被销毁了，一般是 drop_mem_cache, BLOCK_STALE标记
 // 2. file被truncate了，这个时候需要删除数据
 block_t::~block_t() {
-    pthread_mutex_lock(&dblocks_lock);
-    dblocks.erase(this);
-    pthread_mutex_unlock(&dblocks_lock);
     if(flags & BLOCK_DIRTY){
         sem_post(&dirty_sem);
     }
@@ -120,8 +119,12 @@ filekey block_t::getkey() const {
     }
 }
 
-void block_t::pull(block_t* b) {
-    auto_wlock(b);
+void block_t::pull(std::weak_ptr<block_t> wb) {
+    if(wb.expired()) {
+        return;
+    }
+    auto b = wb.lock();
+    auto_wlock(b.get());
     if(b->flags & BLOCK_SYNC){
         return;
     }
@@ -153,8 +156,12 @@ static std::string random_string() {
      return str.substr(0, 16);    // assumes 16 < number of characters in str
 }
 
-void block_t::push(block_t* b) {
-    auto_rlock(b);
+void block_t::push(std::weak_ptr<block_t> wb) {
+    if(wb.expired()) {
+        return;
+    }
+    auto b = wb.lock();
+    auto_rlock(b.get());
     size_t version = b->version;
     if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
         return;
@@ -221,7 +228,7 @@ retry:
 
 void block_t::prefetch(bool wait) {
     if(wait){
-        pull(this);
+        pull(shared_from_this());
         return;
     }
     if(tryrlock()){
@@ -232,8 +239,8 @@ void block_t::prefetch(bool wait) {
         return;
     }
     unrlock();
-    if(taskinqueu(dpool) < DOWNLOADTHREADS){
-        addtask(dpool, (taskfunc)pull, this, 0);
+    if(dpool->tasks_in_queue() < DOWNLOADTHREADS){
+        dpool->submit_fire_and_forget([this]{ pull(shared_from_this()); });
     }
 }
 
@@ -250,7 +257,7 @@ void block_t::markdirty() {
     unwlock();
     if(!isDirty) {
         pthread_mutex_lock(&dblocks_lock);
-        dblocks.emplace(this);
+        dblocks.emplace(shared_from_this());
         pthread_mutex_unlock(&dblocks_lock);
         // 只有变为dirty时才等
         sem_wait(&dirty_sem);
@@ -268,7 +275,7 @@ bool block_t::sync(){
         return false;
     }
     pthread_mutex_lock(&dblocks_lock);
-    dblocks.emplace(this);
+    dblocks.emplace(shared_from_this());
     pthread_mutex_unlock(&dblocks_lock);
     return true;
 }

@@ -1,7 +1,7 @@
 #include "common.h"
 #include "fmdisk.h"
 #include "defer.h"
-#include "threadpool.h"
+#include "trdpool.h"
 #include <unistd.h>
 #include <iostream>
 #include <vector>
@@ -22,7 +22,7 @@ static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
 static bool deleteall = false;
-static thrdpool *pool;
+static TrdPool *pool;
 static std::unordered_map<std::string, filemeta> objs;
 
 // 全局变量存储本地缓存文件信息
@@ -173,7 +173,7 @@ void checkchunk(filekey* file) {
     fs.erase(METANAME);
     bool fixed = false;
     for(size_t i = 0; i < blks.size(); i++) {
-        if(blks[i].path == "x"){
+        if(blks[i].path == "x" || blks[i].path.empty()){
             continue;
         }
         bool haswrong = false;
@@ -280,9 +280,9 @@ void checkdir(filekey* file) {
         }
 
         if(endwith(f.key.path, ".def")){
-            addtask(pool, (taskfunc)checkchunk, new filekey(f.key), 0);
+            pool->submit_fire_and_forget([key = new filekey(f.key)]() { checkchunk(key); });
         }else if(recursive){
-            addtask(pool, (taskfunc)checkdir, new filekey(f.key), 0);
+            pool->submit_fire_and_forget([key = new filekey(f.key)]() { checkdir(key); });
         }
     }
 }
@@ -488,7 +488,7 @@ int main(int argc, char **argv) {
     // 扫描本地缓存文件
     scanLocalCacheFiles(checkpath);
 
-    pool = creatpool(concurrent);
+    pool = new TrdPool(concurrent);
     filekey* file = nullptr;
     if(isfile){
         file = getpath(encodepath(checkpath));
@@ -521,8 +521,7 @@ int main(int argc, char **argv) {
     }else{
         checkdir(file);
     }
-    void* result;
-    waittask(pool, 0, &result);
+    pool->wait_all();
     if(objs.size() && strcmp(checkpath, "/") == 0 && recursive){
         //only check objs for full check
         std::vector<filekey> ftrim;
@@ -548,5 +547,6 @@ int main(int argc, char **argv) {
         // 检查孤儿文件和block条目
         checkOrphanedFiles(checkpath);
     }
+    delete pool;
     return 0;
 }

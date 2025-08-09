@@ -4,6 +4,7 @@
 #include "entry.h"
 #include "block.h"
 
+#include <memory>
 #include <vector>
 #include <map>
 
@@ -13,7 +14,7 @@ class file_t: public entry_t {
     std::shared_ptr<void> private_key; //for meta.json
     char* inline_data = nullptr;
     blksize_t blksize;
-    std::map<uint32_t, block_t*> blocks;
+    std::map<uint32_t, std::shared_ptr<block_t>> blocks;
     size_t block_size = 0; // cache for getmeta
     int truncate_wlocked(off_t offset);
     virtual void pull_wlocked() override;

@@ -2,6 +2,7 @@
 #include "fmdisk.h"
 #include "file.h"
 #include "dir.h"
+#include "trdpool.h"
 #include "threadpool.h"
 #include "defer.h"
 #include "sqlite.h"
@@ -219,7 +220,6 @@ void file_t::reset_wlocked() {
     assert(opened == 0  && ((flags & FILE_DIRTY_F) == 0 || (flags & ENTRY_DELETED_F)));
     for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
         it->second->markstale();
-        delete it->second;
     }
     blocks.clear();
     if(fd < 0) {
@@ -251,11 +251,11 @@ int file_t::open(){
         auto fblocks = getfblocks();
         assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
-            blocks.emplace(i, new block_t(fd, inode, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
+            blocks.emplace(i, std::make_shared<block_t>(fd, inode, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
     } else {
         for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
-            blocks.emplace(i, new block_t(fd, inode, filekey{"", private_key}, i, blksize * i, blksize, 0));
+            blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
     return 0;
@@ -308,7 +308,6 @@ void file_t::pull_wlocked() {
     if(meta.inline_data){
         assert(meta.size < (size_t)meta.blksize);
         inline_data = (char*)meta.inline_data;
-        //blocks.emplace(0, new block_t(this, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC));
     }
 }
 
@@ -348,13 +347,12 @@ int file_t::truncate_wlocked(off_t offset){
             return -1;
         }
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks.emplace(i, new block_t(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data == nullptr){
         blocks[newc]->prefetch(true);
         if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->markdirty();
         for(size_t i = newc + 1; i<= oldc; i++){
-            delete blocks[i];
             blocks.erase(i);
         }
     }
@@ -364,7 +362,7 @@ int file_t::truncate_wlocked(off_t offset){
             return ret;
         }
         assert(!blocks.contains(0));
-        blocks.emplace(0, new block_t(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+        blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         delete[] inline_data;
         inline_data = nullptr;
         if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
@@ -391,7 +389,7 @@ int file_t::truncate(off_t offset){
     mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 60) {
         last_meta_sync_time = mtime;
-        addtask(upool, (taskfunc)upload_meta_async_task, this, 0);
+        upool->submit_fire_and_forget([this]() { upload_meta_async_task(this); });
     }
     return 0;
 }
@@ -432,7 +430,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 60) {
         last_meta_sync_time = mtime;
-        addtask(upool, (taskfunc)upload_meta_async_task, this, 0);
+        upool->submit_fire_and_forget([this]() { upload_meta_async_task(this); });
     }
     return ret;
 }
@@ -469,7 +467,6 @@ std::vector<filekey> file_t::getfblocks(){
         filemeta meta{};
         std::vector<filekey> fblocks;
         load_file_from_db(getkey().path, meta, fblocks);
-        assert(meta.blksize);
         return fblocks;
     }
     std::vector<filekey> fblocks(blocks.size());

@@ -47,9 +47,9 @@ public:
     friend class dir_t;
 };
 
-struct thrdpool;
-extern thrdpool* upool;
-extern thrdpool* dpool;
+class TrdPool;
+extern TrdPool* upool;
+extern TrdPool* dpool;
 
 filekey basename(const filekey& file);
 filekey decodepath(const filekey& file);
