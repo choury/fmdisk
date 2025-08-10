@@ -187,7 +187,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     last_meta_sync_time(0)
 {
     if(flags & ENTRY_CHUNCED_F){
-        fk = decodepath(fk);
+        fk = std::make_shared<filekey>(decodepath(*fk.load()));
     }
     if(flags & META_KEY_ONLY_F) {
         return;
@@ -209,11 +209,10 @@ file_t::~file_t() {
 }
 
 string file_t::getrealname() {
-    auto_rlock(this);
     if(flags & ENTRY_CHUNCED_F) {
-        return encodepath(fk.path);
+        return encodepath(fk.load()->path);
     }
-    return fk.path;
+    return fk.load()->path;
 }
 
 void file_t::reset_wlocked() {
@@ -293,7 +292,7 @@ int file_t::release(){
     }
 
     flags |= ENTRY_REASEWAIT_F;
-    add_delay_job((taskfunc)clean, this, 60);
+    add_delay_job((taskfunc)clean, this, 0);
     return 0;
 }
 
@@ -387,9 +386,9 @@ int file_t::truncate(off_t offset){
         return -errno;
     }
     mtime = time(nullptr);
-    if(mtime - last_meta_sync_time >= 60) {
+    if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
-        upool->submit_fire_and_forget([this]() { upload_meta_async_task(this); });
+        upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
     }
     return 0;
 }
@@ -428,9 +427,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     flags |= FILE_DIRTY_F;
     mtime = time(nullptr);
-    if(mtime - last_meta_sync_time >= 60) {
+    if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
-        upool->submit_fire_and_forget([this]() { upload_meta_async_task(this); });
+        upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
     }
     return ret;
 }
@@ -488,7 +487,7 @@ std::vector<filekey> file_t::getkeys() {
     auto_rlock(this);
     std::vector<filekey> flist = getfblocks();
     flist.emplace_back(filekey{METANAME, private_key});
-    if(fk.private_key == nullptr){
+    if(fk.load()->private_key == nullptr){
         return flist;
     }
     string path;
@@ -497,7 +496,7 @@ std::vector<filekey> file_t::getkeys() {
     }else{
         path = getcwd();
     }
-    flist.emplace_back(filekey{path, fk.private_key});
+    flist.emplace_back(filekey{path, fk.load()->private_key});
     return flist;
 }
 
@@ -571,7 +570,9 @@ int file_t::sync(int dataonly){
         return 0;
     }
     fsync(fd);
-    sync_wlocked();
+    if(!dataonly) {
+        dump_to_disk_cache(dirname(getcwd()), fk.load()->path);
+    }
     return 0;
 }
 

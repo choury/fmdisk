@@ -228,7 +228,7 @@ int fm_fuse_fsync(const char *, int dataonly, struct fuse_file_info *fi){
 
 int fm_fuse_flush(const char*, struct fuse_file_info *fi){
     file_t* entry = (file_t*)fi->fh;
-    return entry->sync(0);
+    return entry->sync(1);
 }
 
 int fm_fuse_release(const char *, struct fuse_file_info *fi){

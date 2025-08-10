@@ -71,6 +71,27 @@ int sqlinit(){
             cachedb = nullptr;
             return -1;
         }
+        //set journal_mode=wal
+        char *err_msg;
+        if(sqlite3_exec(cachedb, "PRAGMA journal_mode=WAL", nullptr, nullptr, &err_msg)){
+            fprintf(stderr, "set journal_mode failed: %s\n", err_msg);
+            sqlite3_free(err_msg);
+        }
+        //set synchronous=normal
+        if(sqlite3_exec(cachedb, "PRAGMA synchronous=NORMAL", nullptr, nullptr, &err_msg)){
+            fprintf(stderr, "set synchronous failed: %s\n", err_msg);
+            sqlite3_free(err_msg);
+        }
+        //set cache_size 128M
+        if(sqlite3_exec(cachedb, "PRAGMA cache_size=-131072", nullptr, nullptr, &err_msg)){
+            fprintf(stderr, "set cache_size failed: %s\n", err_msg);
+            sqlite3_free(err_msg);
+        }
+        //set temp_store=memory
+        if(sqlite3_exec(cachedb, "PRAGMA temp_store=MEMORY", nullptr, nullptr, &err_msg)){
+            fprintf(stderr, "set temp_store failed: %s\n", err_msg);
+            sqlite3_free(err_msg);
+        }
         return 0;
     }else{
         fprintf(stderr, "stat cache db failed %s: %s", cachefile.c_str(), strerror(errno));

@@ -17,8 +17,7 @@ class dir_t: public entry_t {
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
     void erase_child_wlocked(const std::string& path, const std::string& name, bool keepblocks = false);
     virtual std::string getrealname() override {
-        auto_rlock(this);
-        return fk.path;
+        return fk.load()->path;
     }
 public:
     dir_t(dir_t* parent, const filemeta& meta);

@@ -68,7 +68,7 @@ int entry_t::statfs(const char*, struct statvfs* sf) {
 
 entry_t::entry_t(dir_t* parent, const filemeta& meta):
     parent(parent),
-    fk(basename(meta.key)),
+    fk(std::make_shared<filekey>(basename(meta.key))),
     mode(meta.mode),
     length(meta.size),
     mtime(meta.mtime),
@@ -91,20 +91,18 @@ entry_t::~entry_t() {
 }
 
 filekey entry_t::getkey() {
-    auto_rlock(this);
     if(parent == nullptr){
-        return filekey{pathjoin("/", getrealname()), fk.private_key};
+        return filekey{pathjoin("/", getrealname()), fk.load()->private_key};
     }else{
-        return filekey{pathjoin(parent->getcwd(), getrealname()), fk.private_key};
+        return filekey{pathjoin(parent->getcwd(), getrealname()), fk.load()->private_key};
     }
 }
 
 string entry_t::getcwd() {
-    auto_rlock(this);
     if(parent == nullptr){
         return "/";
     }
-    return pathjoin(parent->getcwd(), fk.path);
+    return pathjoin(parent->getcwd(), fk.load()->path);
 }
 
 void entry_t::pull_wlocked(filemeta& meta){

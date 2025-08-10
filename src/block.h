@@ -3,6 +3,8 @@
 #include "utils.h"
 #include "entry.h"
 
+#include <atomic>
+
 class block_t: locker, public std::enable_shared_from_this<block_t> {
     int fd;
     ino_t inode;  // 缓存文件的inode
@@ -11,8 +13,8 @@ class block_t: locker, public std::enable_shared_from_this<block_t> {
     const off_t offset;
     const size_t size;
     unsigned int flags;
-    time_t atime;
-    size_t version = 0;
+    std::atomic<time_t> atime;
+    std::atomic<size_t> version = 0;
     int staled();
     static void pull(std::weak_ptr<block_t> b);
     static void push(std::weak_ptr<block_t> b);

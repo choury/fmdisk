@@ -26,14 +26,12 @@ static std::string getPathFromFd(int fd) {
     return {buffer.data(), (size_t)len};
 }
 
-sem_t dirty_sem;
 std::set<std::weak_ptr<block_t>, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
 void writeback_thread(bool* done){
-    sem_init(&dirty_sem, 0, std::max(UPLOADTHREADS*2, opt.cache_size / opt.block_len));
     while(!*done){
         usleep(100000);
         pthread_mutex_lock(&dblocks_lock);
@@ -87,7 +85,6 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     this->flags |= BLOCK_SYNC;
     if (record.dirty || record.private_key != fm_private_key_tostring(fk.private_key)) {
         this->flags |= BLOCK_DIRTY;
-        sem_wait(&dirty_sem);
     }
 }
 
@@ -95,9 +92,6 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 // 1. file被销毁了，一般是 drop_mem_cache, BLOCK_STALE标记
 // 2. file被truncate了，这个时候需要删除数据
 block_t::~block_t() {
-    if(flags & BLOCK_DIRTY){
-        sem_post(&dirty_sem);
-    }
     if((flags & BLOCK_STALE) == 0) {
         trim(getkey());
     }
@@ -223,45 +217,37 @@ retry:
     // 上传成功，清除dirty标记
     save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     b->flags &= ~BLOCK_DIRTY;
-    sem_post(&dirty_sem);
 }
 
 void block_t::prefetch(bool wait) {
+    auto_rlock(this);
+    if(flags & BLOCK_SYNC) {
+        return; // 已经同步，不需要预取
+    }
     if(wait){
+        __r.unlock();
         pull(shared_from_this());
         return;
     }
-    if(tryrlock()){
-        return;
-    }
-    if(flags & BLOCK_SYNC){
-        unrlock();
-        return;
-    }
-    unrlock();
     if(dpool->tasks_in_queue() < DOWNLOADTHREADS){
         dpool->submit_fire_and_forget([this]{ pull(shared_from_this()); });
     }
 }
 
 void block_t::markdirty() {
-    wlock();
-    atime = time(nullptr);
     version++;
-    bool isDirty = (flags & BLOCK_DIRTY) != 0;
-    if(!isDirty){
-        flags |=  BLOCK_DIRTY;
-        // 保存到数据库并标记为dirty
-        save_block_to_db(inode, no, fk.private_key, true);
+    atime = time(nullptr);
+    auto_rlock(this);
+    if(flags & BLOCK_DIRTY) {
+        return;
     }
-    unwlock();
-    if(!isDirty) {
-        pthread_mutex_lock(&dblocks_lock);
-        dblocks.emplace(shared_from_this());
-        pthread_mutex_unlock(&dblocks_lock);
-        // 只有变为dirty时才等
-        sem_wait(&dirty_sem);
-    }
+    __r.upgrade();
+    flags |=  BLOCK_DIRTY;
+    // 保存到数据库并标记为dirty
+    save_block_to_db(inode, no, fk.private_key, true);
+    pthread_mutex_lock(&dblocks_lock);
+    dblocks.emplace(shared_from_this());
+    pthread_mutex_unlock(&dblocks_lock);
 }
 
 void block_t::markstale() {
@@ -297,6 +283,5 @@ bool block_t::dummy() {
 
 
 int block_t::staled(){
-    auto_rlock(this);
     return time(nullptr) - atime;
 }

@@ -393,14 +393,15 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
-    entry->fk.private_key = newfile.private_key;
+    std::string oldpath = entry->getkey().path;
+    entry->fk.store(std::make_shared<filekey>(newname, newfile.private_key));
     newparent->unlink(newname);
     newparent->insert_child_wlocked(newname, entry);
     newparent->mtime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
 
-    erase_child_wlocked(entry->getkey().path, oldname, true);
-    entry->fk.path = newname;
+    erase_child_wlocked(oldpath, oldname, true);
+    //entry->fk.path = newname;
     entry->parent = newparent;
     return 0;
 }

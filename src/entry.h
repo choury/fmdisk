@@ -14,7 +14,7 @@ class dir_t;
 class entry_t: public locker {
 protected:
     dir_t* parent;
-    filekey fk;
+    std::atomic<std::shared_ptr<filekey>> fk;
     mode_t mode;
     size_t length;
     time_t mtime = 0;
