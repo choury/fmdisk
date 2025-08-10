@@ -370,7 +370,10 @@ int file_t::truncate_wlocked(off_t offset){
     if(length == 0 && inline_data == nullptr){
         inline_data = new char[INLINE_DLEN];
     }
-    flags |= FILE_DIRTY_F;
+    if((flags & FILE_DIRTY_F) == 0){
+        flags |= FILE_DIRTY_F;
+        sync_wlocked(true);
+    }
     assert(fd >= 0);
     return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
 }
@@ -425,9 +428,11 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             blocks[i]->markdirty();
         }
     }
-    flags |= FILE_DIRTY_F;
     mtime = time(nullptr);
-    if(mtime - last_meta_sync_time >= 600) {
+    if((flags & FILE_DIRTY_F) == 0){
+        flags |= FILE_DIRTY_F;
+        sync_wlocked(true);
+    }else if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
     }
@@ -538,11 +543,16 @@ filemeta file_t::getmeta() {
     return meta;
 }
 
-bool file_t::sync_wlocked() {
+bool file_t::sync_wlocked(bool forcedirty) {
     bool dirty = false;
-    for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
-        dirty |= it->second->sync();
+    if(forcedirty) {
+        dirty = true;
+    } else {
+        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+            dirty |= it->second->sync();
+        }
     }
+    assert(!dirty || (flags & FILE_DIRTY_F));
     const filekey& key = getkey();
     filemeta meta = getmeta();
     meta.key = getmetakey();
@@ -617,12 +627,12 @@ void file_t::dump_to_disk_cache(const std::string& path, const std::string& name
         return;
     }
     filemeta meta = getmeta();
-    meta.key.private_key = private_key;
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
         savemeta.key.path = encodepath(name);
         savemeta.mode = S_IFDIR | 0755;
         save_entry_to_db(path, savemeta);
+        meta.key.private_key = private_key;
         save_file_to_db(pathjoin(path, encodepath(name)), meta, getfblocks());
     }else{
         meta.key.path = name;

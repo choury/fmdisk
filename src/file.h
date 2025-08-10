@@ -35,7 +35,7 @@ public:
     virtual int open() override;
     virtual int release() override;
     //如果仍然是dirty状态，返回true
-    bool sync_wlocked();
+    bool sync_wlocked(bool forcedirty = false);
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
     int read(void* buff, off_t offset, size_t size);

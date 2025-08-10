@@ -44,6 +44,9 @@ void writeback_thread(bool* done){
             staled_threshold = 5;
         }
         for(auto i = dblocks.begin(); i!= dblocks.end();){
+            if(upool->tasks_in_queue() >= UPLOADTHREADS){
+                break;
+            }
             if(i->expired()){
                 i = dblocks.erase(i);
                 continue;
@@ -75,7 +78,6 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 
     if(fk.path == "" && fm_private_key_tostring(fk.private_key)[0] == '\0') {
         this->flags |= BLOCK_SYNC;
-        return;
     }
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
     struct block_record record;

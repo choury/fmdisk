@@ -348,9 +348,9 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     string sql = "delete from blocks where private_key in (";
     bool first = true;
     for(const auto& fkey : filekeys) {
-        if(!first) sql += ", ";
         string key_str = fm_private_key_tostring(fkey.private_key);
         if(key_str.empty()) continue;
+        if(!first) sql += ", ";
         sql += "'" + escapQuote(key_str) + "'";
         first = false;
     }
