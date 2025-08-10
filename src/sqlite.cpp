@@ -350,6 +350,7 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     for(const auto& fkey : filekeys) {
         if(!first) sql += ", ";
         string key_str = fm_private_key_tostring(fkey.private_key);
+        if(key_str.empty()) continue;
         sql += "'" + escapQuote(key_str) + "'";
         first = false;
     }
