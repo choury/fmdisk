@@ -20,7 +20,7 @@ void destroypool(struct thrdpool* pool);
 
 //增加一个任务，执行task函数，参数为param
 #define NEEDRET     1
-task_id addtask(struct thrdpool* pool, taskfunc func, void* param, uint flags);
+task_id addtask(struct thrdpool* pool, taskfunc func, void* param, unsigned int flags);
 
 //等待并取回结果，必须对每个needretval=1的任务执行，不然会导致类似"僵尸进程"的东西
 int waittask(struct thrdpool* pool, task_id id, void** result);

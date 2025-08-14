@@ -121,7 +121,7 @@ void destroypool(struct thrdpool* pool) {
 }
 
 
-task_id addtask(thrdpool* pool, taskfunc func, void *param , uint flags) {
+task_id addtask(thrdpool* pool, taskfunc func, void *param , unsigned int flags) {
     task_t *task = (task_t *)malloc(sizeof(task_t));   //生成一个任务块
     task->param = param;
     task->func = func;
