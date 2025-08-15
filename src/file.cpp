@@ -189,9 +189,6 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     if(flags & ENTRY_CHUNCED_F){
         fk = std::make_shared<filekey>(decodepath(*fk.load()));
     }
-    if(flags & META_KEY_ONLY_F) {
-        return;
-    }
     if(flags & ENTRY_CREATE_F){
     //creata new file
         assert(flags & ENTRY_CHUNCED_F);

@@ -254,7 +254,9 @@ int delete_entry_prefix_from_db(const string& path){
         sqlite3_free(err_msg);
         return -1;
     }
-    sql = "delete from files where path  = '"+ escapQuote(path) + "' or path like '" + escapSQL(path) + "/%' escape '\\'";
+    sql = "delete from files where (path  = '"
+        + escapQuote(path) + "' or path like '"
+        + escapSQL(path) + "/%' escape '\\') and dirty = 0";
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);

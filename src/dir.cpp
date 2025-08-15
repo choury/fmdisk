@@ -68,6 +68,35 @@ dir_t::~dir_t(){
     }
 }
 
+void dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
+    for(auto i: flist){
+        string bname = basename(i.key.path);
+        if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && bname == ".objs"){
+            continue;
+        }
+        bool is_dir = S_ISDIR(i.mode);
+        if(endwith(bname, ".def") && is_dir){
+            bname = decodepath(bname);
+            i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
+            is_dir = false;
+        }
+        if(entrys.contains(bname)){
+            continue;
+        }
+        if(is_dir){
+            entrys.emplace(bname, new dir_t(this, i));
+        }else{
+            entrys.emplace(bname, new file_t(this, i));
+        }
+        if(save){
+            save_entry_to_db(getkey().path, i);
+            if((i.flags & META_KEY_ONLY_F) == 0){
+                save_file_to_db(entrys[bname]->getkey().path, i, {});
+            }
+        }
+    }
+}
+
 // Must wlock before call this function
 void dir_t::pull_entrys_wlocked() {
     if(flags & DIR_PULLED_F) {
@@ -86,31 +115,7 @@ void dir_t::pull_entrys_wlocked() {
     assert(entrys.empty());
     entrys.emplace(".", this);
     entrys.emplace("..", parent);
-    for(auto i: flist){
-        string bname = basename(i.key.path);
-        if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && bname == ".objs"){
-            continue;
-        }
-        bool is_dir = S_ISDIR(i.mode);
-        if(endwith(bname, ".def") && is_dir){
-            bname = decodepath(bname);
-            i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
-            is_dir = false;
-        }
-        if(!entrys.contains(bname)){
-            if(is_dir){
-                entrys.emplace(bname, new dir_t(this, i));
-            }else{
-                entrys.emplace(bname, new file_t(this, i));
-            }
-        }
-        if(!cached){
-            save_entry_to_db(getkey().path, i);
-            if((i.flags & META_KEY_ONLY_F) == 0){
-                save_file_to_db(entrys[bname]->getkey().path, i, {});
-            }
-        }
-    }
+    insert_meta_wlocked(flist, !cached);
     flags |= DIR_PULLED_F;
 }
 
@@ -416,7 +421,16 @@ int dir_t::sync(int dataonly) {
     if(flags & ENTRY_DELETED_F){
         return 0;
     }
-    if((flags & DIR_DIRTY_F) == 0 || dataonly){
+    if(dataonly) {
+        __r.upgrade();
+        std::vector<filemeta> flist;
+        if(HANDLE_EAGAIN(fm_list(getkey(), flist))){
+            throw "fm_list IO Error";
+        }
+        insert_meta_wlocked(flist, true);
+        return 0;
+    }
+    if((flags & DIR_DIRTY_F) == 0){
         return 0;
     }
     struct timespec tv[2];
@@ -475,7 +489,7 @@ int dir_t::drop_mem_cache(){
     if(opened){
         return -EBUSY;
     }
-    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F)){
+    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F) || (flags & DIR_DIRTY_F)){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
@@ -487,7 +501,9 @@ int dir_t::drop_mem_cache(){
         }
         ret |= i.second->drop_mem_cache();
     }
-    entrys.clear();
-    flags &= ~DIR_PULLED_F;
+    if(ret == 0) {
+        entrys.clear();
+        flags &= ~DIR_PULLED_F;
+    }
     return ret;
 }
