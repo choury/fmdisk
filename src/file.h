@@ -8,6 +8,8 @@
 #include <vector>
 #include <map>
 
+#define FM_REMOTE_PATH_ATTR "user.fm_remote_path"
+
 class file_t: public entry_t {
     int fd = -1;
     ino_t inode = 0;
@@ -20,6 +22,12 @@ class file_t: public entry_t {
     virtual void pull_wlocked() override;
     static void clean(file_t* file);
     virtual std::string getrealname() override;
+    void set_private_key_wlocked(std::shared_ptr<void> key) {
+        private_key = key;
+        if(fm_private_key_tostring(fk.load()->private_key)[0] == '\0') {
+            fk = std::make_shared<filekey>(filekey{fk.load()->path, key});
+        }
+    }
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();

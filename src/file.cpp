@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <semaphore.h>
 #include <fcntl.h>
+#include <sys/xattr.h>
 
 #include <list>
 #include <random>
@@ -153,6 +154,20 @@ void stop_gc() {
     gc_stop = true;
 }
 
+static int tempfile() {
+    int fd;
+    char tmpfilename[PATHLEN];
+    snprintf(tmpfilename, sizeof(tmpfilename), "%s/.fm_fuse_XXXXXX", opt.cache_dir);
+    if ((fd = mkstemp(tmpfilename)) != -1) {
+        /*Unlink the temp file.*/
+        unlink(tmpfilename);
+    } else {
+        fprintf(stderr, "mkstem failed: %s", strerror(errno));
+        abort();
+    }
+    return fd;
+}
+
 static int persistent_cache_file(const string& remote_path) {
     string cache_path = get_cache_path(remote_path);
 
@@ -167,8 +182,10 @@ static int persistent_cache_file(const string& remote_path) {
     int fd = open(cache_path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd == -1) {
         fprintf(stderr, "open cache file failed %s: %s\n", cache_path.c_str(), strerror(errno));
-        return -1;
+        fd = tempfile();
     }
+    assert(fd >= 0);
+    fsetxattr(fd, FM_REMOTE_PATH_ATTR, remote_path.c_str(), remote_path.size(), 0);
     return fd;
 }
 
@@ -296,7 +313,7 @@ int file_t::release(){
 void file_t::pull_wlocked() {
     filemeta meta{};
     entry_t::pull_wlocked(meta);
-    private_key = meta.key.private_key;
+    set_private_key_wlocked(meta.key.private_key);
     blksize = meta.blksize;
     flags |= meta.flags;
     mode &= ~0777;
@@ -461,6 +478,7 @@ int file_t::remove_and_release_wlock() {
 std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
     if(inline_data){
+        assert(length <= INLINE_DLEN);
         return {};
     }
     assert(flags & ENTRY_INITED_F);
@@ -468,8 +486,10 @@ std::vector<filekey> file_t::getfblocks(){
         filemeta meta{};
         std::vector<filekey> fblocks;
         load_file_from_db(getkey().path, meta, fblocks);
+        assert(fblocks.size() == GetBlkNo(length, blksize)+1);
         return fblocks;
     }
+    assert(blocks.size() == GetBlkNo(length, blksize)+1);
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
         if(i.second->dummy()){
@@ -557,7 +577,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
     if(upload_meta(key, meta, fblocks)){
         throw "upload_meta IO Error";
     }
-    private_key = meta.key.private_key;
+    set_private_key_wlocked(meta.key.private_key);
     if(!dirty){
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
@@ -602,7 +622,7 @@ int file_t::utime(const struct timespec tv[2]) {
         if(ret){
             return -errno;
         }
-        private_key = meta.key.private_key;
+        set_private_key_wlocked(meta.key.private_key);
     } else {
         int ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
         if(ret){

@@ -5,15 +5,21 @@
 #include "sqlite.h"
 
 #include <string.h>
+#include <sys/xattr.h>
 
 #include <semaphore.h>
 #include <set>
 #include <random>
 #include <algorithm>
 
-static std::string getPathFromFd(int fd) {
+static std::string getRemotePathFromFd(int fd) {
     if (fd < 0) {
         throw std::invalid_argument("File descriptor cannot be negative.");
+    }
+    //get remoute path from xattr first
+    char path[PATH_MAX] = {0};
+    if(fgetxattr(fd, FM_REMOTE_PATH_ATTR, path, sizeof(path) - 1) == 0){
+        return path;
     }
 
     std::string procPath = "/proc/self/fd/" + std::to_string(fd);
@@ -23,7 +29,7 @@ static std::string getPathFromFd(int fd) {
     if (len == -1) {
         throw std::runtime_error("Failed to readlink for " + procPath + ": " + strerror(errno));
     }
-    return {buffer.data(), (size_t)len};
+    return get_remote_path({buffer.data(), (size_t)len});
 }
 
 std::set<std::weak_ptr<block_t>, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
@@ -100,11 +106,7 @@ block_t::~block_t() {
 }
 
 std::string block_t::getpath() const {
-    // 从 fd 获取当前路径
-    string cache_path = getPathFromFd(fd);
-
-    // 从缓存路径推导出远程路径: /cache_dir/cache/a/b/c -> /a/b/c
-    return get_remote_path(cache_path);
+    return getRemotePathFromFd(fd);
 }
 
 filekey block_t::getkey() const {

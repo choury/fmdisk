@@ -9,6 +9,7 @@
 #include <string.h>
 #include <assert.h>
 #include <sys/stat.h>
+#include <sys/xattr.h>
 
 static string childname(const string& path) {
     size_t pos = path.find_first_of("/");
@@ -211,12 +212,14 @@ void dir_t::erase_child_wlocked(const string& path, const string& name, bool kee
     entry_t* child = entrys[name];
 
     delete_entry_from_db(path);
-    delete_file_from_db(path);
     if(child->isDir()) {
         delete_entry_prefix_from_db(path);
-    } else if(!keepblocks){
-        // 如果是文件，删除相关的block记录
-        delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
+    } else {
+        if(!keepblocks){
+            // 如果是文件，删除相关的block记录
+            delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
+        }
+        delete_file_from_db(path);
     }
     entrys.erase(name);
 }
@@ -377,6 +380,11 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
     auto_wlocker __3(entry);
     filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
     int ret = 0;
+    if(fm_private_key_tostring(entry->fk.load()->private_key)[0] == '\0') {
+        // 这个文件还没来得及上传到远程
+        assert(entry->flags & FILE_DIRTY_F);
+        goto skip_remote;
+    }
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
         if(entry->isDir()){
@@ -407,10 +415,12 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         return ret;
     }
 
+skip_remote:
     // 如果是文件，需要移动持久化缓存文件
     if(!entry->isDir()) {
+        string new_remote_path = pathjoin(newparent->getcwd(), newname);
         string old_cache_path = pathjoin(opt.cache_dir, "cache", this->getcwd(), oldname);
-        string new_cache_path = pathjoin(opt.cache_dir, "cache", newparent->getcwd(), newname);
+        string new_cache_path = pathjoin(opt.cache_dir, "cache", new_remote_path);
 
         // 确保新缓存目录存在
         string new_cache_dir = dirname(new_cache_path);
@@ -419,7 +429,9 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         }
 
         // 移动缓存文件
-        if(rename(old_cache_path.c_str(), new_cache_path.c_str()) != 0 && errno != ENOENT) {
+        if(rename(old_cache_path.c_str(), new_cache_path.c_str()) == 0) {
+            setxattr(new_cache_path.c_str(), FM_REMOTE_PATH_ATTR, new_remote_path.c_str(), new_remote_path.size(), 0);
+        }else if(errno != ENOENT) {
             fprintf(stderr, "failed to rename cache file %s to %s: %s\n",
                     old_cache_path.c_str(), new_cache_path.c_str(), strerror(errno));
         }
@@ -427,15 +439,16 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
-    std::string oldpath = entry->getkey().path;
-    entry->fk.store(std::make_shared<filekey>(newname, newfile.private_key));
     newparent->unlink(newname);
+    entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, newfile.private_key));
+    //再此之前不能修改fk.path, 因为insert需要从files表读取原始文件信息
+    //但是又需要保存新文件的private_key，不想再加一个参数了，就直接把private_key 先改了
     newparent->insert_child_wlocked(newname, entry);
     newparent->mtime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
 
-    erase_child_wlocked(oldpath, oldname, true);
-    //entry->fk.path = newname;
+    erase_child_wlocked(entry->getkey().path, oldname, true);
+    entry->fk.store(std::make_shared<filekey>(newname, newfile.private_key));
     entry->parent = newparent;
     return 0;
 }

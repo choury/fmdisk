@@ -21,8 +21,6 @@
 
 using std::string;
 
-char COFPATH[4096];
-
 static int hex2num(char c) {
     if (c>='0' && c<='9') return c - '0';
     if (c>='a' && c<='z') return c - 'a' + 10;//这里+10的原因是:比如16进制的a值为10
