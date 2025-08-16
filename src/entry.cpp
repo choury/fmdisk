@@ -159,6 +159,6 @@ int entry_t::drop_disk_cache(){
     if(!isDir()) {
         return delete_blocks_by_key(dynamic_cast<file_t*>(this)->getfblocks());
     }else{
-        return delete_entry_prefix_from_db(parent ? "": path);
+        return delete_entry_prefix_from_db(parent ? path: "");
     }
 }

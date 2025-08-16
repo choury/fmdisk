@@ -454,6 +454,7 @@ int main(int argc, char **argv) {
         case 'e':
             cout<< "treat it as file"<<endl;
             isfile = true;
+            break;
         case 'c':
             cout<< "concurrent: "<<optarg<<endl;
             concurrent = atoi(optarg);

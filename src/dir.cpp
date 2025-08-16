@@ -4,6 +4,7 @@
 #include "file.h"
 #include "sqlite.h"
 #include "utils.h"
+#include "trdpool.h"
 
 #include <string.h>
 #include <assert.h>
@@ -142,6 +143,30 @@ entry_t* dir_t::find(std::string path) {
         return dynamic_cast<dir_t*>(entrys[cname])->find(subname(path));
     }
     return nullptr;
+}
+
+int dir_t::open() {
+    auto_wlock(this);
+    if((flags & ENTRY_INITED_F) == 0){
+        pull_wlocked();
+    }
+    if((flags & DIR_PULLED_F) == 0){
+        pull_entrys_wlocked();
+    }
+    for(auto [name, entry]: entrys){
+        if(name == "." || name == ".." || entry == nullptr){
+            continue;
+        }
+        auto_rlock(entry);
+        if((entry->flags & ENTRY_INITED_F) || (entry->flags & ENTRY_PULLING_F)){
+            continue;
+        }
+        __r.upgrade();
+        entry->flags |= ENTRY_PULLING_F;
+        dpool->submit_fire_and_forget([entry]{ pull(entry); });
+    }
+    opened++;
+    return 0;
 }
 
 const std::map<string, entry_t*>& dir_t::get_entrys(){

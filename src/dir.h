@@ -31,14 +31,7 @@ public:
     virtual bool isDir() override {
         return true;
     }
-    virtual int open() override {
-        auto_wlock(this);
-        if((flags & ENTRY_INITED_F) == 0){
-            pull_wlocked();
-        }
-        opened++;
-        return 0;
-    }
+    virtual int open() override;
     virtual int release() override{
         auto_wlock(this);
         assert(opened > 0);
