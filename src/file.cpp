@@ -281,7 +281,7 @@ void file_t::clean(file_t* file) {
         return;
     }
     if(file->flags & ENTRY_DELETED_F){
-        if(opt.flags & FM_DELETE_NEED_PURGE) {
+        if((opt.flags & FM_DELETE_NEED_PURGE) && (file->flags & FILE_ENCODE_F)){
             trim(file->getkeys());
         }else{
             trim(file->getkey());
@@ -520,7 +520,7 @@ int file_t::remove_and_release_wlock() {
         //do trim in clean
         return 0;
     }
-    if(opt.flags & FM_DELETE_NEED_PURGE) {
+    if((opt.flags & FM_DELETE_NEED_PURGE) && (flags & FILE_ENCODE_F)) {
         HANDLE_EAGAIN(fm_batchdelete(getkeys()));
     }else{
         HANDLE_EAGAIN(fm_delete(getkey()));
@@ -532,6 +532,9 @@ std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
     if(inline_data){
         assert(length <= INLINE_DLEN);
+        return {};
+    }
+    if((flags & FILE_ENCODE_F) == 0) {
         return {};
     }
     assert(flags & ENTRY_INITED_F);

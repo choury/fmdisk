@@ -406,6 +406,9 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
             if(ret == 0){
                 ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
                 file->private_key = newmeta.private_key;
+                if((file->flags & FILE_ENCODE_F) == 0) {
+                    newfile = newmeta;
+                }
             }
         }
     } else {
