@@ -19,25 +19,30 @@ int cache_prepare() {
         return ret;
     }
     assert(opt.block_len > INLINE_DLEN);
-    upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
-    dpool = new TrdPool(DOWNLOADTHREADS);
-    upool->submit_fire_and_forget([&]() { writeback_thread(&writeback_done); });
     gc = std::thread(start_gc);
+    dpool = new TrdPool(DOWNLOADTHREADS);
+    if(opt.no_cache) {
+        return 0;
+    }
+    upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
+    upool->submit_fire_and_forget([&]() { writeback_thread(&writeback_done); });
     start_delay_thread();
     return sqlinit();
 }
 
 void cache_destroy(dir_t* root){
     stop_gc();
-    writeback_done = true;
-    delete upool;
+    if(!opt.no_cache) {
+        writeback_done = true;
+        delete upool;
+    }
     delete dpool;
     if(gc.joinable()){
         gc.join();
     }
-    stop_delay_thread();
+    if(!opt.no_cache) stop_delay_thread();
     delete root;
-    sqldeinit();
+    if(!opt.no_cache) sqldeinit();
 }
 
 int create_dirs_recursive(const string& path) {
@@ -105,12 +110,12 @@ string entry_t::getcwd() {
     return pathjoin(parent->getcwd(), fk.load()->path);
 }
 
-void entry_t::pull_wlocked(filemeta& meta){
+void entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks) {
     const filekey& key = getkey();
     meta = initfilemeta(key);
     meta.mode = this->mode;
     assert((flags & ENTRY_INITED_F) == 0);
-    std::vector<filekey> fblocks;
+    //std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
     if(flags & ENTRY_CHUNCED_F){
         if(meta.blksize == 0){

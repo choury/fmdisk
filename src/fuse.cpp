@@ -22,13 +22,16 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     conn->no_interrupt = 1;
     fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
     fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
+    fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
     fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
 #else
-    conn->want |= conn->capable & (FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_PARALLEL_DIROPS);
+    conn->want |= conn->capable & (FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_PARALLEL_DIROPS);
     conn->want &= ~FUSE_CAP_ATOMIC_O_TRUNC;
 #endif
     cfg->hard_remove = 1; // 不隐藏删除的文件
-    cfg->direct_io = 1;
+    if(!opt.no_cache) {
+        cfg->direct_io = 1;
+    }
     cfg->nullpath_ok = 1;
     cfg->no_rofd_flush = 1;
 #if FUSE_VERSION > 314
@@ -166,6 +169,9 @@ int fm_fuse_rename(const char *oldname, const char *newname, unsigned int flags)
 }
 
 int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS; // 禁止创建文件
+    }
     dir_t* root = (dir_t*)fuse_get_context()->private_data;
     dir_t *parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
     if(parent == nullptr){
@@ -188,7 +194,12 @@ int fm_fuse_open(const char *path, struct fuse_file_info *fi){
         return -ENOENT;
     }
     fi->fh = (uint64_t)entry;
-    fi->direct_io = 1;
+    if(opt.no_cache) {
+        fi->keep_cache = 1;
+        fi->noflush = 1;
+    } else {
+        fi->direct_io = 1;
+    }
 #if FUSE_VERSION > 314
     fi->parallel_direct_writes = 1;
 #endif
@@ -196,6 +207,9 @@ int fm_fuse_open(const char *path, struct fuse_file_info *fi){
 }
 
 int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     file_t* entry = nullptr;
     if(fi){
         entry = (file_t*)fi->fh;
@@ -216,12 +230,18 @@ int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse
 }
 
 int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     file_t* entry = (file_t*)fi->fh;
     fs = nullptr;
     return entry->write(buf, offset, size);
 }
 
 int fm_fuse_fsync(const char *, int dataonly, struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     file_t* entry = (file_t*)fi->fh;
     return entry->sync(dataonly);
 }
@@ -237,6 +257,9 @@ int fm_fuse_release(const char *, struct fuse_file_info *fi){
 }
 
 int fm_fuse_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     entry_t* entry = nullptr;
     if(fi){
         entry = (entry_t*)fi->fh;
@@ -252,6 +275,9 @@ int fm_fuse_utimens(const char *path, const struct timespec tv[2], struct fuse_f
 
 
 int fm_fuse_chmod(const char *path, mode_t mode, struct fuse_file_info *fi){
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     entry_t* entry = nullptr;
     if(fi){
         entry = (entry_t*)fi->fh;
@@ -266,6 +292,9 @@ int fm_fuse_chmod(const char *path, mode_t mode, struct fuse_file_info *fi){
 }
 
 int fm_fuse_chown(const char* path, uid_t, gid_t, struct fuse_file_info *fi) {
+    if(opt.no_cache) {
+        return -EROFS;
+    }
     entry_t* entry = nullptr;
     if(fi){
         entry = (entry_t*)fi->fh;
@@ -289,7 +318,7 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
     if(entry == nullptr){
         return -ENOENT;
     }
-    if(strcmp(name, "user.drop_disk_cache") == 0){
+    if(!opt.no_cache && strcmp(name, "user.drop_disk_cache") == 0){
         return entry->drop_disk_cache();
     }
     if(strcmp(name, "user.drop_mem_cache") == 0){

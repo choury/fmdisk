@@ -3,6 +3,7 @@
 #include "block.h"
 #include "file.h"
 #include "sqlite.h"
+#include "defer.h"
 
 #include <string.h>
 #include <sys/xattr.h>
@@ -80,7 +81,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     flags(flags),
     atime(0)
 {
-    assert(fd >= 0);
+    assert(opt.no_cache || fd >= 0);
 
     if(fk.path == "" && fm_private_key_tostring(fk.private_key)[0] == '\0') {
         this->flags |= BLOCK_SYNC;
@@ -142,6 +143,36 @@ void block_t::pull(std::weak_ptr<block_t> wb) {
         b->flags |= BLOCK_SYNC;
         save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     }
+}
+
+ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
+    auto_rlock(this);
+    if(offset < 0 || offset + len > size){
+        errno = EINVAL;
+        return -1;
+    }
+    if(len == 0){
+        return 0;
+    }
+    if(dummy()){
+        memset(buff, 0, len);
+        return len;
+    }
+    buffstruct bs((char*)buff, len);
+    defer([&bs] { bs.release(); });
+    fileat.private_key = fk.private_key;
+    if(!fk.path.empty()) {
+        fileat.path = pathjoin(fileat.path, fk.path);
+    }
+    int ret = HANDLE_EAGAIN(fm_download(fileat, offset, len, bs));
+    if(ret < 0) {
+        return ret;
+    }
+    assert(bs.size() <= (size_t)len);
+    if(flags & FILE_ENCODE_F){
+        xorcode(buff, this->offset + offset, bs.size(), opt.secret);
+    }
+    return bs.size();
 }
 
 static std::string random_string() {

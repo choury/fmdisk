@@ -356,7 +356,7 @@ void buffstruct::expand(size_t size){
         assert(0);
         return;
     }
-    if(offset + size >= cap){
+    if(offset + size > cap){
         cap = ((offset + size)&0xfffffffffc00)+1024;
         buf = (char*)realloc(buf, cap);
         memset(buf + offset, 0, cap - offset);

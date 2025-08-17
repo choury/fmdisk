@@ -25,6 +25,7 @@ struct fmoption{
     const char* secret;
     unsigned int block_len;
     unsigned int flags;
+    int  no_cache;         // 禁用本地磁盘缓存，直接访问远程数据，不支持write操作
     long long cache_size;  // 缓存大小限制（字节），<0不限制，=0立即回收，>0按大小限制
 };
 

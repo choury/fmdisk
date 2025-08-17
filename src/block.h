@@ -29,6 +29,7 @@ public:
         return fk;
     }
     void prefetch(bool wait);
+    ssize_t read(filekey fileat, void* buff, off_t offset, size_t len);
     void markdirty();
     void markstale();
     bool sync();

@@ -23,6 +23,7 @@ public:
     size_t size() const { return offset; }
     size_t capacity() const { return cap; }
     void clear() { offset = 0; }
+    void release() { buf = nullptr; cbuf = nullptr; cap = 0; offset = 0; }
 
     static size_t savetobuff(char* buffer, size_t size, size_t nmemb, void *user_p);
     static size_t readfrombuff(char* buffer, size_t size, size_t nmemb, void *user_p);

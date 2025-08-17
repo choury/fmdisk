@@ -137,7 +137,7 @@ void start_gc() {
         }
 
         // 定期检查缓存大小并清理
-        if (opt.cache_size >= 0 && cleanup_cache_by_size()) {
+        if (!opt.no_cache && opt.cache_size >= 0 && cleanup_cache_by_size()) {
             haswork = true;
         }
 
@@ -250,7 +250,7 @@ int file_t::open(){
         pull_wlocked();
     }
     opened++;
-    if(fd >= 0) {
+    if(fd >= 0 || opt.no_cache) {
         return 0;
     }
     assert(opened == 1 && blocks.empty());
@@ -304,6 +304,15 @@ int file_t::release(){
     if(opened > 0) {
         return 0;
     }
+    if(opt.no_cache) {
+        assert((flags & FILE_DIRTY_F) == 0);
+        flags &= ~ENTRY_INITED_F;
+        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+            it->second->markstale();
+        }
+        blocks.clear();
+        return 0;
+    }
 
     flags |= ENTRY_REASEWAIT_F;
     add_delay_job((taskfunc)clean, this, 0);
@@ -312,7 +321,8 @@ int file_t::release(){
 
 void file_t::pull_wlocked() {
     filemeta meta{};
-    entry_t::pull_wlocked(meta);
+    std::vector<filekey> fblocks;
+    entry_t::pull_wlocked(meta, fblocks);
     set_private_key_wlocked(meta.key.private_key);
     blksize = meta.blksize;
     flags |= meta.flags;
@@ -321,6 +331,19 @@ void file_t::pull_wlocked() {
     if(meta.inline_data){
         assert(meta.size < (size_t)meta.blksize);
         inline_data = (char*)meta.inline_data;
+    }
+    if(!opt.no_cache) {
+        return;
+    }
+    if(flags & ENTRY_CHUNCED_F) {
+        assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
+        for(size_t i = 0; i < fblocks.size(); i++){
+            blocks.emplace(i, std::make_shared<block_t>(-1, 0, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
+        }
+    } else {
+        for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
+            blocks.emplace(i, std::make_shared<block_t>(-1, 0, filekey{"", private_key}, i, blksize * i, blksize, 0));
+        }
     }
 }
 
@@ -339,13 +362,43 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     }
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
-    for(size_t i = startc; i< endc + DOWNLOADTHREADS/ 2 && i<= GetBlkNo(length, blksize); i++){
-        blocks[i]->prefetch(false);
+    if(!opt.no_cache) {
+        for(size_t i = startc; i< endc + DOWNLOADTHREADS/ 2 && i<= GetBlkNo(length, blksize); i++){
+            blocks[i]->prefetch(false);
+        }
+        for(size_t i = startc; i<= endc; i++ ){
+            blocks[i]->prefetch(true);
+        }
+        return pread(fd, buff, size, offset);
     }
-    for(size_t i = startc; i<= endc; i++ ){
-        blocks[i]->prefetch(true);
+    if(flags & ENTRY_CHUNCED_F) {
+        //use block_t::read to read directly from startc to endc
+        offset -= startc * blksize;
+        size_t left = size;
+        for(size_t i = startc; i <= endc && left > 0; i++){
+            auto block = blocks[i];
+            ssize_t ret = block->read(getkey(), buff, offset, std::min(left, (size_t)blksize - offset));
+            if(ret < 0) {
+                return ret;
+            }
+            if(ret < (int)std::min(left, (size_t)blksize - offset)) {
+                return size - left + ret; // 可能是最后一个块不满
+            }
+            offset = 0;
+            left -= ret;
+            buff = (char*)buff + ret;
+        }
+        return size - left;
     }
-    return pread(fd, buff, size, offset);
+    assert((flags & FILE_ENCODE_F) == 0);
+    buffstruct bs((char*)buff, size);
+    defer([&bs] { bs.release(); });
+    int ret = HANDLE_EAGAIN(fm_download(getkey(), offset, size, bs));
+    if(ret < 0) {
+        return ret;
+    }
+    assert(bs.size() <= (size_t)size);
+    return bs.size();
 }
 
 int file_t::truncate_wlocked(off_t offset){
@@ -540,6 +593,8 @@ filemeta file_t::getmeta() {
         //sync will call getmeta before clear FILE_DIRTY_F
         //so we no need to recalculate the block size
         meta.blocks = block_size;
+    }else if((flags & ENTRY_CHUNCED_F) == 0){
+        meta.blocks = length / 512 + 1;
     }else {
         meta.blocks = 1; //at least for meta.json
         const auto fblocks = getfblocks();

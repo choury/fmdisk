@@ -11,7 +11,8 @@ class dir_t: public entry_t {
     std::map<string, entry_t*> entrys;
     virtual void pull_wlocked() override {
         filemeta meta{};
-        entry_t::pull_wlocked(meta);
+        std::vector<filekey> fblocks;
+        entry_t::pull_wlocked(meta, fblocks);
     }
     void pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
