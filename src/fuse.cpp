@@ -10,7 +10,7 @@
 #include <memory>
 
 std::unique_ptr<struct statvfs> fs = nullptr;
-struct fmoption opt;
+struct fmoption opt{};
 
 void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     cache_prepare();

@@ -1,13 +1,12 @@
 #ifndef COMMON_H__
 #define COMMON_H__
 
-#define INLINE_DLEN    (uint64_t)0x1000            //inline data limit (4K)
-#define UPLOADTHREADS  10ll
-#define DOWNLOADTHREADS    20
-#define CHECKTHREADS   20
+#define INLINE_DLEN    (uint64_t)0x10000           //inline data limit (64K)
+#define UPLOADTHREADS      10ll
+#define DOWNLOADTHREADS    10ll
+#define CHECKTHREADS       20ll
 
 #define METANAME      "meta.json"
-#define METAPATH      "/" METANAME
 
 #define MAXFILE       100000
 #define PATHLEN       1024
@@ -27,6 +26,7 @@ struct fmoption{
     unsigned int flags;
     int  no_cache;         // 禁用本地磁盘缓存，直接访问远程数据，不支持write操作
     long long cache_size;  // 缓存大小限制（字节），<0不限制，=0立即回收，>0按大小限制
+    void (*clean)();
 };
 
 extern struct fmoption opt;

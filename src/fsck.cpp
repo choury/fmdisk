@@ -17,7 +17,7 @@
 
 using namespace std;
 
-struct fmoption opt;
+struct fmoption opt{};
 static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
@@ -549,5 +549,8 @@ int main(int argc, char **argv) {
         checkOrphanedFiles(checkpath);
     }
     delete pool;
+    if(opt.clean) {
+        opt.clean();
+    }
     return 0;
 }

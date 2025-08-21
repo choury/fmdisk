@@ -43,6 +43,9 @@ void cache_destroy(dir_t* root){
     if(!opt.no_cache) stop_delay_thread();
     delete root;
     if(!opt.no_cache) sqldeinit();
+    if(opt.clean) {
+        opt.clean();
+    }
 }
 
 int create_dirs_recursive(const string& path) {
