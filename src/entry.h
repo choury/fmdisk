@@ -11,6 +11,15 @@ using std::string;
 
 struct filemeta;
 class dir_t;
+
+struct storage_class_info {
+    size_t size_store[5]; // 0: UNKNOWN, 1: STANDARD, 2: IA, 3: ARCHIVE, 4: DEEP_ARCHIVE
+    size_t size_archive_restored;
+    size_t size_archive_restoring;
+    size_t size_deep_archive_restored;
+    size_t size_deep_archive_restoring;
+};
+
 class entry_t: public locker {
 protected:
     dir_t* parent;
@@ -25,6 +34,7 @@ protected:
     virtual string getrealname() = 0;
     virtual void pull_wlocked() = 0;
     void pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
+    virtual int drop_cache_wlocked() = 0;
     static void pull(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
@@ -41,9 +51,16 @@ public:
     virtual int release() = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
     virtual void dump_to_disk_cache(const std::string& path, const std::string& name) = 0;
-    virtual int drop_mem_cache() = 0;
-    int drop_disk_cache();
-
+    int drop_cache() {
+        auto_wlock(this);
+        return drop_cache_wlocked();
+    }
+    virtual storage_class_info get_storage_classes() {
+        return {};
+    }
+    virtual int set_storage_class(enum storage_class storage) {
+        return -EINVAL;
+    }
     friend class dir_t;
 };
 

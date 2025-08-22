@@ -79,6 +79,28 @@ string URLDecode(const string& str) {
     return result;
 }
 
+// 将字节数转换为人类可读的格式,最多保留两位小数，最大单位到T
+std::string bytes2human(size_t bytes) {
+    if (bytes == 0) {
+        return "0";
+    }
+    if (bytes < 1024) {
+        return std::to_string(bytes) + "B";
+    }
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    size_t unit_index = 0;
+    double size = static_cast<double>(bytes);
+
+    while (size >= 1024 && unit_index < sizeof(units) / sizeof(units[0]) - 1) {
+        size /= 1024;
+        unit_index++;
+    }
+
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%.2f%s", size, units[unit_index]);
+    return std::string(buffer);
+}
+
 static const char *base64_endigs_normal ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 static const char *base64_endigs_mod ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -335,7 +357,7 @@ string pathjoin(const string& dir, const string& name){
 
 filemeta initfilemeta(const filekey& key){
     return filemeta{key,
-        0, 0, 0, 0, 0, 0, 0, nullptr};
+        0, 0, 0, 0, 0, 0, 0, nullptr, STORAGE_UNKNOWN, 0, 0};
 }
 
 

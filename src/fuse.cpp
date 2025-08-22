@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <string.h>
 #include <memory>
+#include <sstream>
 
 std::unique_ptr<struct statvfs> fs = nullptr;
 struct fmoption opt{};
@@ -318,11 +319,27 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
     if(entry == nullptr){
         return -ENOENT;
     }
-    if(!opt.no_cache && strcmp(name, "user.drop_disk_cache") == 0){
-        return entry->drop_disk_cache();
+    if(strcmp(name, "user.drop_cache") == 0){
+        return entry->drop_cache();
     }
-    if(strcmp(name, "user.drop_mem_cache") == 0){
-        return entry->drop_mem_cache();
+    if(strcmp(name, "user.storage_class") == 0) {
+        if(value == nullptr || size == 0) {
+            return -ERANGE;
+        }
+        std::string_view storage_str(value, size);
+        enum storage_class storage = STORAGE_UNKNOWN;
+        if(storage_str == "S") {
+            storage = STORAGE_STANDARD;
+        } else if(storage_str == "IA") {
+            storage = STORAGE_IA;
+        } else if(storage_str == "AR") {
+            storage = STORAGE_ARCHIVE;
+        } else if(storage_str == "DR") {
+            storage = STORAGE_DEEP_ARCHIVE;
+        } else {
+            return -EINVAL;
+        }
+        return entry->set_storage_class(storage);
     }
     return -ENODATA;
 }
@@ -337,18 +354,44 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
     if(entry == nullptr){
         return -ENOENT;
     }
-    if(strcmp(name, "user.underlay_path") != 0){
-        return -ENODATA;
-    }
-    string underlay_path = entry->getkey().path;
-    if(len == 0){
+    if(strcmp(name, "user.underlay_path") == 0){
+        string underlay_path = entry->getkey().path;
+        if(len == 0){
+            return underlay_path.length();
+        }
+        if(underlay_path.length() >= len){
+            return -ERANGE;
+        }
+        strcpy(value, underlay_path.c_str());
         return underlay_path.length();
     }
-    if(underlay_path.length() >= len){
-        return -ERANGE;
+    if(strcmp(name, "user.storage_class") == 0) {
+        auto info = entry->get_storage_classes();
+        std::stringstream ss;
+        ss << "S: " << bytes2human(info.size_store[1])
+           << " IA: " << bytes2human(info.size_store[2])
+           << " AR: " << bytes2human(info.size_store[3]);
+        if(info.size_archive_restored + info.size_archive_restoring) {
+            ss << " (" << bytes2human(info.size_archive_restored) << "/"
+            << bytes2human(info.size_archive_restored + info.size_archive_restoring) << ")";
+        }
+        ss << " DR: " << bytes2human(info.size_store[4]);
+        if(info.size_deep_archive_restored + info.size_deep_archive_restoring) {
+            ss << " (" << bytes2human(info.size_deep_archive_restored) << "/"
+            << bytes2human(info.size_deep_archive_restored + info.size_deep_archive_restoring) << ")";
+        }
+        ss << " U: " << bytes2human(info.size_store[0]);
+        std::string result = ss.str();
+        if(len == 0) {
+            return result.length();
+        }
+        if(result.length() >= len) {
+            return -ERANGE;
+        }
+        strcpy(value, result.c_str());
+        return result.length();
     }
-    strcpy(value, underlay_path.c_str());
-    return underlay_path.length();
+    return -ENODATA;
 }
 
 int __attribute__((weak)) fm_statfs(struct statvfs* sf) {
@@ -372,5 +415,15 @@ int __attribute__((weak)) fm_utime(const filekey& file, const struct timespec  t
 
 int __attribute__((weak)) fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile) {
     errno = EPERM;
+    return -errno;
+}
+
+int __attribute__((weak)) fm_change_storage_class(const filekey& file, enum storage_class storage) {
+    errno = EACCES;
+    return -errno;
+}
+
+int __attribute__((weak)) fm_restore_archive(const filekey& file, int days, unsigned int mode) {
+    errno = EACCES;
     return -errno;
 }

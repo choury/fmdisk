@@ -80,18 +80,13 @@ public:
         auto wrapper = new TaskWrapper<ReturnType>(std::move(bound_func));
         auto future = wrapper->promise.get_future();
 
-        task_id id = addtask(pool_, execute_task<ReturnType>, wrapper, NEEDRET);
+        task_id id = addtask(pool_, execute_task<ReturnType>, wrapper, 0);
         if (id == 0) {
             delete wrapper;
             throw std::runtime_error("Failed to add task to thread pool");
         }
 
         return future;
-    }
-
-    template<typename F>
-    auto submit_lambda(F&& lambda) -> std::future<std::invoke_result_t<F>> {
-        return submit(std::forward<F>(lambda));
     }
 
     void submit_fire_and_forget(std::function<void()> func) {

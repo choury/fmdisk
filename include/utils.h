@@ -50,6 +50,13 @@ struct filekey {
 #define META_KEY_ONLY_F   (1<<16)  //used for input meta
 #define META_KEY_CHECKED_F (1<<17)  //used for check meta
 
+enum storage_class {
+    STORAGE_UNKNOWN = 0,
+    STORAGE_STANDARD = 1,
+    STORAGE_IA = 2,
+    STORAGE_ARCHIVE = 3,
+    STORAGE_DEEP_ARCHIVE = 4,
+};
 
 struct filemeta{
     struct filekey key;
@@ -61,8 +68,12 @@ struct filemeta{
     time_t ctime;
     time_t mtime;
     unsigned char* inline_data;
+    enum storage_class storage;
+    int restore_in_progress;        //归档存储正在恢复中
+    time_t restore_expiry_date;     //已恢复完成，副本的过时间
 };
 
+std::string bytes2human(size_t bytes);
 
 std::string URLEncode(const std::string& str);
 std::string URLDecode(const std::string& str);

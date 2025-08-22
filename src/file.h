@@ -16,6 +16,7 @@ class file_t: public entry_t {
     std::shared_ptr<void> private_key; //for meta.json
     char* inline_data = nullptr;
     blksize_t blksize;
+    enum storage_class storage = STORAGE_UNKNOWN;
     std::map<uint32_t, std::shared_ptr<block_t>> blocks;
     size_t block_size = 0; // cache for getmeta
     int truncate_wlocked(off_t offset);
@@ -28,6 +29,10 @@ class file_t: public entry_t {
             fk = std::make_shared<filekey>(filekey{fk.load()->path, key});
         }
     }
+
+    time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
+    static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
+    virtual int drop_cache_wlocked() override;
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();
@@ -54,10 +59,8 @@ public:
     std::vector<filekey> getfblocks();
 
     virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
-    virtual int drop_mem_cache() override;
-
-    time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
-    static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
+    virtual storage_class_info get_storage_classes() override;
+    virtual int set_storage_class(enum storage_class storage) override;
 
     friend class dir_t;
 };

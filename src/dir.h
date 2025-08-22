@@ -21,6 +21,7 @@ class dir_t: public entry_t {
     virtual std::string getrealname() override {
         return fk.load()->path;
     }
+    virtual int drop_cache_wlocked() override;
 public:
     dir_t(dir_t* parent, const filemeta& meta);
     virtual ~dir_t() override;
@@ -53,7 +54,6 @@ public:
     int moveto(dir_t* newparent, const string& oldname, const string& newname, unsigned int flags);
 
     virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
-    virtual int drop_mem_cache() override;
 };
 
 

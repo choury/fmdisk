@@ -201,6 +201,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     entry_t(parent, meta),
     private_key(meta.key.private_key),
     blksize(meta.blksize),
+    storage(meta.storage),
     last_meta_sync_time(0)
 {
     if(flags & ENTRY_CHUNCED_F){
@@ -434,6 +435,7 @@ int file_t::truncate_wlocked(off_t offset){
         if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
     }
     length = offset;
+    ctime = time(nullptr);
     if(length == 0 && inline_data == nullptr){
         inline_data = new char[INLINE_DLEN];
     }
@@ -542,7 +544,11 @@ std::vector<filekey> file_t::getfblocks(){
         filemeta meta{};
         std::vector<filekey> fblocks;
         load_file_from_db(getkey().path, meta, fblocks);
-        assert(fblocks.size() == GetBlkNo(length, blksize)+1);
+        if(meta.blksize == 0) {
+            assert((flags & ENTRY_INITED_F) == 0);
+        }else {
+            assert(fblocks.size() == GetBlkNo(length, blksize)+1);
+        }
         return fblocks;
     }
     assert(blocks.size() == GetBlkNo(length, blksize)+1);
@@ -662,6 +668,10 @@ int file_t::sync(int dataonly){
 }
 
 int file_t::utime(const struct timespec tv[2]) {
+    //ignore atime
+    if(tv[1].tv_nsec == UTIME_OMIT) {
+        return 0; // no change
+    }
     auto_wlock(this);
     if(flags & ENTRY_DELETED_F) {
         return 0;
@@ -673,8 +683,11 @@ int file_t::utime(const struct timespec tv[2]) {
     std::vector<filekey> fblocks = getfblocks();
     filemeta meta = getmeta();
     meta.key = getmetakey();
-    meta.mtime = tv[0].tv_sec;
-    meta.ctime = tv[1].tv_sec;
+    if(tv[0].tv_nsec == UTIME_NOW) {
+        meta.mtime = time(nullptr);
+    }else{
+        meta.mtime = tv[1].tv_sec;
+    }
     if(flags & ENTRY_CHUNCED_F){
         int ret = upload_meta(key, meta, fblocks);
         if(ret){
@@ -682,13 +695,15 @@ int file_t::utime(const struct timespec tv[2]) {
         }
         set_private_key_wlocked(meta.key.private_key);
     } else {
-        int ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
+        time_t ttv[2];
+        ttv[0] = meta.ctime;
+        ttv[1] = meta.mtime;
+        int ret = HANDLE_EAGAIN(fm_utime(getkey(), ttv));
         if(ret){
             return ret;
         }
     }
-    mtime = tv[0].tv_sec;
-    ctime = tv[1].tv_sec;
+    mtime = meta.mtime;
     save_file_to_db(key.path, meta, fblocks);
     return 0;
 }
@@ -716,8 +731,7 @@ void file_t::dump_to_disk_cache(const std::string& path, const std::string& name
     }
 }
 
-int file_t::drop_mem_cache() {
-    auto_wlock(this);
+int file_t::drop_cache_wlocked() {
     if(opened){
         return -EBUSY;
     }
@@ -733,7 +747,11 @@ int file_t::drop_mem_cache() {
     }
     inline_data = nullptr;
     flags &= ~ENTRY_INITED_F;
-    return 0;
+    if(opt.no_cache) {
+        return 0;
+    }
+    delete_blocks_by_key(dynamic_cast<file_t*>(this)->getfblocks());
+    return delete_file_from_db(getkey().path);
 }
 
 void file_t::upload_meta_async_task(file_t* file) {
@@ -745,4 +763,162 @@ void file_t::upload_meta_async_task(file_t* file) {
         return;
     }
     file->sync_wlocked();
+}
+
+static void add_meta_to_storage_info(storage_class_info& info, const filemeta& meta) {
+    info.size_store[meta.storage] += meta.size;
+    if(meta.storage == STORAGE_ARCHIVE) {
+        if (meta.restore_in_progress) {
+            info.size_archive_restoring += meta.size;
+        }
+        if (meta.restore_expiry_date) {
+            info.size_archive_restored += meta.size;
+        }
+    }
+    if(meta.storage == STORAGE_DEEP_ARCHIVE) {
+        if (meta.restore_in_progress) {
+            info.size_deep_archive_restoring += meta.size;
+        }
+        if (meta.restore_expiry_date) {
+            info.size_deep_archive_restored += meta.size;
+        }
+    }
+}
+
+storage_class_info file_t::get_storage_classes() {
+    storage_class_info info{};
+    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
+        info.size_store[STORAGE_STANDARD] = length;
+        return info;
+    }
+    auto_rlock(this);
+    if((flags & ENTRY_INITED_F) == 0) {
+        __r.upgrade();
+        pull_wlocked();
+    }
+    if((flags & ENTRY_CHUNCED_F) == 0) {
+        filemeta meta = initfilemeta(getkey());
+        HANDLE_EAGAIN(fm_getattr(getkey(), meta));
+        add_meta_to_storage_info(info, meta);
+        return info;
+    }
+    auto fblocks = getfblocks();
+    std::vector<std::future<filemeta>> futures;
+    TrdPool pool(DOWNLOADTHREADS * 10);
+    for(const auto& fblock : fblocks) {
+        if(fblock.path.empty() || fblock.path == "x") {
+            continue; // 跳过空或占位块
+        }
+        futures.emplace_back(pool.submit([fblock] {
+            filemeta meta = initfilemeta(fblock);
+            HANDLE_EAGAIN(fm_getattr(fblock, meta));
+            return meta;
+        }));
+    }
+    pool.wait_all();
+    for(auto& future : futures) {
+        if(!future.valid()) {
+            continue; // 跳过无效的future
+        }
+        auto meta = future.get();
+        add_meta_to_storage_info(info, meta);
+    }
+    return info;
+}
+
+enum storage_action {
+    STORAGE_ACTION_INVALID = 0,
+    STORAGE_ACTION_NONE = 1,
+    STORAGE_ACTION_CHANGE = 2,
+    STORAGE_ACTION_RESTOR = 3,
+    STORAGE_ACTION_RESTOR_DUP = 4,
+};
+
+static storage_action get_storage_action(const filemeta& meta, enum storage_class new_storage) {
+    if(meta.storage == STORAGE_UNKNOWN || new_storage == STORAGE_UNKNOWN) {
+        return STORAGE_ACTION_INVALID;
+    }
+    if(meta.storage == new_storage) {
+        return STORAGE_ACTION_NONE;
+    }
+    if(((meta.storage == STORAGE_ARCHIVE) || (meta.storage == STORAGE_DEEP_ARCHIVE))){
+        if(meta.restore_expiry_date) {
+            return STORAGE_ACTION_CHANGE; // 已恢复的文件，允许更改存储类
+        }
+        if(new_storage != STORAGE_STANDARD) {
+            return STORAGE_ACTION_INVALID; // 归档类只能恢复到标准存储
+        }
+        if(meta.restore_in_progress) {
+            return STORAGE_ACTION_RESTOR_DUP;
+        }
+        return STORAGE_ACTION_RESTOR;
+    }
+    return STORAGE_ACTION_CHANGE;
+}
+
+int file_t::set_storage_class(enum storage_class storage) {
+    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
+        return -ENODATA; // 不支持分块存储类设置
+    }
+    auto_rlock(this);
+    if(flags & (ENTRY_DELETED_F | FILE_DIRTY_F)) {
+        return -EAGAIN; // 已删除或有未同步的更改，跳过
+    }
+    if((flags & ENTRY_INITED_F) == 0) {
+        __r.upgrade();
+        pull_wlocked();
+    }
+    if((flags & ENTRY_CHUNCED_F) == 0) {
+        filemeta meta = initfilemeta(getkey());
+        if(HANDLE_EAGAIN(fm_getattr(getkey(), meta)) < 0){
+            return -EAGAIN; // 获取属性失败，重试
+        }
+        switch(get_storage_action(meta, storage)) {
+        case STORAGE_ACTION_INVALID: default:
+            return -EINVAL;
+        case STORAGE_ACTION_NONE:
+            return 0; // 无需更改
+        case STORAGE_ACTION_CHANGE:
+            return HANDLE_EAGAIN(fm_change_storage_class(getkey(), storage));
+        case STORAGE_ACTION_RESTOR:
+            return HANDLE_EAGAIN(fm_restore_archive(getkey(), 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 3 : 2));
+        case STORAGE_ACTION_RESTOR_DUP:
+            return HANDLE_EAGAIN(fm_restore_archive(getkey(), 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
+        }
+    }
+    auto fblocks = getfblocks();
+    TrdPool pool(DOWNLOADTHREADS * 10);
+    std::vector<std::future<int>> futures;
+    for(auto& fblock : fblocks) {
+        if (fblock.path.empty() || fblock.path == "x") {
+            continue; // 跳过空或占位块
+        }
+        futures.emplace_back(pool.submit([fblock, storage] {
+            filemeta meta;
+            if(HANDLE_EAGAIN(fm_getattr(fblock, meta))) {
+                return -EAGAIN;
+            }
+            switch(get_storage_action(meta, storage)) {
+            case STORAGE_ACTION_CHANGE:
+                return HANDLE_EAGAIN(fm_change_storage_class(fblock, storage));
+            case STORAGE_ACTION_RESTOR:
+                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 3 : 2));
+            case STORAGE_ACTION_RESTOR_DUP:
+                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
+            default:
+                return 0;
+            }
+        }));
+    }
+    bool failed = false;
+    pool.wait_all();
+    for(auto& future : futures) {
+        if(!future.valid()) {
+            continue;
+        }
+        if(future.get() < 0) {
+            failed = true;
+        }
+    }
+    return failed ? -EPROTO : 0;
 }

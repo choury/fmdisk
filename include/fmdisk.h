@@ -7,7 +7,6 @@
 
 #include "utils.h"
 
-
 int fm_prepare();
 
 int fm_statfs(struct statvfs* sf);
@@ -37,12 +36,14 @@ int fm_batchdelete(std::vector<struct filekey>&& flist);
 //move `file` at `oldat` to `newat` with new name of `newfile`, new key return in `newfile`
 int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, filekey& newfile);
 
-//optional, return -EACCES if not supported.
-int fm_utime(const filekey& file, const struct timespec tv[2]);
+//optional, return -EACCES if not supported. tv[0]: ctime, tv[1]: mtime
+int fm_utime(const filekey& file, const time_t tv[2]);
 
 const char* fm_private_key_tostring(std::shared_ptr<void> private_key);
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
 int fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile);
+int fm_change_storage_class(const filekey& file, enum storage_class storage);
+int fm_restore_archive(const filekey& file, int days, unsigned int mode);
 
 #define HANDLE_EAGAIN(x) ({      \
   __typeof__(x) _result;          \

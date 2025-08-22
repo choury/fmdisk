@@ -84,6 +84,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     assert(opt.no_cache || fd >= 0);
 
     if(fk.path == "" && fm_private_key_tostring(fk.private_key)[0] == '\0') {
+        this->fk.path = "x";
         this->flags |= BLOCK_SYNC;
     }
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志

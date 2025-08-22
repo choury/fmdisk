@@ -156,17 +156,3 @@ void entry_t::pull(entry_t* entry){
     }
     entry->flags &= ~ENTRY_PULLING_F;
 }
-
-int entry_t::drop_disk_cache(){
-    auto_rlock(this);
-    if (flags & FILE_DIRTY_F) {
-        return -EAGAIN;
-    }
-    string path = getkey().path;
-    delete_file_from_db(path);
-    if(!isDir()) {
-        return delete_blocks_by_key(dynamic_cast<file_t*>(this)->getfblocks());
-    }else{
-        return delete_entry_prefix_from_db(parent ? path: "");
-    }
-}

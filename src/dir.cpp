@@ -420,7 +420,7 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
 skip_remote:
     // 如果是文件，需要移动持久化缓存文件
-    if(!entry->isDir()) {
+    if(!entry->isDir() && !opt.no_cache) {
         string new_remote_path = pathjoin(newparent->getcwd(), newname);
         string old_cache_path = pathjoin(opt.cache_dir, "cache", this->getcwd(), oldname);
         string new_cache_path = pathjoin(opt.cache_dir, "cache", new_remote_path);
@@ -474,15 +474,19 @@ int dir_t::sync(int dataonly) {
     if((flags & DIR_DIRTY_F) == 0){
         return 0;
     }
-    struct timespec tv[2];
-    tv[0].tv_sec = mtime;
-    tv[1].tv_sec = ctime;
+    time_t tv[2];
+    tv[0] = ctime;
+    tv[1] = mtime;
     HANDLE_EAGAIN(fm_utime(getkey(), tv));  //ignore error
     flags &= ~DIR_DIRTY_F;
     return 0;
 }
 
 int dir_t::utime(const struct timespec tv[2]) {
+    //no atime in filemeta
+    if(tv[1].tv_nsec == UTIME_OMIT){
+        return 0;
+    }
     auto_wlock(this);
     if(flags & ENTRY_DELETED_F){
         return 0;
@@ -490,13 +494,20 @@ int dir_t::utime(const struct timespec tv[2]) {
     if((flags & ENTRY_INITED_F) == 0){
         pull_wlocked();
     }
+    time_t ttv[2];
+    ttv[0] = ctime;
+    if(tv[1].tv_nsec == UTIME_NOW){
+        ttv[1] = time(nullptr);
+    } else {
+        ttv[1] = tv[1].tv_sec;
+    }
     int ret = 0;
-    ret = HANDLE_EAGAIN(fm_utime(getkey(), tv));
+    ret = HANDLE_EAGAIN(fm_utime(getkey(), ttv));
     if(ret){
         return ret;
     }
-    mtime = tv[0].tv_sec;
-    ctime = tv[1].tv_sec;
+
+    mtime = ttv[1];
     return 0;
 }
 
@@ -524,9 +535,8 @@ void dir_t::dump_to_disk_cache(const std::string& path, const std::string& name)
     }
 }
 
-int dir_t::drop_mem_cache(){
+int dir_t::drop_cache_wlocked(){
     int ret = 0;
-    auto_wlock(this);
     if(opened){
         return -EBUSY;
     }
@@ -540,11 +550,15 @@ int dir_t::drop_mem_cache(){
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        ret |= i.second->drop_mem_cache();
+        ret |= i.second->drop_cache();
     }
-    if(ret == 0) {
-        entrys.clear();
-        flags &= ~DIR_PULLED_F;
+    if(ret != 0) {
+        return ret;
     }
-    return ret;
+    entrys.clear();
+    flags &= ~DIR_PULLED_F;
+    if(opt.no_cache) {
+        return 0;
+    }
+    return delete_entry_prefix_from_db(parent ? getkey().path: "");
 }
