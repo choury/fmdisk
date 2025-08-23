@@ -278,7 +278,7 @@ void block_t::markdirty() {
         return;
     }
     __r.upgrade();
-    flags |=  BLOCK_DIRTY;
+    flags |=  BLOCK_DIRTY | BLOCK_SYNC;
     // 保存到数据库并标记为dirty
     save_block_to_db(inode, no, fk.private_key, true);
     pthread_mutex_lock(&dblocks_lock);

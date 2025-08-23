@@ -364,7 +364,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
     if(!opt.no_cache) {
-        for(size_t i = startc; i< endc + DOWNLOADTHREADS/ 2 && i<= GetBlkNo(length, blksize); i++){
+        for(size_t i = startc; i< endc + (10*1024*1024/blksize) && i<= GetBlkNo(length, blksize); i++){
             blocks[i]->prefetch(false);
         }
         for(size_t i = startc; i<= endc; i++ ){
@@ -481,9 +481,8 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     const size_t startc = GetBlkNo(offset, blksize);
     const size_t endc = GetBlkNo(offset + size, blksize);
     if(inline_data == nullptr) {
-        for(size_t i = startc; i <= endc; i++){
-            blocks[i]->prefetch(true);
-        }
+        blocks[startc]->prefetch(true);
+        blocks[endc]->prefetch(true);
     }
     assert(fd >= 0);
     int ret = pwrite(fd, buff, size, offset);
@@ -493,7 +492,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(inline_data){
         memcpy(inline_data + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
-        for(size_t i =  startc; i <= endc; i++){
+        for(size_t i = startc; i <= endc; i++){
             blocks[i]->markdirty();
         }
     }
@@ -539,7 +538,6 @@ std::vector<filekey> file_t::getfblocks(){
     if((flags & FILE_ENCODE_F) == 0) {
         return {};
     }
-    assert(flags & ENTRY_INITED_F);
     if(blocks.empty()) {
         filemeta meta{};
         std::vector<filekey> fblocks;
@@ -551,6 +549,7 @@ std::vector<filekey> file_t::getfblocks(){
         }
         return fblocks;
     }
+    assert(flags & ENTRY_INITED_F);
     assert(blocks.size() == GetBlkNo(length, blksize)+1);
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
