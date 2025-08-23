@@ -17,7 +17,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     cache_prepare();
     conn->max_background = 20;
     //conn->max_read = opt.block_len;
-    conn->max_write = opt.block_len;
+    //conn->max_write = opt.block_len;
     conn->max_readahead = 10*1024*1024;
 #if FUSE_VERSION >= 317 && FUSE_HOTFIX_VERSION >= 1
     conn->no_interrupt = 1;
