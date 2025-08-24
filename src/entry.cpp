@@ -151,8 +151,10 @@ void entry_t::pull(entry_t* entry){
         delete entry;
         return;
     }
-    if((entry->flags & ENTRY_INITED_F) == 0){
-        entry->pull_wlocked();
-    }
+    try{
+        if((entry->flags & ENTRY_INITED_F) == 0){
+            entry->pull_wlocked();
+        }
+    }catch(...){}
     entry->flags &= ~ENTRY_PULLING_F;
 }
