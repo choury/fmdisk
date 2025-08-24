@@ -256,6 +256,65 @@ void xorcode(void* buf, size_t offset, size_t len, const char* key) {
     }
 }
 
+bool isAllZero(const void* buf, size_t len) {
+    const unsigned char* buff = (const unsigned char*)buf;
+    size_t i = 0;
+#ifdef ARCH_X86
+    // 使用x86 SIMD指令
+#if defined(__AVX512F__) && defined(__AVX512BW__)
+    // 使用AVX-512 (64字节向量)
+    while (i + 64 <= len) {
+        __m512i data = _mm512_loadu_si512((__m512i*)(buff + i));
+        __mmask64 cmp = _mm512_cmpeq_epi8_mask(data, _mm512_setzero_si512());
+        if (cmp != 0xFFFFFFFFFFFFFFFFULL) {
+            return false;
+        }
+        i += 64;
+    }
+#endif
+#if defined(__AVX2__)
+    // 使用AVX2 (32字节向量)
+    while (i + 32 <= len) {
+        __m256i data = _mm256_loadu_si256((__m256i*)(buff + i));
+        __m256i cmp = _mm256_cmpeq_epi8(data, _mm256_setzero_si256());
+        if (_mm256_movemask_epi8(cmp) != (int)0xFFFFFFFF) {
+            return false;
+        }
+        i += 32;
+    }
+#endif
+    // 使用SSE (16字节向量)
+    while (i + 16 <= len) {
+        __m128i data = _mm_loadu_si128((__m128i*)(buff + i));
+        __m128i cmp = _mm_cmpeq_epi8(data, _mm_setzero_si128());
+        if (_mm_movemask_epi8(cmp) != 0xFFFF) {
+            return false;
+        }
+        i += 16;
+    }
+#elif defined(ARCH_ARM)
+    // 使用ARM NEON SIMD指令
+    while (i + 16 <= len) {
+        uint8x16_t data = vld1q_u8(buff + i);
+        uint8x16_t cmp = vceqq_u8(data, vdupq_n_u8(0));
+        // vceqq_u8: a==b ? 0xFF : 0x00
+        // If there is a non-zero byte in data, there will be a 0x00 in cmp.
+        // So we check if the minimum value in cmp is 0.
+        if (vminvq_u8(cmp) == 0) {
+            return false;
+        }
+        i += 16;
+    }
+#endif
+    // 处理剩余部分的字节
+    for (; i < len; i++) {
+        if (buff[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 string basename(const string& path) {
     size_t pos = path.find_last_of('/');
     if(pos == string::npos) {

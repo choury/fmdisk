@@ -102,6 +102,7 @@ size_t Base64Decode(const char *src, size_t len, char* dst);
 extern "C" size_t Base64En(const char *src, size_t len, char *dst);
 
 void xorcode(void* buf, size_t offset, size_t len, const char* key);
+bool isAllZero(const void* buf, size_t len);
 
 std::string dirname(const std::string& path);
 std::string basename(const std::string& path);

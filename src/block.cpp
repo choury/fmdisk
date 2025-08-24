@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <sys/xattr.h>
+#include <fcntl.h>
 
 #include <semaphore.h>
 #include <set>
@@ -141,6 +142,7 @@ void block_t::pull(std::weak_ptr<block_t> wb) {
     }
     int ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
+        assert((size_t)ret == bs.size());
         b->flags |= BLOCK_SYNC;
         save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     }
@@ -204,14 +206,11 @@ void block_t::push(std::weak_ptr<block_t> wb) {
     }
     size_t len = ret;
 
-    // 检查是否全零
-    bool allzero = true;
-    for(size_t i = 0; i < len; i++){
-        if(buff[i]){
-            allzero = false;
-            break;
-        }
-    }
+#if 0
+    bool allzero = std::all_of(buff, buff + len, [](char c) { return c == 0; });
+#else
+    bool allzero = isAllZero(buff, len);
+#endif
     if (allzero) {
         len = 0;
     } else if(b->flags & FILE_ENCODE_F){
@@ -256,6 +255,7 @@ retry:
 }
 
 void block_t::prefetch(bool wait) {
+    atime = time(nullptr);
     auto_rlock(this);
     if(flags & BLOCK_SYNC) {
         return; // 已经同步，不需要预取
@@ -302,16 +302,6 @@ bool block_t::sync(){
     return true;
 }
 
-void block_t::reset(){
-    auto_wlock(this);
-    assert((flags & BLOCK_DIRTY) == 0);
-    if(dummy()){
-        flags = BLOCK_SYNC;
-    }else{
-        flags = 0;
-    }
-}
-
 bool block_t::dummy() {
     auto_rlock(this);
     return fk.path == "x";
@@ -320,4 +310,19 @@ bool block_t::dummy() {
 
 int block_t::staled(){
     return time(nullptr) - atime;
+}
+
+size_t block_t::release() {
+    auto_wlock(this);
+    if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fd < 0 || staled() < 60) {
+        return 0;
+    }
+    fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
+    delete_block_from_db(inode, no);
+    fprintf(stderr, "release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);
+    flags = flags & FILE_ENCODE_F;
+    if(fk.path == "x") {
+        flags |= BLOCK_SYNC;
+    }
+    return size;
 }

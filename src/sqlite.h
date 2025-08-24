@@ -25,6 +25,7 @@ struct block_record {
 void save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty);
 bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& record);
 int delete_blocks_from_db(ino_t inode);
+int delete_block_from_db(ino_t inode, size_t block_no);
 int delete_blocks_by_key(const std::vector<filekey>& filekeys);
 
 int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks);

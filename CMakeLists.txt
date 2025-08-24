@@ -16,7 +16,7 @@ include(CheckCXXCompilerFlag)
 
 # Function to check if AVX512 is supported
 function(check_avx512_support result)
-    set(CMAKE_REQUIRED_FLAGS "-mavx512f -avx512bw")
+    set(CMAKE_REQUIRED_FLAGS "-mavx512f -mavx512bw")
     check_cxx_compiler_flag("" ${result})
     set(CMAKE_REQUIRED_FLAGS "")
 endfunction()

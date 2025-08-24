@@ -341,6 +341,24 @@ int delete_blocks_from_db(ino_t inode) {
     return 0;
 }
 
+int delete_block_from_db(ino_t inode, size_t block_no) {
+    if(cachedb == nullptr){
+        return 0;
+    }
+    assert(inode != 0);
+    // 只删除非dirty的block记录，保护dirty=1的条目
+    string sql = "delete from blocks where inode = " + std::to_string(inode) 
+                + " and block_no = " + std::to_string(block_no) 
+                + " and dirty = 0";
+    char* err_msg;
+    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
+        fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+    return 0;
+}
+
 int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     if(cachedb == nullptr || filekeys.empty()){
         return 0;

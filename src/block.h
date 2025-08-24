@@ -8,7 +8,7 @@
 class block_t: locker, public std::enable_shared_from_this<block_t> {
     int fd;
     ino_t inode;  // 缓存文件的inode
-    filekey fk;
+    filekey fk;   //fk.path = 'x'表示空块(同时private_key也为空), fk.path = ''表示未分块的文件
     const size_t no;
     const off_t offset;
     const size_t size;
@@ -33,8 +33,8 @@ public:
     void markdirty();
     void markstale();
     bool sync();
-    void reset();
-    bool dummy();
+    [[nodiscard]] bool dummy();
+    [[nodiscard]] size_t release();
 };
 
 #endif

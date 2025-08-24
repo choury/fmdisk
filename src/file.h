@@ -62,6 +62,9 @@ public:
     virtual storage_class_info get_storage_classes() override;
     virtual int set_storage_class(enum storage_class storage) override;
 
+    // 使用fallocate释放clean状态block的磁盘空间，返回释放的字节数
+    size_t release_clean_blocks();
+
     friend class dir_t;
 };
 
