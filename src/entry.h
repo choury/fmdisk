@@ -50,7 +50,7 @@ public:
     virtual int sync(int dataonly) = 0;
     virtual int release() = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
-    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) = 0;
+    virtual void dump_to_db(const std::string& path, const std::string& name) = 0;
     int drop_cache() {
         auto_wlock(this);
         return drop_cache_wlocked();

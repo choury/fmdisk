@@ -20,8 +20,9 @@
 #include <dirent.h>
 
 
-static pthread_mutex_t gcLocker = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t droped_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<filekey> droped;
+static pthread_mutex_t openfile_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<ino_t, file_t*> opened_inodes;
 static std::atomic<bool> gc_stop(false);
 
@@ -31,7 +32,6 @@ static bool cleanup_cache_by_size() {
         return false;  // 不限制缓存大小
     }
 
-    auto_lock(&gcLocker);
 
     // 扫描缓存目录获取所有文件信息
     std::vector<cache_file_info> cache_files = scan_cache_directory();
@@ -52,6 +52,7 @@ static bool cleanup_cache_by_size() {
     // 删除最旧的文件直到满足大小限制
     off_t current_size = total_size;
 
+    auto_lock(&openfile_lock);
     for (const auto& file : cache_files) {
         if (current_size <= opt.cache_size) {
             return false;
@@ -100,12 +101,12 @@ void trim(const filekey& file) {
     if(name.empty() || name == "x"){
         return;
     }
-    auto_lock(&gcLocker);
+    auto_lock(&droped_lock);
     droped.push_back(file);
 }
 
 static void trim(const std::vector<filekey>& files) {
-    auto_lock(&gcLocker);
+    auto_lock(&droped_lock);
     droped.insert(droped.end(), files.begin(), files.end());
 }
 
@@ -132,11 +133,11 @@ void recover_dirty_data(dir_t* root) {
 void start_gc() {
     while(!gc_stop) {
         bool haswork = false;
-        pthread_mutex_lock(&gcLocker);
+        pthread_mutex_lock(&droped_lock);
         //copy dropped and clear
         std::vector<filekey> tmp = std::move(droped);
         droped.clear();
-        pthread_mutex_unlock(&gcLocker);
+        pthread_mutex_unlock(&droped_lock);
 
         if(!tmp.empty()){
             // 先清理数据库中的block记录
@@ -226,7 +227,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
 }
 
 file_t::~file_t() {
-    auto_lock(&gcLocker);
+    auto_lock(&openfile_lock);
     opened_inodes.erase(inode);
     auto_wlock(this);
     flags |= ENTRY_DELETED_F;
@@ -255,7 +256,7 @@ void file_t::reset_wlocked() {
 }
 
 int file_t::open(){
-    auto_lock(&gcLocker); //for putting inode into opened_inodes
+    auto_lock(&openfile_lock); //for putting inode into opened_inodes
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         pull_wlocked();
@@ -286,7 +287,7 @@ int file_t::open(){
 }
 
 void file_t::clean(file_t* file) {
-    auto_lock(&gcLocker); //for removing inode from opened_inodes
+    auto_lock(&openfile_lock); //for removing inode from opened_inodes
     auto_wlock(file);
     if(file->opened > 0){
         file->flags &= ~ENTRY_REASEWAIT_F;
@@ -673,7 +674,7 @@ int file_t::sync(int dataonly){
     }
     fsync(fd);
     if(!dataonly) {
-        dump_to_disk_cache(dirname(getcwd()), fk.load()->path);
+        dump_to_db(dirname(getcwd()), fk.load()->path);
     }
     return 0;
 }
@@ -719,7 +720,7 @@ int file_t::utime(const struct timespec tv[2]) {
     return 0;
 }
 
-void file_t::dump_to_disk_cache(const std::string& path, const std::string& name) {
+void file_t::dump_to_db(const std::string& path, const std::string& name) {
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F) {
         return;

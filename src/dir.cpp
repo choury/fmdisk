@@ -203,7 +203,7 @@ filemeta dir_t::getmeta() {
 entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
     assert(!entrys.contains(name));
     assert(entrys.size() < MAXFILE);
-    entry->dump_to_disk_cache(getcwd(), name);
+    entry->dump_to_db(getcwd(), name);
     return entrys[name] = entry;
 }
 
@@ -512,7 +512,7 @@ int dir_t::utime(const struct timespec tv[2]) {
 }
 
 
-void dir_t::dump_to_disk_cache(const std::string& path, const std::string& name) {
+void dir_t::dump_to_db(const std::string& path, const std::string& name) {
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F){
         return;
@@ -531,7 +531,7 @@ void dir_t::dump_to_disk_cache(const std::string& path, const std::string& name)
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        i.second->dump_to_disk_cache(path, i.first);
+        i.second->dump_to_db(path, i.first);
     }
 }
 

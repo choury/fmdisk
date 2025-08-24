@@ -53,7 +53,7 @@ public:
     int rmdir(const string& name);
     int moveto(dir_t* newparent, const string& oldname, const string& newname, unsigned int flags);
 
-    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
+    virtual void dump_to_db(const std::string& path, const std::string& name) override;
 };
 
 

@@ -58,7 +58,7 @@ public:
     int remove_and_release_wlock();
     std::vector<filekey> getfblocks();
 
-    virtual void dump_to_disk_cache(const std::string& path, const std::string& name) override;
+    virtual void dump_to_db(const std::string& path, const std::string& name) override;
     virtual storage_class_info get_storage_classes() override;
     virtual int set_storage_class(enum storage_class storage) override;
 
