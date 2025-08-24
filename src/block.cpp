@@ -86,6 +86,8 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 
     if(fk.path == "" && fm_private_key_tostring(fk.private_key)[0] == '\0') {
         this->fk.path = "x";
+    }
+    if(this->fk.path == "x") {
         this->flags |= BLOCK_SYNC;
     }
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
@@ -126,7 +128,7 @@ void block_t::pull(std::weak_ptr<block_t> wb) {
     }
     auto b = wb.lock();
     auto_wlock(b.get());
-    if(b->flags & BLOCK_SYNC){
+    if(b->flags & (BLOCK_SYNC | BLOCK_STALE)){
         return;
     }
     buffstruct bs((char*)malloc(b->size), b->size);
@@ -157,7 +159,7 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
     if(len == 0){
         return 0;
     }
-    if(dummy()){
+    if(dummy() || (flags & BLOCK_STALE)) {
         memset(buff, 0, len);
         return len;
     }
@@ -247,17 +249,20 @@ retry:
         trim(file);
         return;
     }
-    trim(b->getkey());
-    b->fk = file;
     // 上传成功，清除dirty标记
-    save_block_to_db(b->inode, b->no, b->fk.private_key, false);
-    b->flags &= ~BLOCK_DIRTY;
+    if(save_block_to_db(b->inode, b->no, file.private_key, false) == 0) {
+        trim(b->getkey());
+        b->fk = file;
+        b->flags &= ~BLOCK_DIRTY;
+    } else {
+        trim(file);
+    }
 }
 
 void block_t::prefetch(bool wait) {
     atime = time(nullptr);
     auto_rlock(this);
-    if(flags & BLOCK_SYNC) {
+    if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
         return; // 已经同步，不需要预取
     }
     if(wait){
@@ -274,7 +279,7 @@ void block_t::markdirty() {
     version++;
     atime = time(nullptr);
     auto_rlock(this);
-    if(flags & BLOCK_DIRTY) {
+    if(flags & (BLOCK_DIRTY | BLOCK_STALE)) {
         return;
     }
     __r.upgrade();
@@ -293,7 +298,7 @@ void block_t::markstale() {
 
 bool block_t::sync(){
     auto_rlock(this);
-    if ((flags & BLOCK_DIRTY) == 0) {
+    if ((flags & BLOCK_DIRTY) == 0 || (flags & BLOCK_STALE)) {
         return false;
     }
     pthread_mutex_lock(&dblocks_lock);

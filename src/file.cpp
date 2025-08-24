@@ -105,11 +105,6 @@ void trim(const filekey& file) {
     droped.push_back(file);
 }
 
-static void trim(const std::vector<filekey>& files) {
-    auto_lock(&droped_lock);
-    droped.insert(droped.end(), files.begin(), files.end());
-}
-
 // 恢复dirty数据并重新上传
 void recover_dirty_data(dir_t* root) {
     std::vector<std::string> dirty_files;
@@ -227,8 +222,6 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
 }
 
 file_t::~file_t() {
-    auto_lock(&openfile_lock);
-    opened_inodes.erase(inode);
     auto_wlock(this);
     flags |= ENTRY_DELETED_F;
     reset_wlocked();
@@ -294,11 +287,7 @@ void file_t::clean(file_t* file) {
         return;
     }
     if(file->flags & ENTRY_DELETED_F){
-        if((opt.flags & FM_DELETE_NEED_PURGE) && (file->flags & FILE_ENCODE_F)){
-            trim(file->getkeys());
-        }else{
-            trim(file->getkey());
-        }
+        opened_inodes.erase(file->inode);
         __w.unlock();
         delete file;
         return;
@@ -520,24 +509,41 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     return ret;
 }
 
-int file_t::remove_and_release_wlock() {
+int file_t::remove_wlocked() {
+    auto key = getkey();
+    int ret = 0;
+    if((opt.flags & FM_DELETE_NEED_PURGE) && (flags & FILE_ENCODE_F)) {
+        ret = HANDLE_EAGAIN(fm_batchdelete(getkeys()));
+    }else{
+        ret = HANDLE_EAGAIN(fm_delete(key));
+    }
+    if (ret < 0 && errno != ENOENT) {
+        return ret;
+    }
+
+    for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+        it->second->markstale();
+    }
+    delete_entry_from_db(key.path);
+    if(inode) {
+        delete_blocks_from_db(inode);       //打开过的文件，可以直接用inode删除
+    }else if(flags & FILE_ENCODE_F) {
+        delete_blocks_by_key(getfblocks()); //未打开的文件，inode为空，只能用key删除
+    }else{
+        delete_blocks_by_key({key});
+    }
+    delete_file_from_db(key.path);
+
     // 删除持久化缓存文件
     string cache_path = get_cache_path(getcwd());
     if(unlink(cache_path.c_str()) != 0 && errno != ENOENT) {
         fprintf(stderr, "failed to unlink cache file %s: %s\n", cache_path.c_str(), strerror(errno));
     }
     flags |= ENTRY_DELETED_F;
+    parent = nullptr;
     if(opened || (flags & ENTRY_REASEWAIT_F)) {
-        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
-            it->second->markstale();
-        }
-        //do trim in clean
+        //do delete in clean
         return 0;
-    }
-    if((opt.flags & FM_DELETE_NEED_PURGE) && (flags & FILE_ENCODE_F)) {
-        HANDLE_EAGAIN(fm_batchdelete(getkeys()));
-    }else{
-        HANDLE_EAGAIN(fm_delete(getkey()));
     }
     return 1;
 }

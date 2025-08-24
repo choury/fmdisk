@@ -22,7 +22,7 @@ struct block_record {
     bool dirty;
 };
 
-void save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty);
+int save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty);
 bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& record);
 int delete_blocks_from_db(ino_t inode);
 int delete_block_from_db(ino_t inode, size_t block_no);

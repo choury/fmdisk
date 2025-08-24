@@ -207,23 +207,30 @@ entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
     return entrys[name] = entry;
 }
 
-void dir_t::erase_child_wlocked(const string& path, const string& name, bool keepblocks) {
-    assert(entrys.count(name));
-    entry_t* child = entrys[name];
-
-    delete_entry_from_db(path);
-    if(child->isDir()) {
-        delete_entry_prefix_from_db(path);
-    } else {
-        if(!keepblocks){
-            // 如果是文件，删除相关的block记录
-            delete_blocks_by_key(dynamic_cast<file_t*>(child)->getfblocks());
-        }
-        delete_file_from_db(path);
+int dir_t::remove_wlocked() {
+    if((flags & DIR_PULLED_F) == 0){
+        pull_entrys_wlocked();
     }
-    entrys.erase(name);
-}
+    if(entrys.size() != 2){
+        return -ENOTEMPTY;
+    }
+    auto key = getkey();
+    int ret = HANDLE_EAGAIN(fm_delete(key));
+    if(ret && errno != ENOENT){
+        return ret;
+    }
 
+    delete_entry_from_db(key.path);
+    delete_file_from_db(key.path);
+    ::rmdir(get_cache_path(getcwd()).c_str());
+    flags |= ENTRY_DELETED_F;
+    parent = nullptr;
+    if(opened || (flags & ENTRY_REASEWAIT_F)|| (flags & ENTRY_PULLING_F)) {
+        //delete this in release or pull
+        return 0;
+    }
+    return 1;
+}
 
 size_t dir_t::children() {
     auto_rlock(this);
@@ -286,21 +293,18 @@ int dir_t::unlink(const string& name) {
         return -ENOENT;
     }
     entry_t* entry = entrys[name];
-    entry->wlock();
+    auto_wlocker __w2(entry);
 
     if(dynamic_cast<dir_t*>(entry)){
-        entry->unwlock();
         return -EISDIR;
     }
-    int ret = dynamic_cast<file_t*>(entry)->remove_and_release_wlock();
+    int ret = entry->remove_wlocked();
     if(ret < 0) {
-        entry->unwlock();
         return ret;
     }
-    erase_child_wlocked(entry->getkey().path, name);
-    entry->parent = nullptr;
-    entry->unwlock();
+    entrys.erase(name);
     if(ret > 0) {
+        __w2.unlock();
         delete entry;
     }
     mtime = time(nullptr);
@@ -315,40 +319,21 @@ int dir_t::rmdir(const string& name) {
         return -ENOENT;
     }
     entry_t* entry = entrys[name];
-    entry->wlock();
+    auto_wlocker __w2(entry);
     if(dynamic_cast<file_t*>(entry)){
-        entry->unwlock();
         return -ENOTDIR;
     }
-    dir_t* child = dynamic_cast<dir_t*>(entry);
-    if((child->flags & DIR_PULLED_F) == 0){
-        child->pull_entrys_wlocked();
-    }
-    if(child->entrys.size() != 2){
-        entry->unwlock();
-        return -ENOTEMPTY;
-    }
-    int ret = HANDLE_EAGAIN(fm_delete(entry->getkey()));
-    if(ret && errno != ENOENT){
-        entry->unwlock();
+    int ret = entry->remove_wlocked();
+    if (ret < 0) {
         return ret;
     }
-    erase_child_wlocked(entry->getkey().path, name);
+    entrys.erase(name);
+    if(ret > 0) {
+        __w2.unlock();
+        delete entry;
+    }
     mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
-    ::rmdir(get_cache_path(child->getcwd()).c_str());
-
-    entry->parent = nullptr;
-    entry->flags |= ENTRY_DELETED_F;
-    if(entry->opened ||
-      (entry->flags & ENTRY_REASEWAIT_F)||
-      (entry->flags & ENTRY_PULLING_F))
-    {
-        entry->unwlock();
-        //delete this in release or pull
-        return 0;
-    }
-    delete child;
     return 0;
 }
 
@@ -450,7 +435,14 @@ skip_remote:
     newparent->mtime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
 
-    erase_child_wlocked(entry->getkey().path, oldname, true);
+    std::string oldpath = entry->getkey().path;
+    delete_entry_from_db(oldpath);
+    if(entry->isDir()) {
+        delete_entry_prefix_from_db(oldpath);
+    } else {
+        delete_file_from_db(oldpath);
+    }
+    entrys.erase(oldname);
     entry->fk.store(std::make_shared<filekey>(newname, newfile.private_key));
     entry->parent = newparent;
     return 0;
@@ -536,7 +528,6 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
 }
 
 int dir_t::drop_cache_wlocked(){
-    int ret = 0;
     if(opened){
         return -EBUSY;
     }
@@ -546,6 +537,7 @@ int dir_t::drop_cache_wlocked(){
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
+    int ret = 0;
     for(auto i : entrys){
         if(i.first == "." || i.first == ".."){
             continue;
@@ -554,6 +546,12 @@ int dir_t::drop_cache_wlocked(){
     }
     if(ret != 0) {
         return ret;
+    }
+    for(auto i: entrys) {
+        if(i.first == "." || i.first == ".."){
+            continue;
+        }
+        delete i.second;
     }
     entrys.clear();
     flags &= ~DIR_PULLED_F;

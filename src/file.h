@@ -33,6 +33,7 @@ class file_t: public entry_t {
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
     static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
     virtual int drop_cache_wlocked() override;
+    virtual int remove_wlocked() override;
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();
@@ -55,7 +56,6 @@ public:
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
     //It will release the wlock
-    int remove_and_release_wlock();
     std::vector<filekey> getfblocks();
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;

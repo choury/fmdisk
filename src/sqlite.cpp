@@ -279,9 +279,9 @@ int delete_entry_from_db(const string& path){
     return 0;
 }
 
-void save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty){
+int save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty){
     if(cachedb == nullptr || inode == 0){
-        return;
+        return 0;
     }
     string key_str = fm_private_key_tostring(file_private_key);
     string sql = "replace into blocks (inode, block_no, private_key, dirty) values("
@@ -290,7 +290,9 @@ void save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_p
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         fprintf(stderr, "SQL [%s]: %s\n", sql.c_str(), err_msg);
         sqlite3_free(err_msg);
+        return -1;
     }
+    return 0;
 }
 
 
@@ -347,8 +349,8 @@ int delete_block_from_db(ino_t inode, size_t block_no) {
     }
     assert(inode != 0);
     // 只删除非dirty的block记录，保护dirty=1的条目
-    string sql = "delete from blocks where inode = " + std::to_string(inode) 
-                + " and block_no = " + std::to_string(block_no) 
+    string sql = "delete from blocks where inode = " + std::to_string(inode)
+                + " and block_no = " + std::to_string(block_no)
                 + " and dirty = 0";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){

@@ -35,6 +35,7 @@ protected:
     virtual void pull_wlocked() = 0;
     void pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
     virtual int drop_cache_wlocked() = 0;
+    virtual int remove_wlocked() = 0;
     static void pull(entry_t* entry);
 public:
     static int statfs(const char* path, struct statvfs *sf);
