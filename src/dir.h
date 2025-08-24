@@ -16,7 +16,7 @@ class dir_t: public entry_t {
     }
     void pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
-    void insert_meta_wlocked(const std::vector<filemeta>& flist, bool save);
+    std::set<std::string> insert_meta_wlocked(const std::vector<filemeta>& flist, bool save);
     virtual std::string getrealname() override {
         return fk.load()->path;
     }

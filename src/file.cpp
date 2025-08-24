@@ -774,7 +774,7 @@ int file_t::drop_cache_wlocked() {
     if(inode) {
         delete_blocks_from_db(inode);
     }else if(flags & ENTRY_CHUNCED_F) {
-        delete_blocks_by_key(dynamic_cast<file_t*>(this)->getfblocks());
+        delete_blocks_by_key(getfblocks());
     }else {
         delete_blocks_by_key({getkey()});
     }

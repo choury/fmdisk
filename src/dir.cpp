@@ -70,7 +70,8 @@ dir_t::~dir_t(){
     }
 }
 
-void dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
+std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
+    std::set<std::string> existnames;
     for(auto i: flist){
         string bname = basename(i.key.path);
         if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && bname == ".objs"){
@@ -82,6 +83,7 @@ void dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
             i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
             is_dir = false;
         }
+        existnames.insert(bname);
         if(entrys.contains(bname)){
             continue;
         }
@@ -97,6 +99,7 @@ void dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
             }
         }
     }
+    return existnames;
 }
 
 // Must wlock before call this function
@@ -460,7 +463,20 @@ int dir_t::sync(int dataonly) {
         if(HANDLE_EAGAIN(fm_list(getkey(), flist))){
             throw "fm_list IO Error";
         }
-        insert_meta_wlocked(flist, true);
+        auto names = insert_meta_wlocked(flist, true);
+        //drop_cache for noexist entrys
+        for (auto it = entrys.begin(); it != entrys.end(); ) {
+            if(it->first == "." || it->first == ".." || names.contains(it->first)){
+                ++it;
+                continue;
+            }
+            int ret = it->second->drop_cache();
+            if(ret != 0) {
+                return ret;
+            }
+            delete it->second;
+            it = entrys.erase(it);
+        }
         return 0;
     }
     if((flags & DIR_DIRTY_F) == 0){
