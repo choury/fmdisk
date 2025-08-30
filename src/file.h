@@ -20,7 +20,7 @@ class file_t: public entry_t {
     std::map<uint32_t, std::shared_ptr<block_t>> blocks;
     size_t block_size = 0; // cache for getmeta
     int truncate_wlocked(off_t offset);
-    virtual void pull_wlocked() override;
+    virtual int pull_wlocked() override;
     static void clean(file_t* file);
     virtual std::string getrealname() override;
     void set_private_key_wlocked(std::shared_ptr<void> key) {
@@ -41,7 +41,7 @@ public:
 
     filekey getmetakey();
     std::vector<filekey> getkeys();
-    virtual filemeta getmeta() override;
+    virtual int getmeta(filemeta& meta) override;
 
     virtual bool isDir() override {
         return false;
@@ -59,7 +59,7 @@ public:
     std::vector<filekey> getfblocks();
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;
-    virtual storage_class_info get_storage_classes() override;
+    virtual int get_storage_classes(storage_class_info& info) override;
     virtual int set_storage_class(enum storage_class storage) override;
 
     // 使用fallocate释放clean状态block的磁盘空间，返回释放的字节数

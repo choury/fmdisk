@@ -122,32 +122,34 @@ filekey block_t::getkey() const {
     }
 }
 
-void block_t::pull(std::weak_ptr<block_t> wb) {
+int block_t::pull(std::weak_ptr<block_t> wb) {
     if(wb.expired()) {
-        return;
+        return 0;
     }
     auto b = wb.lock();
     auto_wlock(b.get());
     if(b->flags & (BLOCK_SYNC | BLOCK_STALE)){
-        return;
+        return 0;
     }
     buffstruct bs((char*)malloc(b->size), b->size);
     //for chunk file, read from begin
     off_t startp = b->fk.path.size() ? 0 : b->offset;
-    if(HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs))){
-        throw "fm_download IO Error";
+    int ret = HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs));
+    if(ret){
+        return ret;
     }
     assert(bs.size() <= (size_t)b->size);
     // 直接写入缓存文件
     if(b->flags & FILE_ENCODE_F){
         xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
     }
-    int ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
+    ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
         assert((size_t)ret == bs.size());
         b->flags |= BLOCK_SYNC;
         save_block_to_db(b->inode, b->no, b->fk.private_key, false);
     }
+    return ret;
 }
 
 ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
@@ -259,20 +261,20 @@ retry:
     }
 }
 
-void block_t::prefetch(bool wait) {
+int block_t::prefetch(bool wait) {
     atime = time(nullptr);
     auto_rlock(this);
     if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
-        return; // 已经同步，不需要预取
+        return 0; // 已经同步，不需要预取
     }
     if(wait){
         __r.unlock();
-        pull(shared_from_this());
-        return;
+        return pull(shared_from_this());
     }
     if(dpool->tasks_in_queue() < DOWNLOADTHREADS){
         dpool->submit_fire_and_forget([this]{ pull(shared_from_this()); });
     }
+    return 0;
 }
 
 void block_t::markdirty() {

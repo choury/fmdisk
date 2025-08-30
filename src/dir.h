@@ -9,12 +9,12 @@ using std::string;
 class file_t;
 class dir_t: public entry_t {
     std::map<string, entry_t*> entrys;
-    virtual void pull_wlocked() override {
+    int pull_wlocked() override {
         filemeta meta{};
         std::vector<filekey> fblocks;
-        entry_t::pull_wlocked(meta, fblocks);
+        return entry_t::pull_wlocked(meta, fblocks);
     }
-    void pull_entrys_wlocked();
+    int pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
     std::set<std::string> insert_meta_wlocked(const std::vector<filemeta>& flist, bool save);
     virtual std::string getrealname() override {
@@ -25,7 +25,7 @@ class dir_t: public entry_t {
 public:
     dir_t(dir_t* parent, const filemeta& meta);
     virtual ~dir_t() override;
-    virtual filemeta getmeta() override;
+    virtual int getmeta(filemeta& meta) override;
     entry_t* find(std::string path);
     const std::map<string, entry_t*>& get_entrys();
     size_t children();

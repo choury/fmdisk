@@ -106,7 +106,11 @@ int fm_fuse_getattr(const char *path, struct stat *st, struct fuse_file_info *fi
     if(entry == nullptr){
         return -ENOENT;
     }
-    filemeta meta = entry->getmeta();
+    filemeta meta;
+    int ret = entry->getmeta(meta);
+    if(ret < 0) {
+        return ret;
+    }
     memset(st, 0, sizeof(struct stat));
     assert((meta.flags & META_KEY_ONLY_F) == 0);
     st->st_mode = meta.mode;
@@ -366,7 +370,11 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
         return underlay_path.length();
     }
     if(strcmp(name, "user.storage_class") == 0) {
-        auto info = entry->get_storage_classes();
+        storage_class_info info;
+        int ret = entry->get_storage_classes(info);
+        if(ret < 0) {
+            return ret;
+        }
         std::stringstream ss;
         ss << "S: " << bytes2human(info.size_store[1])
            << " IA: " << bytes2human(info.size_store[2])

@@ -252,7 +252,10 @@ int file_t::open(){
     auto_lock(&openfile_lock); //for putting inode into opened_inodes
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     opened++;
     if(fd >= 0 || opt.no_cache) {
@@ -322,10 +325,13 @@ int file_t::release(){
     return 0;
 }
 
-void file_t::pull_wlocked() {
+int file_t::pull_wlocked() {
     filemeta meta{};
     std::vector<filekey> fblocks;
-    entry_t::pull_wlocked(meta, fblocks);
+    int ret = entry_t::pull_wlocked(meta, fblocks);
+    if(ret < 0) {
+        return ret;
+    }
     set_private_key_wlocked(meta.key.private_key);
     blksize = meta.blksize;
     flags |= meta.flags;
@@ -336,7 +342,7 @@ void file_t::pull_wlocked() {
         inline_data = (char*)meta.inline_data;
     }
     if(!opt.no_cache) {
-        return;
+        return 0;
     }
     if(flags & ENTRY_CHUNCED_F) {
         assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
@@ -348,6 +354,7 @@ void file_t::pull_wlocked() {
             blocks.emplace(i, std::make_shared<block_t>(-1, 0, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
+    return 0;
 }
 
 int file_t::read(void* buff, off_t offset, size_t size) {
@@ -370,7 +377,10 @@ int file_t::read(void* buff, off_t offset, size_t size) {
             blocks[i]->prefetch(false);
         }
         for(size_t i = startc; i<= endc; i++ ){
-            blocks[i]->prefetch(true);
+            int ret = blocks[i]->prefetch(true);
+            if (ret < 0) {
+                return ret;
+            }
         }
         return pread(fd, buff, size, offset);
     }
@@ -602,13 +612,16 @@ std::vector<filekey> file_t::getkeys() {
     return flist;
 }
 
-filemeta file_t::getmeta() {
+int file_t::getmeta(filemeta& meta) {
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
-    filemeta meta = initfilemeta(getkey());
+    meta = initfilemeta(getkey());
     meta.mode = S_IFREG | (mode & 0777);
     meta.inline_data = (unsigned char*)inline_data;
     meta.flags = flags;
@@ -639,7 +652,7 @@ filemeta file_t::getmeta() {
     }
     meta.ctime = ctime;
     meta.mtime = mtime;
-    return meta;
+    return 0;
 }
 
 bool file_t::sync_wlocked(bool forcedirty) {
@@ -653,7 +666,10 @@ bool file_t::sync_wlocked(bool forcedirty) {
     }
     assert(!dirty || (flags & FILE_DIRTY_F));
     const filekey& key = getkey();
-    filemeta meta = getmeta();
+    filemeta meta;
+    if(getmeta(meta) < 0) {
+        return true;
+    }
     meta.key = getmetakey();
     std::vector<filekey> fblocks = getfblocks();
     if(upload_meta(key, meta, fblocks)){
@@ -695,11 +711,18 @@ int file_t::utime(const struct timespec tv[2]) {
         return 0;
     }
     if((flags & ENTRY_INITED_F) == 0){
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     const filekey& key = getkey();
     std::vector<filekey> fblocks = getfblocks();
-    filemeta meta = getmeta();
+    filemeta meta;
+    int ret = getmeta(meta);
+    if(ret < 0) {
+        return ret;
+    }
     meta.key = getmetakey();
     if(tv[0].tv_nsec == UTIME_NOW) {
         meta.mtime = time(nullptr);
@@ -734,7 +757,10 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
     if((flags & ENTRY_INITED_F) == 0){
         return;
     }
-    filemeta meta = getmeta();
+    filemeta meta;
+    if(getmeta(meta) < 0) {
+        return;
+    }
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
         savemeta.key.path = encodepath(name);
@@ -812,22 +838,28 @@ static void add_meta_to_storage_info(storage_class_info& info, const filemeta& m
     }
 }
 
-storage_class_info file_t::get_storage_classes() {
-    storage_class_info info{};
+int file_t::get_storage_classes(storage_class_info& info) {
+    memset(&info, 0, sizeof(info));
     if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
         info.size_store[STORAGE_STANDARD] = length;
-        return info;
+        return 0;
     }
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0) {
         __r.upgrade();
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     if((flags & ENTRY_CHUNCED_F) == 0) {
         filemeta meta = initfilemeta(getkey());
-        HANDLE_EAGAIN(fm_getattr(getkey(), meta));
+        int ret = HANDLE_EAGAIN(fm_getattr(getkey(), meta));
+        if(ret < 0) {
+            return ret;
+        }
         add_meta_to_storage_info(info, meta);
-        return info;
+        return 0;
     }
     auto fblocks = getfblocks();
     std::vector<std::future<filemeta>> futures;
@@ -850,7 +882,7 @@ storage_class_info file_t::get_storage_classes() {
         auto meta = future.get();
         add_meta_to_storage_info(info, meta);
     }
-    return info;
+    return 0;
 }
 
 enum storage_action {
@@ -893,7 +925,10 @@ int file_t::set_storage_class(enum storage_class storage) {
     }
     if((flags & ENTRY_INITED_F) == 0) {
         __r.upgrade();
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     if((flags & ENTRY_CHUNCED_F) == 0) {
         filemeta meta = initfilemeta(getkey());

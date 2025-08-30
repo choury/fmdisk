@@ -113,7 +113,7 @@ string entry_t::getcwd() {
     return pathjoin(parent->getcwd(), fk.load()->path);
 }
 
-void entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks) {
+int entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks) {
     const filekey& key = getkey();
     meta = initfilemeta(key);
     meta.mode = this->mode;
@@ -122,15 +122,17 @@ void entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks) {
     load_file_from_db(key.path, meta, fblocks);
     if(flags & ENTRY_CHUNCED_F){
         if(meta.blksize == 0){
-            if(download_meta(key, meta, fblocks)){
-                throw "download_meta IO Error";
+            int ret = download_meta(key, meta, fblocks);
+            if(ret < 0){
+                return ret;
             }
             save_file_to_db(key.path, meta, fblocks);
         }
     }else{
         if(meta.blksize == 0){
-            if(HANDLE_EAGAIN(fm_getattr(key, meta))){
-                throw "fm_getattr IO Error";
+            int ret = HANDLE_EAGAIN(fm_getattr(key, meta));
+            if(ret < 0) {
+                return ret;
             }
             save_file_to_db(key.path, meta, {});
         }
@@ -142,6 +144,7 @@ void entry_t::pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks) {
     mtime = meta.mtime;
     flags |= ENTRY_INITED_F;
     flags &= ~META_KEY_ONLY_F;
+    return 0;
 }
 
 void entry_t::pull(entry_t* entry){

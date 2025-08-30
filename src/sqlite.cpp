@@ -201,7 +201,7 @@ void save_entry_to_db(const string& path, const filemeta& meta){
 
 static int entrys_callback(void *data, int columns, char **field, char **colum){
     std::vector<filemeta>* flist = (std::vector<filemeta>*)data;
-    filemeta meta;
+    filemeta meta{};
     for(int i = 0; i < columns; i++){
         if(strcmp(colum[i], "path") == 0){
             meta.key.path = field[i];

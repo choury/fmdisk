@@ -103,25 +103,29 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
 }
 
 // Must wlock before call this function
-void dir_t::pull_entrys_wlocked() {
+int dir_t::pull_entrys_wlocked() {
     if(flags & DIR_PULLED_F) {
-        return;
+        return 0;
     }
+
+    assert(entrys.empty());
+    entrys.emplace(".", this);
+    entrys.emplace("..", parent);
+
     bool cached = false;
     std::vector<filemeta> flist;
     if(load_entry_from_db(getkey().path, flist) == 0){
         printf("Miss from localcache\n");
-        if(HANDLE_EAGAIN(fm_list(getkey(), flist))){
-            throw "fm_list IO Error";
+        int ret = HANDLE_EAGAIN(fm_list(getkey(), flist));
+        if(ret < 0) {
+            return ret;
         }
     }else{
         cached = true;
     }
-    assert(entrys.empty());
-    entrys.emplace(".", this);
-    entrys.emplace("..", parent);
     insert_meta_wlocked(flist, !cached);
     flags |= DIR_PULLED_F;
+    return 0;
 }
 
 entry_t* dir_t::find(std::string path) {
@@ -152,10 +156,16 @@ entry_t* dir_t::find(std::string path) {
 int dir_t::open() {
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     if((flags & DIR_PULLED_F) == 0){
-        pull_entrys_wlocked();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     for(auto [name, entry]: entrys){
         if(name == "." || name == ".." || entry == nullptr){
@@ -185,13 +195,16 @@ const std::map<string, entry_t*>& dir_t::get_entrys(){
 }
 
 
-filemeta dir_t::getmeta() {
+int dir_t::getmeta(filemeta& meta) {
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
-    filemeta meta = initfilemeta(getkey());
+    meta = initfilemeta(getkey());
     meta.mode = S_IFDIR | (mode & 0777);
     meta.flags = flags;
     meta.size = length;
@@ -200,7 +213,7 @@ filemeta dir_t::getmeta() {
     meta.blocks = 1;
     meta.ctime = ctime;
     meta.mtime = mtime;
-    return meta;
+    return 0;
 }
 
 entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
@@ -212,7 +225,10 @@ entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
 
 int dir_t::remove_wlocked() {
     if((flags & DIR_PULLED_F) == 0){
-        pull_entrys_wlocked();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     if(entrys.size() != 2){
         return -ENOTEMPTY;
@@ -377,7 +393,10 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         //copy and delete
         if(entry->isDir()){
             dir_t* dir = dynamic_cast<dir_t*>(entry);
-            dir->pull_entrys_wlocked();
+            ret = dir->pull_entrys_wlocked();
+            if(ret < 0) {
+                return ret;
+            }
             if(dir->entrys.size() > 2) {
                 return -ENOTEMPTY;
             }
@@ -460,8 +479,9 @@ int dir_t::sync(int dataonly) {
     if(dataonly) {
         __r.upgrade();
         std::vector<filemeta> flist;
-        if(HANDLE_EAGAIN(fm_list(getkey(), flist))){
-            throw "fm_list IO Error";
+        int ret = HANDLE_EAGAIN(fm_list(getkey(), flist));
+        if(ret < 0) {
+            return ret;
         }
         auto names = insert_meta_wlocked(flist, true);
         //drop_cache for noexist entrys
@@ -470,10 +490,11 @@ int dir_t::sync(int dataonly) {
                 ++it;
                 continue;
             }
-            int ret = it->second->drop_cache();
-            if(ret != 0) {
-                return ret;
+            if(it->second->drop_cache() != 0){
+                ++it;
+                continue;
             }
+            delete_entry_from_db(it->second->getkey().path);
             delete it->second;
             it = entrys.erase(it);
         }
@@ -500,7 +521,10 @@ int dir_t::utime(const struct timespec tv[2]) {
         return 0;
     }
     if((flags & ENTRY_INITED_F) == 0){
-        pull_wlocked();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
     time_t ttv[2];
     ttv[0] = ctime;
@@ -528,7 +552,10 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
     if((flags & ENTRY_INITED_F) == 0){
         return;
     }
-    filemeta meta = getmeta();
+    filemeta meta;
+    if(getmeta(meta) < 0) {
+        return;
+    }
     meta.key.path = name;
     save_entry_to_db(path, meta);
     save_file_to_db(pathjoin(path, name), meta, {});

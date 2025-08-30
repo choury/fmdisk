@@ -16,7 +16,7 @@ class block_t: locker, public std::enable_shared_from_this<block_t> {
     std::atomic<time_t> atime;
     std::atomic<size_t> version = 0;
     int staled();
-    static void pull(std::weak_ptr<block_t> b);
+    static int pull(std::weak_ptr<block_t> b);
     static void push(std::weak_ptr<block_t> b);
     friend void writeback_thread(bool* done);
     [[nodiscard]] std::string getpath() const;
@@ -28,7 +28,7 @@ public:
         auto_rlock(this);
         return fk;
     }
-    void prefetch(bool wait);
+    int prefetch(bool wait);
     ssize_t read(filekey fileat, void* buff, off_t offset, size_t len);
     void markdirty();
     void markstale();

@@ -32,8 +32,8 @@ protected:
     uint32_t opened = 0;
     string getcwd();
     virtual string getrealname() = 0;
-    virtual void pull_wlocked() = 0;
-    void pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
+    virtual int pull_wlocked() = 0;
+    int pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
     virtual int drop_cache_wlocked() = 0;
     virtual int remove_wlocked() = 0;
     static void pull(entry_t* entry);
@@ -42,7 +42,7 @@ public:
     entry_t(dir_t* parent, const filemeta& meta);
     virtual ~entry_t() override;
     filekey getkey();
-    virtual filemeta getmeta() = 0;
+    virtual int getmeta(filemeta& meta) = 0;
     [[nodiscard]] size_t size() const {
         return length;
     }
@@ -56,8 +56,8 @@ public:
         auto_wlock(this);
         return drop_cache_wlocked();
     }
-    virtual storage_class_info get_storage_classes() {
-        return {};
+    virtual int get_storage_classes(storage_class_info& info) {
+        return 0;
     }
     virtual int set_storage_class(enum storage_class storage) {
         return -EINVAL;
