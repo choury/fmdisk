@@ -23,12 +23,6 @@ class file_t: public entry_t {
     virtual int pull_wlocked() override;
     static void clean(file_t* file);
     virtual std::string getrealname() override;
-    void set_private_key_wlocked(std::shared_ptr<void> key) {
-        private_key = key;
-        if(fm_private_key_tostring(fk.load()->private_key)[0] == '\0') {
-            fk = std::make_shared<filekey>(filekey{fk.load()->path, key});
-        }
-    }
 
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
     static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数

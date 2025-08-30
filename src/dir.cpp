@@ -74,7 +74,7 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
     std::set<std::string> existnames;
     for(auto i: flist){
         string bname = basename(i.key.path);
-        if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && bname == ".objs"){
+        if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && bname == ".objs"){
             continue;
         }
         bool is_dir = S_ISDIR(i.mode);
@@ -262,7 +262,7 @@ dir_t* dir_t::mkdir(const string& name) {
         return nullptr;
     }
     auto_wlock(this);
-    if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && name == ".objs"){
+    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
         return nullptr;
     }
@@ -284,7 +284,7 @@ dir_t* dir_t::mkdir(const string& name) {
 
 file_t* dir_t::create(const string& name){
     auto_wlock(this);
-    if(parent == nullptr && (opt.flags & FM_DONOT_REQUIRE_MKDIR) && name == ".objs"){
+    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
         return nullptr;
     }
@@ -294,8 +294,12 @@ file_t* dir_t::create(const string& name){
         return nullptr;
     }
     struct filemeta meta = initfilemeta(filekey{encodepath(name), 0});
-    if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0 && HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
-        return nullptr;
+    if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
+        if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
+            return nullptr;
+        }
+    } else {
+        fm_getattrat(getkey(), meta.key);
     }
     flags |= DIR_DIRTY_F;
     mtime = ctime = meta.ctime = meta.mtime = time(nullptr);
@@ -382,13 +386,8 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
     entry_t* entry = entrys[oldname];
     auto_wlocker __3(entry);
-    filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
+    std::shared_ptr<void> new_private_key;
     int ret = 0;
-    if(fm_private_key_tostring(entry->fk.load()->private_key)[0] == '\0') {
-        // 这个文件还没来得及上传到远程
-        assert(entry->flags & FILE_DIRTY_F);
-        goto skip_remote;
-    }
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
         if(entry->isDir()){
@@ -400,26 +399,40 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
             if(dir->entrys.size() > 2) {
                 return -ENOTEMPTY;
             }
+            filekey newfile{newname, 0};
             ret = HANDLE_EAGAIN(fm_copy(this->getkey(), dir->getkey(), newparent->getkey(), newfile));
             if(ret == 0){
                 ret = HANDLE_EAGAIN(fm_delete(dir->getkey()));
+                new_private_key = newfile.private_key;
             }
         }else {
             file_t* file = dynamic_cast<file_t*>(entry);
-            filekey newmeta = filekey{entry->flags & ENTRY_CHUNCED_F
-                ? pathjoin(newfile.path, METANAME)
-                : newfile.path, 0};
-            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), file->getmetakey(), newparent->getkey(), newmeta));
+            if(fm_private_key_tostring(file->private_key)[0] == '\0') {
+                // 这个文件还没来得及上传到远程
+                assert(file->flags & FILE_DIRTY_F);
+                assert(file->flags & ENTRY_CHUNCED_F);
+                new_private_key = fk.load()->private_key;
+                goto skip_remote;
+            }
+            filekey newfile = filekey{entry->flags & ENTRY_CHUNCED_F ?
+                pathjoin(encodepath(newname), METANAME) : newname, 0};
+            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), file->getmetakey(), newparent->getkey(), newfile));
             if(ret == 0){
                 ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
-                file->private_key = newmeta.private_key;
-                if((file->flags & FILE_ENCODE_F) == 0) {
-                    newfile = newmeta;
+                file->private_key = newfile.private_key;
+                if((file->flags & ENTRY_CHUNCED_F) == 0) {
+                    new_private_key = newfile.private_key;
+                } else {
+                    newfile = filekey{encodepath(newname), 0};
+                    fm_getattrat(newparent->getkey(), newfile);
+                    new_private_key = newfile.private_key;
                 }
             }
         }
     } else {
+        filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
         ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
+        new_private_key = newfile.private_key;
     }
     if(ret){
         return ret;
@@ -450,7 +463,7 @@ skip_remote:
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
     newparent->unlink(newname);
-    entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, newfile.private_key));
+    entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, new_private_key));
     //再此之前不能修改fk.path, 因为insert需要从files表读取原始文件信息
     //但是又需要保存新文件的private_key，不想再加一个参数了，就直接把private_key 先改了
     newparent->insert_child_wlocked(newname, entry);
@@ -465,7 +478,7 @@ skip_remote:
         delete_file_from_db(oldpath);
     }
     entrys.erase(oldname);
-    entry->fk.store(std::make_shared<filekey>(newname, newfile.private_key));
+    entry->fk.store(std::make_shared<filekey>(newname, new_private_key));
     entry->parent = newparent;
     return 0;
 }

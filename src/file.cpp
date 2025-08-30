@@ -204,13 +204,14 @@ inline size_t GetBlkNo(size_t p, blksize_t blksize) {
 
 file_t::file_t(dir_t *parent, const filemeta& meta):
     entry_t(parent, meta),
-    private_key(meta.key.private_key),
     blksize(meta.blksize),
     storage(meta.storage),
     last_meta_sync_time(0)
 {
     if(flags & ENTRY_CHUNCED_F){
         fk = std::make_shared<filekey>(decodepath(*fk.load()));
+    }else {
+        private_key = meta.key.private_key;
     }
     if(flags & ENTRY_CREATE_F){
     //creata new file
@@ -332,7 +333,7 @@ int file_t::pull_wlocked() {
     if(ret < 0) {
         return ret;
     }
-    set_private_key_wlocked(meta.key.private_key);
+    private_key = meta.key.private_key;
     blksize = meta.blksize;
     flags |= meta.flags;
     mode &= ~0777;
@@ -614,6 +615,7 @@ std::vector<filekey> file_t::getkeys() {
 
 int file_t::getmeta(filemeta& meta) {
     auto_rlock(this);
+    assert(fm_private_key_tostring(fk.load()->private_key)[0] != '\0');
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
         int ret = pull_wlocked();
@@ -675,7 +677,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
     if(upload_meta(key, meta, fblocks)){
         throw "upload_meta IO Error";
     }
-    set_private_key_wlocked(meta.key.private_key);
+    private_key = meta.key.private_key;
     if(!dirty){
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
@@ -734,7 +736,7 @@ int file_t::utime(const struct timespec tv[2]) {
         if(ret){
             return -errno;
         }
-        set_private_key_wlocked(meta.key.private_key);
+        private_key = meta.key.private_key;
     } else {
         time_t ttv[2];
         ttv[0] = meta.ctime;
@@ -785,6 +787,7 @@ int file_t::drop_cache_wlocked() {
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
+    auto fblocks = getfblocks();
     for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
         it->second->markstale();
     }
@@ -800,7 +803,7 @@ int file_t::drop_cache_wlocked() {
     if(inode) {
         delete_blocks_from_db(inode);
     }else if(flags & ENTRY_CHUNCED_F) {
-        delete_blocks_by_key(getfblocks());
+        delete_blocks_by_key(fblocks);
     }else {
         delete_blocks_by_key({getkey()});
     }
