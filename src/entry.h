@@ -6,6 +6,7 @@
 
 #include <sys/stat.h>
 #include <time.h>
+#include <atomic>
 
 using std::string;
 
@@ -24,7 +25,7 @@ class entry_t: public locker {
 protected:
     dir_t* parent;
     std::atomic<std::shared_ptr<filekey>> fk;
-    mode_t mode;
+    std::atomic<mode_t> mode;
     size_t length;
     time_t mtime = 0;
     time_t ctime = 0;
@@ -33,7 +34,6 @@ protected:
     string getcwd();
     virtual string getrealname() = 0;
     virtual int pull_wlocked() = 0;
-    int pull_wlocked(filemeta& meta, std::vector<filekey>& fblocks);
     virtual int drop_cache_wlocked() = 0;
     virtual int remove_wlocked() = 0;
     static void pull(entry_t* entry);
@@ -42,11 +42,13 @@ public:
     entry_t(dir_t* parent, const filemeta& meta);
     virtual ~entry_t() override;
     filekey getkey();
+    mode_t getmode() const {
+        return mode;
+    }
     virtual int getmeta(filemeta& meta) = 0;
     [[nodiscard]] size_t size() const {
         return length;
     }
-    virtual bool isDir() = 0;
     virtual int open() = 0;
     virtual int sync(int dataonly) = 0;
     virtual int release() = 0;
@@ -70,7 +72,7 @@ extern TrdPool* upool;
 extern TrdPool* dpool;
 
 filekey basename(const filekey& file);
-filekey decodepath(const filekey& file);
+filekey decodepath(const filekey& file, const string& suffix);
 int create_dirs_recursive(const string& path);
 
 #endif

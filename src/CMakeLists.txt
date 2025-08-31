@@ -1,4 +1,4 @@
-add_library(fmdisk STATIC fm_main.c entry.cpp utils.cpp fuse.cpp threadpool.cpp dir.cpp file.cpp block.cpp sqlite.cpp)
+add_library(fmdisk STATIC fm_main.c entry.cpp utils.cpp fuse.cpp threadpool.cpp dir.cpp file.cpp symlink.cpp block.cpp sqlite.cpp)
 set_target_properties(fmdisk PROPERTIES OUTPUT_NAME "fmdisk")
 target_link_libraries(fmdisk PUBLIC PkgConfig::JSON-C PkgConfig::FUSE PkgConfig::SQLITE3 pthread)
 

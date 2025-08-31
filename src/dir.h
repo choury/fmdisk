@@ -7,13 +7,10 @@
 using std::string;
 
 class file_t;
+class symlink_t;
 class dir_t: public entry_t {
     std::map<string, entry_t*> entrys;
-    int pull_wlocked() override {
-        filemeta meta{};
-        std::vector<filekey> fblocks;
-        return entry_t::pull_wlocked(meta, fblocks);
-    }
+    int pull_wlocked() override;
     int pull_entrys_wlocked();
     entry_t* insert_child_wlocked(const std::string& name, entry_t* entry);
     std::set<std::string> insert_meta_wlocked(const std::vector<filemeta>& flist, bool save);
@@ -30,9 +27,6 @@ public:
     const std::map<string, entry_t*>& get_entrys();
     size_t children();
 
-    virtual bool isDir() override {
-        return true;
-    }
     virtual int open() override;
     virtual int release() override{
         auto_wlock(this);
@@ -49,6 +43,7 @@ public:
 
     file_t* create(const string& name);
     dir_t*  mkdir(const string& name);
+    symlink_t* symlink(const string& name, const string& target);
     int unlink(const string& name);
     int rmdir(const string& name);
     int moveto(dir_t* newparent, const string& oldname, const string& newname, unsigned int flags);

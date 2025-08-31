@@ -41,7 +41,7 @@ int fm_utime(const filekey& file, const time_t tv[2]);
 
 const char* fm_private_key_tostring(std::shared_ptr<void> private_key);
 std::shared_ptr<void> fm_get_private_key(const char* private_key_str);
-int fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile);
+int fm_copy(const filekey& file, const filekey& newat, filekey& newfile);
 int fm_change_storage_class(const filekey& file, enum storage_class storage);
 int fm_restore_archive(const filekey& file, int days, unsigned int mode);
 

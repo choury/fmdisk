@@ -2,6 +2,7 @@
 #include "fmdisk.h"
 #include "dir.h"
 #include "file.h"
+#include "symlink.h"
 #include "sqlite.h"
 #include "utils.h"
 #include "trdpool.h"
@@ -39,11 +40,9 @@ filekey basename(const filekey& file) {
     return filekey{basename(file.path), file.private_key};
 }
 
-filekey decodepath(const filekey& file) {
-    return filekey{decodepath(file.path), file.private_key};
+filekey decodepath(const filekey& file, const string& suffix) {
+    return filekey{decodepath(file.path, suffix), file.private_key};
 }
-
-
 
 dir_t* cache_root() {
     struct filemeta meta = initfilemeta(filekey{"/", 0});
@@ -55,6 +54,7 @@ dir_t* cache_root() {
 
 
 dir_t::dir_t(dir_t* parent, const filemeta& meta): entry_t(parent, meta) {
+    mode = (meta.mode & ~S_IFMT) | S_IFDIR;
     if(flags & ENTRY_CREATE_F) {
         entrys.emplace(".", this);
         entrys.emplace("..",  parent);
@@ -77,11 +77,15 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
         if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && bname == ".objs"){
             continue;
         }
-        bool is_dir = S_ISDIR(i.mode);
-        if(endwith(bname, ".def") && is_dir){
-            bname = decodepath(bname);
+        bool is_dir = S_ISDIR(i.mode), is_link = false;
+        if(endwith(bname, file_encode_suffix) && is_dir){
+            bname = decodepath(bname, file_encode_suffix);
             i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
             is_dir = false;
+        }else if(endwith(bname, symlink_encode_suffix) && !is_dir){
+            bname = decodepath(bname, symlink_encode_suffix);
+            i.flags |= ENTRY_CHUNCED_F | META_KEY_ONLY_F;
+            is_link = true;
         }
         existnames.insert(bname);
         if(entrys.contains(bname)){
@@ -89,6 +93,8 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
         }
         if(is_dir){
             entrys.emplace(bname, new dir_t(this, i));
+        }else if(is_link){
+            entrys.emplace(bname, new symlink_t(this, i));
         }else{
             entrys.emplace(bname, new file_t(this, i));
         }
@@ -100,6 +106,30 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
         }
     }
     return existnames;
+}
+
+int dir_t::pull_wlocked() {
+    const filekey& key = getkey();
+    filemeta meta = initfilemeta(key);
+    meta.mode = this->mode;
+    assert((flags & ENTRY_INITED_F) == 0);
+    std::vector<filekey> fblocks;
+    load_file_from_db(key.path, meta, fblocks);
+    assert(fblocks.empty());
+    if(meta.blksize == 0){
+        int ret = HANDLE_EAGAIN(fm_getattr(key, meta));
+        if(ret < 0) {
+            return ret;
+        }
+        save_file_to_db(key.path, meta, {});
+    }
+    assert(meta.inline_data.empty());
+    mode = (meta.mode & ~S_IFMT) | S_IFDIR;
+    ctime = meta.ctime;
+    mtime = meta.mtime;
+    flags |= ENTRY_INITED_F;
+    flags &= ~META_KEY_ONLY_F;
+    return 0;
 }
 
 // Must wlock before call this function
@@ -205,10 +235,9 @@ int dir_t::getmeta(filemeta& meta) {
         }
     }
     meta = initfilemeta(getkey());
-    meta.mode = S_IFDIR | (mode & 0777);
+    meta.mode = mode;
     meta.flags = flags;
     meta.size = length;
-    meta.inline_data = nullptr;
     meta.blksize = opt.block_len;
     meta.blocks = 1;
     meta.ctime = ctime;
@@ -257,7 +286,7 @@ size_t dir_t::children() {
 }
 
 dir_t* dir_t::mkdir(const string& name) {
-    if(endwith(name, ".def")){
+    if(endwith(name, file_encode_suffix)){
         errno = EINVAL;
         return nullptr;
     }
@@ -283,6 +312,10 @@ dir_t* dir_t::mkdir(const string& name) {
 }
 
 file_t* dir_t::create(const string& name){
+    if(endwith(name, symlink_encode_suffix)){
+        errno = EINVAL;
+        return nullptr;
+    }
     auto_wlock(this);
     if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
@@ -293,7 +326,7 @@ file_t* dir_t::create(const string& name){
         errno = ENOSPC;
         return nullptr;
     }
-    struct filemeta meta = initfilemeta(filekey{encodepath(name), 0});
+    struct filemeta meta = initfilemeta(filekey{encodepath(name, file_encode_suffix), 0});
     if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
         if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
             return nullptr;
@@ -307,6 +340,34 @@ file_t* dir_t::create(const string& name){
     meta.blksize = opt.block_len;
     meta.mode = S_IFREG | 0644;
     return dynamic_cast<file_t*>(insert_child_wlocked(name, new file_t(this, meta)));
+}
+
+symlink_t* dir_t::symlink(const string& name, const string& target) {
+    auto_wlock(this);
+    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
+        errno = EINVAL;
+        return nullptr;
+    }
+    assert(flags & DIR_PULLED_F);
+    if(children() >= MAXFILE){
+        errno = ENOSPC;
+        return nullptr;
+    }
+
+    struct filemeta meta = initfilemeta(filekey{encodepath(name, symlink_encode_suffix), 0});
+    meta.flags = ENTRY_CHUNCED_F | ENTRY_CREATE_F;
+    meta.mode = S_IFLNK | 0777;  // 符号链接权限
+    meta.blksize = opt.block_len;
+    meta.size = target.length();
+    meta.inline_data = target;
+    meta.ctime = meta.mtime = time(nullptr);
+    if (HANDLE_EAGAIN(upload_meta(getkey(), meta, {}))){
+        return nullptr;
+    }
+
+    flags |= DIR_DIRTY_F;
+    mtime = ctime = time(nullptr);
+    return dynamic_cast<symlink_t*>(insert_child_wlocked(name, new symlink_t(this, meta)));
 }
 
 int dir_t::unlink(const string& name) {
@@ -390,22 +451,7 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
     int ret = 0;
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
-        if(entry->isDir()){
-            dir_t* dir = dynamic_cast<dir_t*>(entry);
-            ret = dir->pull_entrys_wlocked();
-            if(ret < 0) {
-                return ret;
-            }
-            if(dir->entrys.size() > 2) {
-                return -ENOTEMPTY;
-            }
-            filekey newfile{newname, 0};
-            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), dir->getkey(), newparent->getkey(), newfile));
-            if(ret == 0){
-                ret = HANDLE_EAGAIN(fm_delete(dir->getkey()));
-                new_private_key = newfile.private_key;
-            }
-        }else {
+        if(S_ISREG(entry->getmode())) {
             file_t* file = dynamic_cast<file_t*>(entry);
             if(fm_private_key_tostring(file->private_key)[0] == '\0') {
                 // 这个文件还没来得及上传到远程
@@ -415,22 +461,46 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
                 goto skip_remote;
             }
             filekey newfile = filekey{entry->flags & ENTRY_CHUNCED_F ?
-                pathjoin(encodepath(newname), METANAME) : newname, 0};
-            ret = HANDLE_EAGAIN(fm_copy(this->getkey(), file->getmetakey(), newparent->getkey(), newfile));
+                pathjoin(encodepath(newname, file_encode_suffix), METANAME) : newname, 0};
+            ret = HANDLE_EAGAIN(fm_copy(file->getmetakey(), newparent->getkey(), newfile));
             if(ret == 0){
                 ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
                 file->private_key = newfile.private_key;
                 if((file->flags & ENTRY_CHUNCED_F) == 0) {
                     new_private_key = newfile.private_key;
                 } else {
-                    newfile = filekey{encodepath(newname), 0};
+                    newfile = filekey{encodepath(newname, file_encode_suffix), 0};
                     fm_getattrat(newparent->getkey(), newfile);
                     new_private_key = newfile.private_key;
                 }
             }
+        } else if(S_ISDIR(entry->getmode())){
+            dir_t* dir = dynamic_cast<dir_t*>(entry);
+            ret = dir->pull_entrys_wlocked();
+            if(ret < 0) {
+                return ret;
+            }
+            if(dir->entrys.size() > 2) {
+                return -ENOTEMPTY;
+            }
+            filekey newfile{newname, 0};
+            ret = HANDLE_EAGAIN(fm_copy(dir->getkey(), newparent->getkey(), newfile));
+            if(ret == 0){
+                ret = HANDLE_EAGAIN(fm_delete(dir->getkey()));
+                new_private_key = newfile.private_key;
+            }
+        } else if(S_ISLNK(entry->getmode())) {
+            symlink_t* symlink = dynamic_cast<symlink_t*>(entry);
+            assert(symlink->flags & ENTRY_CHUNCED_F);
+            filekey newfile{encodepath(newname, symlink_encode_suffix), 0};
+            ret = HANDLE_EAGAIN(fm_copy(symlink->getkey(), newparent->getkey(), newfile));
+            if(ret == 0){
+                ret = HANDLE_EAGAIN(fm_delete(symlink->getkey()));
+                new_private_key = newfile.private_key;
+            }
         }
     } else {
-        filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname):newname, 0};
+        filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname, file_encode_suffix):newname, 0};
         ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
         new_private_key = newfile.private_key;
     }
@@ -440,7 +510,7 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
 
 skip_remote:
     // 如果是文件，需要移动持久化缓存文件
-    if(!entry->isDir() && !opt.no_cache) {
+    if(S_ISREG(entry->getmode()) && !opt.no_cache) {
         string new_remote_path = pathjoin(newparent->getcwd(), newname);
         string old_cache_path = pathjoin(opt.cache_dir, "cache", this->getcwd(), oldname);
         string new_cache_path = pathjoin(opt.cache_dir, "cache", new_remote_path);
@@ -472,7 +542,7 @@ skip_remote:
 
     std::string oldpath = entry->getkey().path;
     delete_entry_from_db(oldpath);
-    if(entry->isDir()) {
+    if(S_ISDIR(entry->getmode())) {
         delete_entry_prefix_from_db(oldpath);
     } else {
         delete_file_from_db(oldpath);
@@ -551,7 +621,6 @@ int dir_t::utime(const struct timespec tv[2]) {
     if(ret){
         return ret;
     }
-
     mtime = ttv[1];
     return 0;
 }

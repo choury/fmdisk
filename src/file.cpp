@@ -65,7 +65,7 @@ static bool cleanup_cache_by_size() {
         if(!file.remote_path.empty()) {
             filemeta meta{};
             std::vector<filekey> fblocks;
-            load_file_from_db(encodepath(file.remote_path), meta, fblocks);
+            load_file_from_db(encodepath(file.remote_path, file_encode_suffix), meta, fblocks);
             if(meta.blksize == 0) {
                 load_file_from_db(file.remote_path, meta, fblocks);
             }
@@ -114,7 +114,7 @@ void recover_dirty_data(dir_t* root) {
     fprintf(stderr, "Recovering %zu dirty files from previous session\n", dirty_files.size());
 
     for(const auto& file_path : dirty_files) {
-        string path = decodepath(file_path);
+        string path = decodepath(file_path, file_encode_suffix);
         file_t* file = dynamic_cast<file_t*>(root->find(path));
         if(file == nullptr) {
             fprintf(stderr, "File %s not found in cache, skipping\n", file_path.c_str());
@@ -208,8 +208,9 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     storage(meta.storage),
     last_meta_sync_time(0)
 {
+    mode = (meta.mode & ~S_IFMT) | S_IFREG;
     if(flags & ENTRY_CHUNCED_F){
-        fk = std::make_shared<filekey>(decodepath(*fk.load()));
+        fk = std::make_shared<filekey>(decodepath(*fk.load(), file_encode_suffix));
     }else {
         private_key = meta.key.private_key;
     }
@@ -217,7 +218,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
     //creata new file
         assert(flags & ENTRY_CHUNCED_F);
         assert(meta.size == 0);
-        inline_data = new char[INLINE_DLEN];
+        inline_data.resize(INLINE_DLEN);
         private_key = nullptr;
     }
 }
@@ -226,12 +227,11 @@ file_t::~file_t() {
     auto_wlock(this);
     flags |= ENTRY_DELETED_F;
     reset_wlocked();
-    delete[] inline_data;
 }
 
 string file_t::getrealname() {
     if(flags & ENTRY_CHUNCED_F) {
-        return encodepath(fk.load()->path);
+        return encodepath(fk.load()->path, file_encode_suffix);
     }
     return fk.load()->path;
 }
@@ -327,21 +327,48 @@ int file_t::release(){
 }
 
 int file_t::pull_wlocked() {
-    filemeta meta{};
+    assert((flags & ENTRY_INITED_F) == 0);
+    const filekey& key = getkey();
+    filemeta meta = initfilemeta(key);
+    meta.mode = this->mode;
     std::vector<filekey> fblocks;
-    int ret = entry_t::pull_wlocked(meta, fblocks);
-    if(ret < 0) {
-        return ret;
+    load_file_from_db(key.path, meta, fblocks);
+    if(flags & ENTRY_CHUNCED_F){
+        if(meta.blksize == 0){
+            filekey metakey{METANAME, 0};
+            int ret = HANDLE_EAGAIN(fm_getattrat(key, metakey));
+            if (ret < 0) {
+                return ret;
+            }
+            ret = download_meta(metakey, meta, fblocks);
+            if(ret < 0){
+                return ret;
+            }
+            save_file_to_db(key.path, meta, fblocks);
+        }
+    }else{
+        if(meta.blksize == 0){
+            int ret = HANDLE_EAGAIN(fm_getattr(key, meta));
+            if(ret < 0) {
+                return ret;
+            }
+            save_file_to_db(key.path, meta, {});
+        }
+        assert(meta.inline_data.empty());
     }
+    mode = (meta.mode & ~S_IFMT) | S_IFREG;
+    length = meta.size;
+    ctime = meta.ctime;
+    mtime = meta.mtime;
     private_key = meta.key.private_key;
     blksize = meta.blksize;
     flags |= meta.flags;
-    mode &= ~0777;
-    mode |= (meta.mode & 0777);
-    if(meta.inline_data){
+    if(meta.inline_data.size()){
         assert(meta.size < (size_t)meta.blksize);
-        inline_data = (char*)meta.inline_data;
+        inline_data = std::move(meta.inline_data);
     }
+    flags |= ENTRY_INITED_F;
+    flags &= ~META_KEY_ONLY_F;
     if(!opt.no_cache) {
         return 0;
     }
@@ -367,8 +394,8 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     if(offset + size > length){
         size = length - offset;
     }
-    if(inline_data){
-        memcpy(buff, inline_data + offset, size);
+    if(inline_data.size()){
+        memcpy(buff, inline_data.c_str() + offset, size);
         return size;
     }
     size_t startc = GetBlkNo(offset, blksize);
@@ -429,28 +456,27 @@ int file_t::truncate_wlocked(off_t offset){
         for(size_t i = oldc + 1; i<= newc; i++){
             blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
-    }else if(oldc >= newc && inline_data == nullptr){
+    }else if(oldc >= newc && inline_data.empty()){
         blocks[newc]->prefetch(true);
         if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->markdirty();
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
         }
     }
-    if(inline_data && (offset >= (off_t)INLINE_DLEN)){
-        int ret = pwrite(fd, inline_data, length, 0);
+    if(inline_data.size() && (offset >= (off_t)INLINE_DLEN)){
+        int ret = pwrite(fd, inline_data.data(), length, 0);
         if(ret < 0){
             return ret;
         }
         assert(!blocks.contains(0));
         blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
-        delete[] inline_data;
-        inline_data = nullptr;
+        inline_data.clear();
         if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
     }
     length = offset;
     ctime = time(nullptr);
-    if(length == 0 && inline_data == nullptr){
-        inline_data = new char[INLINE_DLEN];
+    if(length == 0 && inline_data.empty()){
+        inline_data.resize(INLINE_DLEN);
     }
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
@@ -490,10 +516,10 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             return ret;
         }
     }
-    assert((!inline_data) || (inline_data && length < INLINE_DLEN));
+    assert(inline_data.empty() || (inline_data.size() && length < INLINE_DLEN));
     const size_t startc = GetBlkNo(offset, blksize);
     const size_t endc = GetBlkNo(offset + size, blksize);
-    if(inline_data == nullptr) {
+    if(inline_data.empty()) {
         blocks[startc]->prefetch(true);
         blocks[endc]->prefetch(true);
     }
@@ -502,8 +528,8 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(ret < 0){
         return ret;
     }
-    if(inline_data){
-        memcpy(inline_data + offset, buff, size);
+    if(inline_data.size()){
+        memcpy(inline_data.data() + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
         for(size_t i = startc; i <= endc; i++){
             blocks[i]->markdirty();
@@ -561,7 +587,7 @@ int file_t::remove_wlocked() {
 
 std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
-    if(inline_data){
+    if(inline_data.size()){
         assert(length <= INLINE_DLEN);
         return {};
     }
@@ -605,7 +631,7 @@ std::vector<filekey> file_t::getkeys() {
     }
     string path;
     if(flags & ENTRY_CHUNCED_F){
-        path = encodepath(getcwd());
+        path = encodepath(getcwd(), file_encode_suffix);
     }else{
         path = getcwd();
     }
@@ -624,12 +650,12 @@ int file_t::getmeta(filemeta& meta) {
         }
     }
     meta = initfilemeta(getkey());
-    meta.mode = S_IFREG | (mode & 0777);
-    meta.inline_data = (unsigned char*)inline_data;
+    meta.mode = mode;
+    meta.inline_data = inline_data;
     meta.flags = flags;
     meta.size = length;
     meta.blksize = blksize;
-    if(inline_data) {
+    if(inline_data.size()) {
         meta.blocks = length *3 / 2 / 512 + 1; //base64 encode
     }else if(block_size > 0 && (flags & FILE_DIRTY_F) == 0){
         //sync will call getmeta before clear FILE_DIRTY_F
@@ -765,11 +791,11 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
     }
     if(flags & ENTRY_CHUNCED_F){
         auto savemeta = meta;
-        savemeta.key.path = encodepath(name);
+        savemeta.key.path = encodepath(name, file_encode_suffix);
         savemeta.mode = S_IFDIR | 0755;
         save_entry_to_db(path, savemeta);
         meta.key.private_key = private_key;
-        save_file_to_db(pathjoin(path, encodepath(name)), meta, getfblocks());
+        save_file_to_db(pathjoin(path, savemeta.key.path), meta, getfblocks());
     }else{
         meta.key.path = name;
         save_entry_to_db(path, meta);
@@ -792,10 +818,9 @@ int file_t::drop_cache_wlocked() {
         it->second->markstale();
     }
     blocks.clear();
-    if(inline_data){
-        delete[] inline_data;
+    if(inline_data.size()){
+        inline_data.clear();
     }
-    inline_data = nullptr;
     flags &= ~ENTRY_INITED_F;
     if(opt.no_cache) {
         return 0;

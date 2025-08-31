@@ -9,12 +9,13 @@
 #include <map>
 
 #define FM_REMOTE_PATH_ATTR "user.fm_remote_path"
+#define file_encode_suffix ".def"
 
 class file_t: public entry_t {
     int fd = -1;
     ino_t inode = 0;
     std::shared_ptr<void> private_key; //for meta.json
-    char* inline_data = nullptr;
+    std::string inline_data;
     blksize_t blksize;
     enum storage_class storage = STORAGE_UNKNOWN;
     std::map<uint32_t, std::shared_ptr<block_t>> blocks;
@@ -37,9 +38,6 @@ public:
     std::vector<filekey> getkeys();
     virtual int getmeta(filemeta& meta) override;
 
-    virtual bool isDir() override {
-        return false;
-    }
     virtual int open() override;
     virtual int release() override;
     //如果仍然是dirty状态，返回true

@@ -2,6 +2,7 @@
 #include "fuse.h"
 #include "dir.h"
 #include "file.h"
+#include "symlink.h"
 #include "utils.h"
 #include "fmdisk.h"
 
@@ -313,6 +314,48 @@ int fm_fuse_chown(const char* path, uid_t, gid_t, struct fuse_file_info *fi) {
     return 0;
 }
 
+int fm_fuse_symlink(const char *target, const char *linkpath){
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    dir_t *parent = dynamic_cast<dir_t*>(root->find(dirname(linkpath)));
+    if(parent == nullptr){
+        return -ENOENT;
+    }
+    symlink_t *entry = parent->symlink(basename(linkpath), target);
+    if(entry == nullptr){
+        return -errno;
+    }
+    fs = nullptr;
+    return 0;
+}
+
+int fm_fuse_readlink(const char *path, char *buf, size_t bufsiz){
+    dir_t* root = (dir_t*)fuse_get_context()->private_data;
+    symlink_t* entry = dynamic_cast<symlink_t*>(root->find(path));
+    if(entry == nullptr){
+        return -ENOENT;
+    }
+
+    // 检查是否是符号链接
+    filemeta meta;
+    int ret = entry->getmeta(meta);
+    if(ret < 0) {
+        return ret;
+    }
+    if(!S_ISLNK(meta.mode)) {
+        return -EINVAL;
+    }
+
+    // 从meta中读取符号链接目标
+    if(meta.inline_data.empty()) {
+        return -EIO;
+    }
+
+    size_t len = std::min(bufsiz - 1, meta.size);
+    strncpy(buf, meta.inline_data.c_str(), len);
+    buf[len] = '\0';
+    return 0;
+}
+
 #ifdef __APPLE__
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags, uint32_t){
 #else
@@ -421,7 +464,7 @@ int __attribute__((weak)) fm_utime(const filekey& file, const struct timespec  t
     return -errno;
 }
 
-int __attribute__((weak)) fm_copy(const filekey& fileat, const filekey& file, const filekey& newat, filekey& newfile) {
+int __attribute__((weak)) fm_copy(const filekey& file, const filekey& newat, filekey& newfile) {
     errno = EPERM;
     return -errno;
 }

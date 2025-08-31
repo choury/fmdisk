@@ -378,22 +378,22 @@ string replaceAll(const std::string &s, const std::string &search, const std::st
     return str;
 }
 
-string encodepath(const string& path){
+string encodepath(const string& path, const string& suffix){
     string bname = basename(path);
     char dst[bname.length()*2 < 10 ? 10 : bname.length()*2];
     Base64Encode(bname.data(), bname.length(), dst);
     if(dirname(path) == "."){
-        return string(dst) + ".def";
+        return string(dst) + suffix;
     }else{
-        return pathjoin(dirname(path), string(dst) + ".def");
+        return pathjoin(dirname(path), string(dst) + suffix);
     }
 }
 
-string decodepath(const string& path){
-    assert(endwith(path, ".def"));
+string decodepath(const string& path, const string& suffix){
+    assert(endwith(path, suffix));
     string bname = basename(path);
     char dst[bname.length()];
-    Base64Decode(bname.substr(0, bname.length()-4).data(), bname.length() - 4, dst);
+    Base64Decode(bname.substr(0, bname.length()-suffix.length()).data(), bname.length() - suffix.length(), dst);
     if(dirname(path) == "."){
         return dst;
     }else{
@@ -415,8 +415,9 @@ string pathjoin(const string& dir, const string& name){
 }
 
 filemeta initfilemeta(const filekey& key){
-    return filemeta{key,
-        0, 0, 0, 0, 0, 0, 0, nullptr, STORAGE_UNKNOWN, 0, 0};
+    filemeta meta{};
+    meta.key = key;
+    return meta;
 }
 
 
@@ -542,22 +543,18 @@ int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblo
     json_object *jinline_data;
     ret = json_object_object_get_ex(jobj, "inline_data", &jinline_data);
     if(ret){
-        char* inline_data = new char[INLINE_DLEN];
-        Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), inline_data);
-        meta.inline_data = (unsigned char*)inline_data;
+        meta.inline_data.resize(meta.size);
+        size_t len = Base64Decode(json_object_get_string(jinline_data), json_object_get_string_len(jinline_data), meta.inline_data.data());
+        assert(meta.size == len);
     }
     return 0;
 }
 
 
-int download_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& fblocks){
-    filekey metakey{METANAME, 0};
-    int ret;
-    if((ret = HANDLE_EAGAIN(fm_getattrat(fileat, metakey)))){
-        return ret;
-    }
+int download_meta(const filekey& file, filemeta& meta, std::vector<filekey>& fblocks){
+    int ret = 0;
     buffstruct bs;
-    if((ret = HANDLE_EAGAIN(fm_download(metakey, 0, 0, bs)))){
+    if((ret = HANDLE_EAGAIN(fm_download(file, 0, 0, bs)))){
         return ret;
     }
     std::string json_str = std::string(bs.data(), bs.size());
@@ -565,7 +562,7 @@ int download_meta(const filekey& fileat, filemeta& meta, std::vector<filekey>& f
     if(json_get ==  nullptr){
         throw "Json parse error";
     }
-    meta = initfilemeta(metakey);
+    meta = initfilemeta(file);
     unmarshal_meta(json_get, meta, fblocks);
     json_object_put(json_get);
     return 0;
@@ -587,9 +584,9 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
     }else{
         json_object_object_add(jobj, "encoding", json_object_new_string("none"));
     }
-    if(meta.inline_data){
+    if(!meta.inline_data.empty()){
         char* inline_data = new char[INLINE_DLEN * 2 < 10 ? 10 : INLINE_DLEN * 2];
-        Base64Encode((const char*)meta.inline_data, meta.size, inline_data);
+        Base64Encode(meta.inline_data.c_str(), meta.size, inline_data);
         json_object_object_add(jobj, "inline_data", json_object_new_string(inline_data));
         delete[] inline_data;
     }

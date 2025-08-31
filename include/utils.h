@@ -67,7 +67,7 @@ struct filemeta{
     blkcnt_t blocks;
     time_t ctime;
     time_t mtime;
-    unsigned char* inline_data;
+    std::string inline_data;
     enum storage_class storage;
     int restore_in_progress;        //归档存储正在恢复中
     time_t restore_expiry_date;     //已恢复完成，副本的过时间
@@ -106,8 +106,8 @@ bool isAllZero(const void* buf, size_t len);
 
 std::string dirname(const std::string& path);
 std::string basename(const std::string& path);
-std::string encodepath(const std::string& path);
-std::string decodepath(const std::string& path);
+std::string encodepath(const std::string& path, const std::string& suffix);
+std::string decodepath(const std::string& path, const std::string& suffix);
 
 std::string pathjoin(const std::string& dir, const std::string& name);
 

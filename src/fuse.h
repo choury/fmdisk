@@ -43,6 +43,8 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len);
 #endif
 int fm_fuse_chmod (const char *path, mode_t mode, struct fuse_file_info *fi);
+int fm_fuse_symlink(const char *target, const char *linkpath);
+int fm_fuse_readlink(const char *path, char *buf, size_t bufsiz);
 
 #ifdef  __cplusplus
 }

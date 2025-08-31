@@ -2,6 +2,7 @@
 #include "fmdisk.h"
 #include "defer.h"
 #include "trdpool.h"
+#include "file.h"
 #include <unistd.h>
 #include <iostream>
 #include <vector>
@@ -51,10 +52,10 @@ void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>&
     cerr << lock;
     defer([]{cerr<<unlock;});
     if (flist.empty()) {
-        cerr << "there is no blocks of file: " << decodepath(file.path) << ", so delete it" << endl;
+        cerr << "there is no blocks of file: " << decodepath(file.path, file_encode_suffix) << ", so delete it" << endl;
         goto del;
     }
-    cerr << decodepath(file.path)<<" has blocks:" << endl;
+    cerr << decodepath(file.path, file_encode_suffix)<<" has blocks:" << endl;
     for (auto f : flist) {
         cerr << f.first<<" ";
     }
@@ -100,12 +101,12 @@ filekey fixMissBlock(const filekey& file, const std::map<std::string, struct fil
     }
     filemeta meta{file};
     if (fit.empty()) {
-        cout<<decodepath(file.path) << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
+        cout<<decodepath(file.path, file_encode_suffix) << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
         return {{"x"}, 0};
     }
     size_t n = 0;
 pick:
-    cerr << decodepath(file.path) <<" has some block fit for " << No << ", please pick one:" << endl;
+    cerr << decodepath(file.path, file_encode_suffix) <<" has some block fit for " << No << ", please pick one:" << endl;
     for(size_t i = 0; i < fit.size(); i++) {
         cerr << i << " -> " << fit[i].path << endl;
     }
@@ -142,7 +143,7 @@ void checkchunk(filekey* file) {
         fs[basename(f.key.path)] =  f.key;
     }
     if (fs.count(METANAME) == 0) {
-        cerr<<lock<< "file: "<<decodepath(file->path)<<" have no meta.json"<<endl<<unlock;
+        cerr<<lock<< "file: "<<decodepath(file->path, file_encode_suffix)<<" have no meta.json"<<endl<<unlock;
         if (autofix) {
             fixNoMeta(*file, fs);
         }
@@ -151,20 +152,19 @@ void checkchunk(filekey* file) {
     filemeta meta;
     std::vector<filekey> blks;
     ret = download_meta(*file, meta, blks);
-    defer([&meta]{delete[] meta.inline_data;});
     if(ret == 0){
-        if(meta.inline_data && blks.size()){
+        if(meta.inline_data.size() && blks.size()){
             cerr<<lock<<"get inline_data and blocks/block_list: "<< meta.key.path <<endl <<unlock;
             ret = 4;
         }
 
-        if(meta.size && !meta.inline_data && blks.empty()){
+        if(meta.size && meta.inline_data.empty() && blks.empty()){
             cerr<<lock<<"get none of inline_data/blocks/block_list: "<< meta.key.path <<endl <<unlock;
             ret = 6;
         }
     }
     if (ret != 0) {
-        cerr<<lock<<"file: "<<decodepath(file->path)<<" have malformed meta.json"<<endl<<unlock;
+        cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" have malformed meta.json"<<endl<<unlock;
         if (autofix) {
             fixNoMeta(*file, fs);
         }
@@ -178,7 +178,7 @@ void checkchunk(filekey* file) {
         }
         bool haswrong = false;
         if (!blockMatchNo(blks[i].path, i)) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has block "<<blks[i].path<<" on No."<<i<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has block "<<blks[i].path<<" on No."<<i<<endl<<unlock;
             haswrong = true;
         }
         if(opt.flags & FM_RENAME_NOTSUPPRTED) {
@@ -191,7 +191,7 @@ void checkchunk(filekey* file) {
             haswrong = true;
         }
         if (haswrong) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" miss block: "<<blks[i].path<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" miss block: "<<blks[i].path<<endl<<unlock;
             if (autofix) {
                 fixed = true;
                 blks[i] = fixMissBlock(*file, fs, i);
@@ -209,7 +209,7 @@ void checkchunk(filekey* file) {
     std::vector<filekey> ftrim;
     for (auto f : fs) {
         if (!isdigit(f.first[0])){
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has unwanted block: "<<f.first<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
                 ftrim.push_back(f.second);
             }
@@ -217,14 +217,14 @@ void checkchunk(filekey* file) {
         }
         int i = stoi(f.first);
         if(i < 0 || blks.size() <= (size_t)i){
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has unwanted block: "<<f.first<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
                 ftrim.push_back(f.second);
             }
             continue;
         }
         if (blks[i].path != f.first) {
-            cerr<<lock<<"file: "<<decodepath(file->path)<<" has lagecy block: "<<pathjoin(f.first, blks[i].path)<<endl<<unlock;
+            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has lagecy block: "<<pathjoin(f.first, blks[i].path)<<endl<<unlock;
             if (autofix) {
                 ftrim.push_back(f.second);
             }
@@ -240,7 +240,7 @@ void checkchunk(filekey* file) {
     // 检查本地缓存一致性
     checkcache(*file, meta, blks);
     if (verbose) {
-        cout <<lock<< decodepath(file->path) << " check finish" << endl<<unlock;
+        cout <<lock<< decodepath(file->path, file_encode_suffix) << " check finish" << endl<<unlock;
     }
     return;
 }
@@ -279,7 +279,7 @@ void checkdir(filekey* file) {
             continue;
         }
 
-        if(endwith(f.key.path, ".def")){
+        if(endwith(f.key.path, file_encode_suffix)){
             pool->submit_fire_and_forget([key = new filekey(f.key)]() { checkchunk(key); });
         }else if(recursive){
             pool->submit_fire_and_forget([key = new filekey(f.key)]() { checkdir(key); });
@@ -305,7 +305,7 @@ void fixCacheInconsistency(cache_file_info* cache_file) {
 
 // 检查本地缓存文件与远程meta信息的一致性
 void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks) {
-    string remote_path = decodepath(file.path);
+    string remote_path = decodepath(file.path, file_encode_suffix);
 
     // 查找对应的本地缓存文件
     auto it = remote_path_to_cache.find(remote_path);
@@ -492,7 +492,7 @@ int main(int argc, char **argv) {
     pool = new TrdPool(concurrent);
     filekey* file = nullptr;
     if(isfile){
-        file = getpath(encodepath(checkpath));
+        file = getpath(encodepath(checkpath, file_encode_suffix));
     }else{
         file = getpath(checkpath);
     }

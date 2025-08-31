@@ -28,6 +28,8 @@ struct fuse_operations fm_oper = {
     .setxattr   = fm_fuse_setxattr,
     .chmod      = fm_fuse_chmod,
     .chown      = fm_fuse_chown,
+    .symlink    = fm_fuse_symlink,
+    .readlink   = fm_fuse_readlink,
 };
 
 int fm_main(int argc, char *argv[]) {
