@@ -919,6 +919,7 @@ enum storage_action {
     STORAGE_ACTION_CHANGE = 2,
     STORAGE_ACTION_RESTOR = 3,
     STORAGE_ACTION_RESTOR_DUP = 4,
+    STORAGE_ACTION_RESTORED = 5,
 };
 
 static storage_action get_storage_action(const filemeta& meta, enum storage_class new_storage) {
@@ -930,7 +931,7 @@ static storage_action get_storage_action(const filemeta& meta, enum storage_clas
     }
     if(((meta.storage == STORAGE_ARCHIVE) || (meta.storage == STORAGE_DEEP_ARCHIVE))){
         if(meta.restore_expiry_date) {
-            return STORAGE_ACTION_CHANGE; // 已恢复的文件，允许更改存储类
+            return STORAGE_ACTION_RESTORED;
         }
         if(new_storage != STORAGE_STANDARD) {
             return STORAGE_ACTION_INVALID; // 归档类只能恢复到标准存储
@@ -966,6 +967,8 @@ int file_t::set_storage_class(enum storage_class storage) {
         switch(get_storage_action(meta, storage)) {
         case STORAGE_ACTION_INVALID: default:
             return -EINVAL;
+        case STORAGE_ACTION_RESTORED:
+            return -EEXIST;
         case STORAGE_ACTION_NONE:
             return 0; // 无需更改
         case STORAGE_ACTION_CHANGE:
@@ -992,7 +995,7 @@ int file_t::set_storage_class(enum storage_class storage) {
             case STORAGE_ACTION_CHANGE:
                 return HANDLE_EAGAIN(fm_change_storage_class(fblock, storage));
             case STORAGE_ACTION_RESTOR:
-                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 3 : 2));
+                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, 3));
             case STORAGE_ACTION_RESTOR_DUP:
                 return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
             default:

@@ -423,13 +423,15 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
            << " IA: " << bytes2human(info.size_store[2])
            << " AR: " << bytes2human(info.size_store[3]);
         if(info.size_archive_restored + info.size_archive_restoring) {
-            ss << " (" << bytes2human(info.size_archive_restored) << "/"
-            << bytes2human(info.size_archive_restored + info.size_archive_restoring) << ")";
+            size_t size = info.size_store[3];
+            ss << " (" << bytes2human(size - info.size_archive_restored - info.size_archive_restoring) << "/"
+            << bytes2human(size - info.size_archive_restored) << ")";
         }
         ss << " DR: " << bytes2human(info.size_store[4]);
         if(info.size_deep_archive_restored + info.size_deep_archive_restoring) {
-            ss << " (" << bytes2human(info.size_deep_archive_restored) << "/"
-            << bytes2human(info.size_deep_archive_restored + info.size_deep_archive_restoring) << ")";
+            size_t size = info.size_store[4];
+            ss << " (" << bytes2human(size - info.size_deep_archive_restored - info.size_deep_archive_restoring) << "/"
+            << bytes2human(size - info.size_deep_archive_restored) << ")";
         }
         ss << " U: " << bytes2human(info.size_store[0]);
         std::string result = ss.str();
