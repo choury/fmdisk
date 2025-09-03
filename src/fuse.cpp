@@ -126,6 +126,7 @@ int fm_fuse_getattr(const char *path, struct stat *st, struct fuse_file_info *fi
     st->st_blocks = meta.blocks;
     st->st_ctime = meta.ctime;
     st->st_mtime = meta.mtime;
+    st->st_atime = meta.mtime;
     st->st_uid = getuid();
     st->st_gid = getgid();
     return 0;

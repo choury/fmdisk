@@ -475,7 +475,6 @@ int file_t::truncate_wlocked(off_t offset){
         if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
     }
     length = offset;
-    ctime = time(nullptr);
     if(length == 0 && inline_data.empty()){
         inline_data.resize(INLINE_DLEN);
     }
@@ -497,7 +496,7 @@ int file_t::truncate(off_t offset){
     if(ret < 0){
         return -errno;
     }
-    mtime = time(nullptr);
+    ctime = mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
@@ -536,7 +535,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             blocks[i]->markdirty();
         }
     }
-    mtime = time(nullptr);
+    ctime = mtime = time(nullptr);
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
         sync_wlocked(true);
@@ -753,7 +752,8 @@ int file_t::utime(const struct timespec tv[2]) {
         return ret;
     }
     meta.key = getmetakey();
-    if(tv[0].tv_nsec == UTIME_NOW) {
+    meta.ctime = time(nullptr);
+    if(tv[1].tv_nsec == UTIME_NOW) {
         meta.mtime = time(nullptr);
     }else{
         meta.mtime = tv[1].tv_sec;
@@ -773,6 +773,7 @@ int file_t::utime(const struct timespec tv[2]) {
             return ret;
         }
     }
+    ctime = meta.ctime;
     mtime = meta.mtime;
     save_file_to_db(key.path, meta, fblocks);
     return 0;

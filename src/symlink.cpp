@@ -110,7 +110,7 @@ int symlink_t::utime(const struct timespec tv[2]) {
     meta.blksize = opt.block_len;
     meta.size = target_path.length();
     meta.inline_data = target_path;
-    meta.ctime = ctime;
+    meta.ctime = time(nullptr);
     if(tv[1].tv_nsec == UTIME_NOW){
         meta.mtime = time(nullptr);
     } else {
@@ -121,6 +121,7 @@ int symlink_t::utime(const struct timespec tv[2]) {
         return ret;
     }
     fk = std::make_shared<filekey>(decodepath(basename(meta.key), symlink_encode_suffix));
+    ctime = meta.ctime;
     mtime = meta.mtime;
     save_file_to_db(getkey().path, meta, {});
     return 0;

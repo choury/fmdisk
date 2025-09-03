@@ -611,6 +611,7 @@ int dir_t::utime(const struct timespec tv[2]) {
             return ret;
         }
     }
+    ctime = time(nullptr);
     time_t ttv[2];
     ttv[0] = ctime;
     if(tv[1].tv_nsec == UTIME_NOW){
