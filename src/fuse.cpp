@@ -25,7 +25,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     conn->no_interrupt = 1;
     fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
     fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
-    fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
+    //fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
     fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
 #else
     conn->want |= conn->capable & (FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_PARALLEL_DIROPS);

@@ -363,6 +363,7 @@ int file_t::pull_wlocked() {
     mtime = meta.mtime;
     private_key = meta.key.private_key;
     blksize = meta.blksize;
+    block_size = 0;
     flags |= meta.flags;
     if(meta.inline_data.size()){
         assert(meta.size < (size_t)meta.blksize);
