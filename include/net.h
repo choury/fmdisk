@@ -9,7 +9,6 @@ extern "C" {
 #endif
 
 #define BUNDARY "----------choury-fmdisk"
-#define errorlog(...)  fprintf(stderr, __VA_ARGS__)
 
 typedef struct Httprequest {
     enum {head, get, put,  post, patch, Delete} method;

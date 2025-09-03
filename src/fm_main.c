@@ -1,4 +1,6 @@
+#include "common.h"
 #include "fuse.h"
+#include "log.h"
 #include <stdio.h>
 
 struct fuse_operations fm_oper = {
@@ -32,6 +34,13 @@ struct fuse_operations fm_oper = {
     .readlink   = fm_fuse_readlink,
 };
 
+int fm_prepare();
+
 int fm_main(int argc, char *argv[]) {
+    int ret = fm_prepare();
+    if(ret){
+        return ret;
+    }
+    log_init(opt.log_path);
     return fuse_main(argc, argv, &fm_oper, NULL);
 }

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 
 #include "net.h"
+#include "log.h"
 
 //int(*errorlog)( const char *__restrict fmt, ... );
 
@@ -35,16 +36,16 @@ static void dump(const char *text,
         /* without the hex output, we can fit more on screen */
         width = 0x40;
 
-    fprintf(stream, "%s, %10.10ld bytes(0x%8.8lx)\n",
+    debuglog("%s, %10.10ld bytes(0x%8.8lx)\n",
              text,(long)size, ( long )size );
 
     for(i = 0; i < size; i += width){
-        fprintf(stream, "%4.4lx: ",( long)i );
+        debuglog("%4.4lx: ",( long)i );
         if(!nohex){
             /* hex not disabled, show it */
             for(c = 0; c < width; c++)
                 if(i + c < size)
-                    fprintf(stream, "%02x ", ptr[i + c]);
+                    debuglog("%02x ", ptr[i + c]);
                 else
                     fputs("   ", stream);
         }
@@ -56,7 +57,7 @@ static void dump(const char *text,
                 break;
             }
 
-            fprintf(stream, "%c",
+            debuglog("%c",
                     (ptr[i + c] >= 0x20)&& ( ptr[i + c] < 0x80 ) ? ptr[i + c] : '.' );
 
             /* check again for 0D0A, to avoid an extra \n if it's at width */
@@ -79,7 +80,7 @@ static int my_trace(CURL *handle, curl_infotype type,
 
     switch(type){
     case CURLINFO_TEXT:
-        fprintf(stderr, "== Info: %s", data);
+        debuglog("== Info: %s", data);
 
     default: /* in case a new one is introduced to shock us */
         return 0;

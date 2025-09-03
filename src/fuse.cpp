@@ -5,6 +5,7 @@
 #include "symlink.h"
 #include "utils.h"
 #include "fmdisk.h"
+#include "log.h"
 
 #include <errno.h>
 #include <string.h>
@@ -49,6 +50,10 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
 void fm_fuse_destroy(void* root){
     fs = nullptr;
     cache_destroy((dir_t*)root);
+    log_cleanup();
+    if(opt.clean) {
+        opt.clean();
+    }
 }
 
 int fm_fuse_statfs(const char *path, struct statvfs *sf){

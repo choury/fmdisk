@@ -7,7 +7,15 @@
 
 #include "utils.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int fm_prepare();
+
+#ifdef __cplusplus
+}
+#endif
 
 int fm_statfs(struct statvfs* sf);
 

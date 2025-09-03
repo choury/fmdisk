@@ -14,10 +14,6 @@ std::thread gc;
 bool writeback_done = false;
 
 int cache_prepare() {
-    int ret = fm_prepare();
-    if(ret){
-        return ret;
-    }
     assert(opt.block_len > INLINE_DLEN);
     gc = std::thread(start_gc);
     dpool = new TrdPool(DOWNLOADTHREADS);
@@ -43,9 +39,6 @@ void cache_destroy(dir_t* root){
     if(!opt.no_cache) stop_delay_thread();
     delete root;
     if(!opt.no_cache) sqldeinit();
-    if(opt.clean) {
-        opt.clean();
-    }
 }
 
 int create_dirs_recursive(const string& path) {

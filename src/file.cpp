@@ -6,6 +6,7 @@
 #include "threadpool.h"
 #include "defer.h"
 #include "sqlite.h"
+#include "log.h"
 
 #include <string.h>
 #include <assert.h>
@@ -111,13 +112,13 @@ void recover_dirty_data(dir_t* root) {
     if(get_dirty_files(dirty_files) <= 0) {
         return;
     }
-    fprintf(stderr, "Recovering %zu dirty files from previous session\n", dirty_files.size());
+    infolog("Recovering %zu dirty files from previous session\n", dirty_files.size());
 
     for(const auto& file_path : dirty_files) {
         string path = decodepath(file_path, file_encode_suffix);
         file_t* file = dynamic_cast<file_t*>(root->find(path));
         if(file == nullptr) {
-            fprintf(stderr, "File %s not found in cache, skipping\n", file_path.c_str());
+            warnlog("File %s not found in cache, skipping\n", file_path.c_str());
             continue;
         }
         file->open();
@@ -167,7 +168,7 @@ static int tempfile() {
         /*Unlink the temp file.*/
         unlink(tmpfilename);
     } else {
-        fprintf(stderr, "mkstem failed: %s", strerror(errno));
+        errorlog("mkstem failed: %s", strerror(errno));
         abort();
     }
     return fd;
@@ -179,14 +180,14 @@ static int persistent_cache_file(const string& remote_path) {
     // 确保目录存在
     string cache_dir = dirname(cache_path);
     if(create_dirs_recursive(cache_dir) != 0) {
-        fprintf(stderr, "create dirs failed for %s: %s\n", cache_dir.c_str(), strerror(errno));
+        errorlog("create dirs failed for %s: %s\n", cache_dir.c_str(), strerror(errno));
         return -1;
     }
 
     // 尝试打开现有文件，如果不存在则创建
     int fd = open(cache_path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd == -1) {
-        fprintf(stderr, "open cache file failed %s: %s\n", cache_path.c_str(), strerror(errno));
+        errorlog("open cache file failed %s: %s\n", cache_path.c_str(), strerror(errno));
         fd = tempfile();
     }
     assert(fd >= 0);
@@ -574,7 +575,7 @@ int file_t::remove_wlocked() {
     // 删除持久化缓存文件
     string cache_path = get_cache_path(getcwd());
     if(unlink(cache_path.c_str()) != 0 && errno != ENOENT) {
-        fprintf(stderr, "failed to unlink cache file %s: %s\n", cache_path.c_str(), strerror(errno));
+        warnlog("failed to unlink cache file %s: %s\n", cache_path.c_str(), strerror(errno));
     }
     flags |= ENTRY_DELETED_F;
     parent = nullptr;

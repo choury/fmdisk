@@ -6,6 +6,7 @@
 #include "sqlite.h"
 #include "utils.h"
 #include "trdpool.h"
+#include "log.h"
 
 #include <string.h>
 #include <assert.h>
@@ -144,9 +145,10 @@ int dir_t::pull_entrys_wlocked() {
 
     bool cached = false;
     std::vector<filemeta> flist;
-    if(load_entry_from_db(getkey().path, flist) == 0){
-        printf("Miss from localcache\n");
-        int ret = HANDLE_EAGAIN(fm_list(getkey(), flist));
+    auto key = getkey();
+    if(load_entry_from_db(key.path, flist) == 0){
+        infolog("Miss from localcache: %s\n", key.path.c_str());
+        int ret = HANDLE_EAGAIN(fm_list(key, flist));
         if(ret < 0) {
             return ret;
         }
@@ -518,14 +520,14 @@ skip_remote:
         // 确保新缓存目录存在
         string new_cache_dir = dirname(new_cache_path);
         if(create_dirs_recursive(new_cache_dir) != 0) {
-            fprintf(stderr, "failed to create cache dir %s: %s\n", new_cache_dir.c_str(), strerror(errno));
+            errorlog("failed to create cache dir %s: %s\n", new_cache_dir.c_str(), strerror(errno));
         }
 
         // 移动缓存文件
         if(rename(old_cache_path.c_str(), new_cache_path.c_str()) == 0) {
             setxattr(new_cache_path.c_str(), FM_REMOTE_PATH_ATTR, new_remote_path.c_str(), new_remote_path.size(), 0);
         }else if(errno != ENOENT) {
-            fprintf(stderr, "failed to rename cache file %s to %s: %s\n",
+            errorlog("failed to rename cache file %s to %s: %s\n",
                     old_cache_path.c_str(), new_cache_path.c_str(), strerror(errno));
         }
     }

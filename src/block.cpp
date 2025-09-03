@@ -4,6 +4,7 @@
 #include "file.h"
 #include "sqlite.h"
 #include "defer.h"
+#include "log.h"
 
 #include <string.h>
 #include <sys/xattr.h>
@@ -326,7 +327,7 @@ size_t block_t::release() {
     }
     fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
     delete_block_from_db(inode, no);
-    fprintf(stderr, "release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);
+    debuglog("release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);
     flags = flags & FILE_ENCODE_F;
     if(fk.path == "x") {
         flags |= BLOCK_SYNC;
