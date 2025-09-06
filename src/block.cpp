@@ -264,18 +264,29 @@ retry:
 
 int block_t::prefetch(bool wait) {
     atime = time(nullptr);
-    auto_rlock(this);
-    if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
-        return 0; // 已经同步，不需要预取
-    }
-    if(wait){
+    if(wait) {
+        auto_rlock(this);
+        if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
+            return 0; // 已经同步，不需要预取
+        }
         __r.unlock();
         return pull(shared_from_this());
+    } else {
+        if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
+            return 1;
+        }
+        if(tryrlock() != 0) {
+            return 1; // 已经有写锁，说明正在被修改，不需要预取
+        }
+        defer([this] { unrlock(); });
+        if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
+            return 0; // 已经同步，不需要预取
+        }
+        dpool->submit_fire_and_forget([b = std::weak_ptr<block_t>(shared_from_this())]{
+            pull(b);
+        });
+        return 0;
     }
-    if(dpool->tasks_in_queue() < DOWNLOADTHREADS){
-        dpool->submit_fire_and_forget([this]{ pull(shared_from_this()); });
-    }
-    return 0;
 }
 
 void block_t::markdirty() {
