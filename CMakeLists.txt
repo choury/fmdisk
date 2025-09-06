@@ -13,18 +13,72 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char")
 
 include(CheckCXXCompilerFlag)
+include(CheckCXXSourceRuns)
 
-# Function to check if AVX512 is supported
+# Function to check if AVX512 is supported (both compiler and CPU)
 function(check_avx512_support result)
     set(CMAKE_REQUIRED_FLAGS "-mavx512f -mavx512bw")
-    check_cxx_compiler_flag("" ${result})
+    check_cxx_source_runs("
+#include <immintrin.h>
+#include <cpuid.h>
+
+int main() {
+    unsigned int eax, ebx, ecx, edx;
+
+    // Check if CPUID is supported
+    if (!__get_cpuid_max(0, NULL)) {
+        return 1;
+    }
+
+    // Check for AVX512F (leaf 7, subleaf 0, EBX bit 16)
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        return 1;
+    }
+
+    // AVX512F: EBX bit 16
+    if (!(ebx & (1u << 16))) {
+        return 1;
+    }
+
+    // AVX512BW: EBX bit 30
+    if (!(ebx & (1u << 30))) {
+        return 1;
+    }
+
+    return 0;
+}
+" ${result})
     set(CMAKE_REQUIRED_FLAGS "")
 endfunction()
 
-# Function to check if AVX2 is supported
+# Function to check if AVX2 is supported (both compiler and CPU)
 function(check_avx2_support result)
     set(CMAKE_REQUIRED_FLAGS "-mavx2")
-    check_cxx_compiler_flag("" ${result})
+    check_cxx_source_runs("
+#include <immintrin.h>
+#include <cpuid.h>
+
+int main() {
+    unsigned int eax, ebx, ecx, edx;
+
+    // Check if CPUID is supported
+    if (!__get_cpuid_max(0, NULL)) {
+        return 1;
+    }
+
+    // Check for AVX2 (leaf 7, subleaf 0, EBX bit 5)
+    if (!__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        return 1;
+    }
+
+    // AVX2: EBX bit 5
+    if (!(ebx & (1u << 5))) {
+        return 1;
+    }
+
+    return 0;
+}
+" ${result})
     set(CMAKE_REQUIRED_FLAGS "")
 endfunction()
 
