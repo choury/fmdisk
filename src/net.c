@@ -140,7 +140,7 @@ static CURL* getcurl(){
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5);
     curl_easy_setopt(curl, CURLOPT_HEADER, 0);
-    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
+    //curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1);
     curl_easy_setopt(curl, CURLOPT_VERBOSE, 0);

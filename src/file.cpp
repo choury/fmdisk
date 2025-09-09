@@ -985,9 +985,14 @@ int file_t::set_storage_class(enum storage_class storage) {
     auto fblocks = getfblocks();
     TrdPool pool(DOWNLOADTHREADS * 10);
     std::vector<std::future<int>> futures;
-    for(auto& fblock : fblocks) {
+    for(size_t i = 0 ; i < fblocks.size(); i++) {
+        auto fblock = fblocks[i];
         if (fblock.path.empty() || fblock.path == "x") {
             continue; // 跳过空或占位块
+        }
+        if(i == GetBlkNo(length, blksize) && (length % blksize) < 256 * 1024 && storage != STORAGE_STANDARD) {
+            // 最后一个块小于256KB，跳过
+            continue;
         }
         futures.emplace_back(pool.submit([fblock, storage] {
             filemeta meta;
