@@ -588,7 +588,7 @@ int file_t::remove_wlocked() {
 
 std::vector<filekey> file_t::getfblocks(){
     auto_rlock(this);
-    if(inline_data.size()){
+    if(inline_data.size() || length == 0){
         assert(length <= INLINE_DLEN);
         return {};
     }

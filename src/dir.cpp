@@ -6,6 +6,7 @@
 #include "sqlite.h"
 #include "utils.h"
 #include "trdpool.h"
+#include "defer.h"
 #include "log.h"
 
 #include <string.h>
@@ -430,7 +431,10 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         return -ENOENT;
     }
 
-    auto_wlocker __2(newparent);
+    if(newparent->trywlock()) {
+        return -EDEADLK;
+    }
+    defer([newparent] {newparent->unwlock();});
     if(newparent->children() >= MAXFILE){
         return -ENOSPC;
     }
