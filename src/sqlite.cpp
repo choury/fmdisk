@@ -119,12 +119,16 @@ static string escapQuote(const string& s){
     return replaceAll(s, "'", "''");
 }
 
+static string escapPrivatekey(std::shared_ptr<void> private_key) {
+    return escapQuote(fm_private_key_tostring(private_key));
+}
+
 static void save_file_to_db(const string& path, const filekey& metakey, const char* json, uint32_t flags){
     if(cachedb ==  nullptr){
         return;
     }
     string sql = "replace into files (path, private_key, meta, dirty) values('"
-     + escapQuote(path) + "', '" + fm_private_key_tostring(metakey.private_key) + "', '"+ escapQuote(json) + "', " + ((flags & FILE_DIRTY_F) ? '1' : '0') + ")";
+     + escapQuote(path) + "', '" + escapPrivatekey(metakey.private_key) + "', '"+ escapQuote(json) + "', " + ((flags & FILE_DIRTY_F) ? '1' : '0') + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -200,7 +204,7 @@ void save_entry_to_db(const string& path, const filemeta& meta){
         return;
     }
     string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(path)
-    + "', '" + escapQuote(basename(meta.key.path)) + "', '" + fm_private_key_tostring(meta.key.private_key)
+    + "', '" + escapQuote(basename(meta.key.path)) + "', '" + escapPrivatekey(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
@@ -293,9 +297,8 @@ int save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_pr
     if(cachedb == nullptr || inode == 0){
         return 0;
     }
-    string key_str = fm_private_key_tostring(file_private_key);
     string sql = "replace into blocks (inode, block_no, private_key, dirty) values("
-        + std::to_string(inode) + ", " + std::to_string(block_no) + ", '" + escapQuote(key_str) + "', " + (dirty ? '1' : '0') + ")";
+        + std::to_string(inode) + ", " + std::to_string(block_no) + ", '" + escapPrivatekey(file_private_key) + "', " + (dirty ? '1' : '0') + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -380,10 +383,10 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     string sql = "delete from blocks where private_key in (";
     bool first = true;
     for(const auto& fkey : filekeys) {
-        string key_str = fm_private_key_tostring(fkey.private_key);
+        string key_str = escapPrivatekey(fkey.private_key);
         if(key_str.empty()) continue;
         if(!first) sql += ", ";
-        sql += "'" + escapQuote(key_str) + "'";
+        sql += "'" + key_str + "'";
         first = false;
     }
     sql += ")";
