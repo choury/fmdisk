@@ -585,8 +585,8 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
     }else{
         json_object_object_add(jobj, "encoding", json_object_new_string("none"));
     }
-    if(!meta.inline_data.empty()){
-        char* inline_data = new char[INLINE_DLEN * 2 < 10 ? 10 : INLINE_DLEN * 2];
+    if(!meta.inline_data.empty() && meta.size > 0){
+        char* inline_data = new char[meta.inline_data.size() * 2 < 10 ? 10 : meta.inline_data.size() * 2];
         Base64Encode(meta.inline_data.c_str(), meta.size, inline_data);
         json_object_object_add(jobj, "inline_data", json_object_new_string(inline_data));
         delete[] inline_data;

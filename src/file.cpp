@@ -216,11 +216,14 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
         private_key = meta.key.private_key;
     }
     if(flags & ENTRY_CREATE_F){
-    //creata new file
+        //creata new file
         assert(flags & ENTRY_CHUNCED_F);
         assert(meta.size == 0);
-        inline_data.resize(INLINE_DLEN);
+        //inline_data.resize(INLINE_DLEN);
         private_key = nullptr;
+    }
+    if(length == 0) {
+        inline_data.resize(1);
     }
 }
 
@@ -368,6 +371,10 @@ int file_t::pull_wlocked() {
     if(meta.inline_data.size()){
         assert(meta.size < (size_t)meta.blksize);
         inline_data = std::move(meta.inline_data);
+    }else if(length == 0) {
+        inline_data.resize(1);
+    }else{
+        inline_data.clear();
     }
     flags |= ENTRY_INITED_F;
     flags &= ~META_KEY_ONLY_F;
@@ -396,7 +403,11 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     if(offset + size > length){
         size = length - offset;
     }
+    if(size == 0) {
+        return 0;
+    }
     if(inline_data.size()){
+        assert(inline_data.size() == length);
         memcpy(buff, inline_data.c_str() + offset, size);
         return size;
     }
@@ -465,20 +476,23 @@ int file_t::truncate_wlocked(off_t offset){
             blocks.erase(i);
         }
     }
-    if(inline_data.size() && (offset >= (off_t)INLINE_DLEN)){
-        int ret = pwrite(fd, inline_data.data(), length, 0);
-        if(ret < 0){
-            return ret;
+    if(inline_data.size()) {
+        if(offset >= (off_t)INLINE_DLEN){
+            int ret = pwrite(fd, inline_data.data(), length, 0);
+            if(ret < 0){
+                return ret;
+            }
+            assert(!blocks.contains(0));
+            blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            inline_data.clear();
+            if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
+        } else if(offset == 0) {
+            inline_data.resize(1);
+        } else if(offset > (off_t)inline_data.size()) {
+            inline_data.resize(offset);
         }
-        assert(!blocks.contains(0));
-        blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
-        inline_data.clear();
-        if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
     }
     length = offset;
-    if(length == 0 && inline_data.empty()){
-        inline_data.resize(INLINE_DLEN);
-    }
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
         sync_wlocked(true);
@@ -526,10 +540,11 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     assert(fd >= 0);
     int ret = pwrite(fd, buff, size, offset);
-    if(ret < 0){
+    if(ret <= 0){
         return ret;
     }
     if(inline_data.size()){
+        assert(inline_data.size() == length);
         memcpy(inline_data.data() + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
         for(size_t i = startc; i <= endc; i++){
@@ -806,7 +821,7 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
     }
 }
 
-int file_t::drop_cache_wlocked() {
+int file_t::drop_cache_wlocked(bool mem_only) {
     if(opened || fd >= 0){
         return -EBUSY;
     }
@@ -821,11 +836,12 @@ int file_t::drop_cache_wlocked() {
         it->second->markstale();
     }
     blocks.clear();
-    if(inline_data.size()){
+    if(inline_data.size()) {
         inline_data.clear();
+        inline_data.resize(1);
     }
     flags &= ~ENTRY_INITED_F;
-    if(opt.no_cache) {
+    if(opt.no_cache || mem_only) {
         return 0;
     }
     if(inode) {

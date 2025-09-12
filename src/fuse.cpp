@@ -373,7 +373,17 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
         return -ENOENT;
     }
     if(strcmp(name, "user.drop_cache") == 0){
-        return entry->drop_cache();
+        if(value == nullptr || size == 0) {
+            return -ERANGE;
+        }
+        std::string_view value_str(value, size);
+        if(value_str == "1") {
+            return entry->drop_cache(false);
+        }
+        if(value_str == "2"){
+            return entry->drop_cache(true);
+        }
+        return -ENODATA;
     }
     if(strcmp(name, "user.storage_class") == 0) {
         if(value == nullptr || size == 0) {

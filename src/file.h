@@ -27,7 +27,7 @@ class file_t: public entry_t {
 
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
     static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
-    virtual int drop_cache_wlocked() override;
+    virtual int drop_cache_wlocked(bool mem_only) override;
     virtual int remove_wlocked() override;
 public:
     file_t(dir_t* parent, const filemeta& meta);

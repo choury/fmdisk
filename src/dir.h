@@ -17,7 +17,7 @@ class dir_t: public entry_t {
     virtual std::string getrealname() override {
         return fk.load()->path;
     }
-    virtual int drop_cache_wlocked() override;
+    virtual int drop_cache_wlocked(bool mem_only) override;
     virtual int remove_wlocked() override;
 public:
     dir_t(dir_t* parent, const filemeta& meta);

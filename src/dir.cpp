@@ -579,7 +579,7 @@ int dir_t::sync(int dataonly) {
                 ++it;
                 continue;
             }
-            if(it->second->drop_cache() != 0){
+            if(it->second->drop_cache(false) != 0){
                 ++it;
                 continue;
             }
@@ -659,7 +659,7 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
     }
 }
 
-int dir_t::drop_cache_wlocked(){
+int dir_t::drop_cache_wlocked(bool mem_only){
     if(opened){
         return -EBUSY;
     }
@@ -674,7 +674,7 @@ int dir_t::drop_cache_wlocked(){
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        ret |= i.second->drop_cache();
+        ret |= i.second->drop_cache(mem_only);
     }
     if(ret != 0) {
         return ret;
@@ -687,7 +687,7 @@ int dir_t::drop_cache_wlocked(){
     }
     entrys.clear();
     flags &= ~DIR_PULLED_F;
-    if(opt.no_cache) {
+    if(opt.no_cache || mem_only) {
         return 0;
     }
     return delete_entry_prefix_from_db(parent ? getkey().path: "");

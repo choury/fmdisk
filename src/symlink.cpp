@@ -127,11 +127,14 @@ int symlink_t::utime(const struct timespec tv[2]) {
     return 0;
 }
 
-int symlink_t::drop_cache_wlocked() {
+int symlink_t::drop_cache_wlocked(bool mem_only) {
     if(flags & FILE_DIRTY_F){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
+        return 0;
+    }
+    if(opt.no_cache || mem_only) {
         return 0;
     }
     return delete_file_from_db(getkey().path);

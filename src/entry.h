@@ -34,7 +34,7 @@ protected:
     string getcwd();
     virtual string getrealname() = 0;
     virtual int pull_wlocked() = 0;
-    virtual int drop_cache_wlocked() = 0;
+    virtual int drop_cache_wlocked(bool mem_only) = 0;
     virtual int remove_wlocked() = 0;
     static void pull(entry_t* entry);
 public:
@@ -54,9 +54,9 @@ public:
     virtual int release() = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
     virtual void dump_to_db(const std::string& path, const std::string& name) = 0;
-    int drop_cache() {
+    int drop_cache(bool mem_only) {
         auto_wlock(this);
-        return drop_cache_wlocked();
+        return drop_cache_wlocked(mem_only);
     }
     virtual int get_storage_classes(storage_class_info& info) {
         return 0;
