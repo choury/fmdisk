@@ -431,10 +431,12 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
         return -ENOENT;
     }
 
-    if(newparent->trywlock()) {
+    if(this != newparent && newparent->trywlock()) {
         return -EDEADLK;
     }
-    defer([newparent] {newparent->unwlock();});
+    defer([this, newparent] {
+        if(this != newparent) newparent->unwlock();
+    });
     if(newparent->children() >= MAXFILE){
         return -ENOSPC;
     }
