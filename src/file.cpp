@@ -167,9 +167,6 @@ static int tempfile() {
     if ((fd = mkstemp(tmpfilename)) != -1) {
         /*Unlink the temp file.*/
         unlink(tmpfilename);
-    } else {
-        errorlog("mkstem failed: %s", strerror(errno));
-        abort();
     }
     return fd;
 }
@@ -186,11 +183,14 @@ static int persistent_cache_file(const string& remote_path) {
 
     // 尝试打开现有文件，如果不存在则创建
     int fd = open(cache_path.c_str(), O_RDWR | O_CREAT, 0644);
-    if (fd == -1) {
+    if (fd < 0) {
         errorlog("open cache file failed %s: %s\n", cache_path.c_str(), strerror(errno));
         fd = tempfile();
+        if(fd < -1) {
+            return -1;
+        }
+        fsetxattr(fd, FM_TEMP_FILE_ATTR, "1", 1, 0);
     }
-    assert(fd >= 0);
     fsetxattr(fd, FM_REMOTE_PATH_ATTR, remote_path.c_str(), remote_path.size(), 0);
     return fd;
 }
@@ -249,6 +249,10 @@ void file_t::reset_wlocked() {
     if(fd < 0) {
         return;
     }
+    //delete blocks if is temp file
+    if(fgetxattr(fd, FM_TEMP_FILE_ATTR, nullptr, 0) >= 0) {
+        delete_blocks_from_db(inode);
+    }
     close(fd);
     fd = -1;
 }
@@ -268,6 +272,9 @@ int file_t::open(){
     }
     assert(opened == 1 && blocks.empty());
     fd = persistent_cache_file(getcwd());
+    if(fd < 0) {
+        return -errno;
+    }
     TEMP_FAILURE_RETRY(ftruncate(fd, length));
     struct stat st;
     fstat(fd, &st);

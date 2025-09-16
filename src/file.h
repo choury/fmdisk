@@ -9,6 +9,7 @@
 #include <map>
 
 #define FM_REMOTE_PATH_ATTR "user.fm_remote_path"
+#define FM_TEMP_FILE_ATTR "user.fm_temp_file"
 #define file_encode_suffix ".def"
 
 class file_t: public entry_t {
