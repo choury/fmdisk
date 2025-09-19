@@ -56,11 +56,10 @@ void* dotask(thrdpool* pool) {                                //执行任务
         assert(val);
         assert(val->done == 0);
         assert(val->val == nullptr);
-        if(val->waitc || (task->flags & NEEDRET)){
-            val->done = 1;
-            val->val = retval;         //存储结果
-            pthread_cond_broadcast(&val->cond); //发信号告诉waittask
-        }else{
+        val->done = 1;
+        val->val = retval;         //存储结果
+        pthread_cond_broadcast(&val->cond); //发信号告诉waittask
+        if(val->waitc == 0 && (task->flags & NEEDRET) == 0){
             pool->valmap.erase(task->taskid);
             pthread_cond_destroy(&val->cond);
             free(val);
@@ -149,20 +148,16 @@ int waittask(thrdpool* pool, task_id id, void** result) {
     if(id == 0){
 recheck:
         pthread_mutex_lock(&pool->lock);
-        if(!pool->tasks.empty()){
+        if(pool->tasks.empty() && pool->doing == 0) {
             pthread_mutex_unlock(&pool->lock);
-            sleep(5);
-            goto recheck;
+            *result = nullptr;
+            return 0;
         }
-
-        if(pool->doing){
-            pthread_mutex_unlock(&pool->lock);
-            sleep(5);
-            goto recheck;
+        while(!pool->valmap.empty()) {
+            pthread_cond_wait(&pool->valmap.begin()->second->cond, &pool->lock);   //等待任务结束
         }
         pthread_mutex_unlock(&pool->lock);
-        *result = nullptr;
-        return 0;
+        goto recheck;
     }
     pthread_mutex_lock(&pool->lock);
     int count = pool->valmap.count(id);

@@ -278,6 +278,7 @@ CURLcode request(Http *r){
     long http_code = 0;
     curl_easy_getinfo(r->curl_handle, CURLINFO_RESPONSE_CODE, &http_code);
     if(curl_code != CURLE_OK && strlen(errbuf)){
+        r->should_destory = 1;
         errorlog("libcurl error: %s [%d]\n", errbuf, curl_code);
     }
     if(mime){
@@ -311,7 +312,11 @@ Http *Httpinit(const char *url){
 }
 
 void Httpdestroy(Http *hh){
-    releasecurl(hh->curl_handle);
+    if(hh->should_destory) {
+        curl_easy_cleanup(hh->curl_handle);
+    }else{
+        releasecurl(hh->curl_handle);
+    }
     curl_slist_free_all(hh->headers);
     free(hh);
 }

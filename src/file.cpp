@@ -916,25 +916,36 @@ int file_t::get_storage_classes(storage_class_info& info) {
         return 0;
     }
     auto fblocks = getfblocks();
-    std::vector<std::future<filemeta>> futures;
-    TrdPool pool(DOWNLOADTHREADS * 10);
-    for(const auto& fblock : fblocks) {
-        if(fblock.path.empty() || fblock.path == "x") {
-            continue; // 跳过空或占位块
+    if(fblocks.size() > DOWNLOADTHREADS) {
+        std::vector<std::future<filemeta>> futures;
+        TrdPool pool(std::min((size_t)DOWNLOADTHREADS * 10, fblocks.size()));
+        for(const auto& fblock : fblocks) {
+            if(fblock.path.empty() || fblock.path == "x") {
+                continue; // 跳过空或占位块
+            }
+            futures.emplace_back(pool.submit([fblock] {
+                filemeta meta = initfilemeta(fblock);
+                HANDLE_EAGAIN(fm_getattr(fblock, meta));
+                return meta;
+            }));
         }
-        futures.emplace_back(pool.submit([fblock] {
+        pool.wait_all();
+        for(auto& future : futures) {
+            if(!future.valid()) {
+                continue; // 跳过无效的future
+            }
+            auto meta = future.get();
+            add_meta_to_storage_info(info, meta);
+        }
+    } else {
+        for(const auto& fblock : fblocks) {
+            if(fblock.path.empty() || fblock.path == "x") {
+                continue; // 跳过空或占位块
+            }
             filemeta meta = initfilemeta(fblock);
             HANDLE_EAGAIN(fm_getattr(fblock, meta));
-            return meta;
-        }));
-    }
-    pool.wait_all();
-    for(auto& future : futures) {
-        if(!future.valid()) {
-            continue; // 跳过无效的future
+            add_meta_to_storage_info(info, meta);
         }
-        auto meta = future.get();
-        add_meta_to_storage_info(info, meta);
     }
     return 0;
 }
@@ -985,10 +996,22 @@ int file_t::set_storage_class(enum storage_class storage) {
             return ret;
         }
     }
-    if((flags & ENTRY_CHUNCED_F) == 0) {
-        filemeta meta = initfilemeta(getkey());
-        if(HANDLE_EAGAIN(fm_getattr(getkey(), meta)) < 0){
-            return -EAGAIN; // 获取属性失败，重试
+    auto action = [](filekey file, enum storage_class storage) -> int {
+        filemeta meta = initfilemeta(file);
+        if(HANDLE_EAGAIN(fm_getattr(file, meta))) {
+            return -EAGAIN;
+        }
+        if(meta.size < 256 * 1024){
+            // 小于256KB的块，忽略下沉请求，IA恢复到STANDARD
+            if(meta.storage == STORAGE_STANDARD) {
+                return 0;
+            }
+            if(meta.storage == STORAGE_IA) {
+                storage = STORAGE_STANDARD;
+            }
+            if(storage != STORAGE_STANDARD) {
+                return 0;
+            }
         }
         switch(get_storage_action(meta, storage)) {
         case STORAGE_ACTION_INVALID: default:
@@ -998,50 +1021,55 @@ int file_t::set_storage_class(enum storage_class storage) {
         case STORAGE_ACTION_NONE:
             return 0; // 无需更改
         case STORAGE_ACTION_CHANGE:
-            return HANDLE_EAGAIN(fm_change_storage_class(getkey(), storage));
+            return HANDLE_EAGAIN(fm_change_storage_class(file, storage));
         case STORAGE_ACTION_RESTOR:
-            return HANDLE_EAGAIN(fm_restore_archive(getkey(), 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 3 : 2));
+            return HANDLE_EAGAIN(fm_restore_archive(file, 3, 3));
         case STORAGE_ACTION_RESTOR_DUP:
-            return HANDLE_EAGAIN(fm_restore_archive(getkey(), 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
+            return HANDLE_EAGAIN(fm_restore_archive(file, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
         }
-    }
-    auto fblocks = getfblocks();
-    TrdPool pool(DOWNLOADTHREADS * 10);
-    std::vector<std::future<int>> futures;
-    for(size_t i = 0 ; i < fblocks.size(); i++) {
-        auto fblock = fblocks[i];
-        if (fblock.path.empty() || fblock.path == "x") {
-            continue; // 跳过空或占位块
-        }
-        if(i == GetBlkNo(length, blksize) && (length % blksize) < 256 * 1024 && storage != STORAGE_STANDARD) {
-            // 最后一个块小于256KB，跳过
-            continue;
-        }
-        futures.emplace_back(pool.submit([fblock, storage] {
-            filemeta meta;
-            if(HANDLE_EAGAIN(fm_getattr(fblock, meta))) {
-                return -EAGAIN;
-            }
-            switch(get_storage_action(meta, storage)) {
-            case STORAGE_ACTION_CHANGE:
-                return HANDLE_EAGAIN(fm_change_storage_class(fblock, storage));
-            case STORAGE_ACTION_RESTOR:
-                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, 3));
-            case STORAGE_ACTION_RESTOR_DUP:
-                return HANDLE_EAGAIN(fm_restore_archive(fblock, 3, meta.storage == STORAGE_DEEP_ARCHIVE ? 2 : 1));
-            default:
-                return 0;
-            }
-        }));
+    };
+    if((flags & ENTRY_CHUNCED_F) == 0) {
+        return action(getkey(), storage);
     }
     bool failed = false;
-    pool.wait_all();
-    for(auto& future : futures) {
-        if(!future.valid()) {
-            continue;
+    auto fblocks = getfblocks();
+    if(fblocks.size() > DOWNLOADTHREADS) {
+        TrdPool pool(std::min((size_t)DOWNLOADTHREADS * 10, fblocks.size()));
+        std::vector<std::future<int>> futures;
+        for(size_t i = 0 ; i < fblocks.size(); i++) {
+            auto fblock = fblocks[i];
+            if (fblock.path.empty() || fblock.path == "x") {
+                continue; // 跳过空或占位块
+            }
+            futures.emplace_back(pool.submit([action, fblock, storage] {
+                int ret = action(fblock, storage);
+                if (ret < 0 && ret != -EEXIST) {
+                    errorlog("set_storage_class failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
+                    return ret;
+                }
+                return 0;
+            }));
         }
-        if(future.get() < 0) {
-            failed = true;
+        pool.wait_all();
+        for(auto& future : futures) {
+            if(!future.valid()) {
+                continue;
+            }
+            if(future.get() < 0) {
+                failed = true;
+            }
+        }
+    } else {
+        for(size_t i = 0 ; i < fblocks.size(); i++) {
+            auto fblock = fblocks[i];
+            if (fblock.path.empty() || fblock.path == "x") {
+                continue; // 跳过空或占位块
+            }
+            int ret = action(fblock, storage);
+            if (ret < 0 && ret != -EEXIST) {
+                errorlog("set_storage_class failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
+                failed = true;
+            }
         }
     }
     return failed ? -EPROTO : 0;

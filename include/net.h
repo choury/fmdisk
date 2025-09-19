@@ -26,6 +26,7 @@ typedef struct Httprequest {
     void *writeprame;
     const char* token;
     CURL *curl_handle;
+    int should_destory;
 }Http;
 
 const char* getMethod(const Http *r);
