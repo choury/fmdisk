@@ -180,6 +180,9 @@ public:
     }
     int upgrade(){
         assert(locked);
+        if(upgraded){
+            return -EEXIST;
+        }
         int ret = l->upgrade();
         assert(ret == 0);
         upgraded = true;

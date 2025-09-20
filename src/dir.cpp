@@ -694,3 +694,35 @@ int dir_t::drop_cache_wlocked(bool mem_only){
     }
     return delete_entry_prefix_from_db(parent ? getkey().path: "");
 }
+
+int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
+    auto_rlock(this);
+    if(flags & ENTRY_DELETED_F){
+        return -ENOENT;
+    }
+    if((flags & ENTRY_INITED_F) == 0){
+        __r.upgrade();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    if((flags & DIR_PULLED_F) == 0){
+        __r.upgrade();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    int ret = 0;
+    for(auto i : entrys){
+        if(i.first == "." || i.first == ".."){
+            continue;
+        }
+        ret |= i.second->set_storage_class(storage, pool, futures);
+    }
+    if(ret == 0) {
+        return 0;
+    }
+    return -EIO;
+}

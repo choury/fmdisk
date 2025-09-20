@@ -30,6 +30,7 @@ class file_t: public entry_t {
     static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
     virtual int drop_cache_wlocked(bool mem_only) override;
     virtual int remove_wlocked() override;
+    virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
 public:
     file_t(dir_t* parent, const filemeta& meta);
     virtual ~file_t();
@@ -53,7 +54,6 @@ public:
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;
     virtual int get_storage_classes(storage_class_info& info) override;
-    virtual int set_storage_class(enum storage_class storage) override;
 
     // 使用fallocate释放clean状态block的磁盘空间，返回释放的字节数
     size_t release_clean_blocks();

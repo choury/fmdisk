@@ -7,11 +7,13 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <atomic>
+#include <future>
 
 using std::string;
 
 struct filemeta;
 class dir_t;
+class TrdPool;
 
 struct storage_class_info {
     size_t size_store[5]; // 0: UNKNOWN, 1: STANDARD, 2: IA, 3: ARCHIVE, 4: DEEP_ARCHIVE
@@ -37,6 +39,9 @@ protected:
     virtual int drop_cache_wlocked(bool mem_only) = 0;
     virtual int remove_wlocked() = 0;
     static void pull(entry_t* entry);
+    virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
+        return -EINVAL;
+    }
 public:
     static int statfs(const char* path, struct statvfs *sf);
     entry_t(dir_t* parent, const filemeta& meta);
@@ -59,11 +64,11 @@ public:
         return drop_cache_wlocked(mem_only);
     }
     virtual int get_storage_classes(storage_class_info& info) {
+        info.size_store[STORAGE_UNKNOWN] += length;
         return 0;
     }
-    virtual int set_storage_class(enum storage_class storage) {
-        return -EINVAL;
-    }
+
+    int set_storage_class(enum storage_class storage);
     friend class dir_t;
 };
 

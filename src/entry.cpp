@@ -120,3 +120,24 @@ void entry_t::pull(entry_t* entry){
     }catch(...){}
     entry->flags &= ~ENTRY_PULLING_F;
 }
+
+int entry_t::set_storage_class(enum storage_class storage) {
+    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
+        return -ENODATA; // 不支持分块存储类设置
+    }
+    std::vector<std::future<int>> futures;
+    TrdPool pool(DOWNLOADTHREADS * 10);
+    int ret = set_storage_class(storage, &pool, futures);
+    if(ret < 0) {
+        return ret;
+    }
+    pool.wait_all();
+    bool failed = false;
+    for(auto& f: futures) {
+        ret = f.get();
+        if(ret < 0) {
+            failed = true;
+        }
+    }
+    return failed ? -EIO : 0;
+}
