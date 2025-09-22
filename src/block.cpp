@@ -85,7 +85,8 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
 {
     assert(opt.no_cache || fd >= 0);
 
-    if(fk.path == "" && fm_private_key_tostring(fk.private_key)[0] == '\0') {
+    std::string fk_private = fm_private_key_tostring(fk.private_key);
+    if(fk.path == "" && fk_private[0] == '\0') {
         this->fk.path = "x";
     }
     if(this->fk.path == "x") {
@@ -97,8 +98,12 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
         return;
     }
     this->flags |= BLOCK_SYNC;
-    if (record.dirty || record.private_key != fm_private_key_tostring(fk.private_key)) {
+    if (record.dirty) {
         this->flags |= BLOCK_DIRTY;
+    } else if(!record.private_key.empty() && record.private_key != fk_private){
+        //数据库中blocks表保存的信息比files表更可靠,因为正常流程是先保存blocks再更新files
+        trim(getkey());
+        this->fk.private_key = fm_get_private_key(record.private_key.c_str());
     }
 }
 
@@ -146,6 +151,7 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
     }
     ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
+        //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
         assert((size_t)ret == bs.size());
         b->flags |= BLOCK_SYNC;
         save_block_to_db(b->inode, b->no, b->fk.private_key, false);
