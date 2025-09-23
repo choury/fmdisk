@@ -460,6 +460,21 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
         strcpy(value, result.c_str());
         return result.length();
     }
+    if(strcmp(name, "user.etag") == 0) {
+        std::string etag;
+        int ret = entry->get_etag(etag);
+        if(ret < 0) {
+            return ret;
+        }
+        if(len == 0) {
+            return etag.length();
+        }
+        if(etag.length() >= len) {
+            return -ERANGE;
+        }
+        strcpy(value, etag.c_str());
+        return etag.length();
+    }
     return -ENODATA;
 }
 

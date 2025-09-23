@@ -67,6 +67,9 @@ public:
         info.size_store[STORAGE_UNKNOWN] += length;
         return 0;
     }
+    virtual int get_etag(std::string&) {
+        return -ENODATA;
+    }
 
     int set_storage_class(enum storage_class storage);
     friend class dir_t;

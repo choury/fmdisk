@@ -1049,6 +1049,46 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
     return 0;
 }
 
+int file_t::get_etag(std::string& etag) {
+    auto_rlock(this);
+    if((flags & ENTRY_INITED_F) == 0) {
+        __r.upgrade();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    if((flags & ENTRY_CHUNCED_F) == 0) {
+        filemeta meta = initfilemeta(getkey());
+        int ret = HANDLE_EAGAIN(fm_getattr(getkey(), meta));
+        if(ret < 0) {
+            return ret;
+        }
+        etag = std::move(meta.etag);
+        return 0;
+    }
+    auto fblocks = getfblocks();
+    if(fblocks.empty()) {
+        assert(!inline_data.empty());
+        etag.resize(inline_data.size() * 2);
+        int ret = Base64En(inline_data.c_str(), inline_data.length(), etag.data());
+        if(ret < 0 ){
+            return -EIO;
+        }
+        etag.resize(ret);
+        etag = etag.substr(std::max(ret - 32, 0));
+        return 0;
+    }
+    filemeta meta = initfilemeta(fblocks.back());
+    int ret = HANDLE_EAGAIN(fm_getattr(meta.key, meta));
+    if(ret < 0) {
+        return ret;
+    }
+    etag = std::move(meta.etag);
+    return 0;
+}
+
+
 size_t file_t::release_clean_blocks() {
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0 || (flags & (ENTRY_DELETED_F | ENTRY_REASEWAIT_F)) || fd < 0) {

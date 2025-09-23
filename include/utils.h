@@ -68,6 +68,7 @@ struct filemeta{
     time_t ctime;
     time_t mtime;
     std::string inline_data;
+    std::string etag;
     enum storage_class storage;
     int restore_in_progress;        //归档存储正在恢复中
     time_t restore_expiry_date;     //已恢复完成，副本的过时间
