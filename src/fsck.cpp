@@ -8,11 +8,17 @@
 #include <vector>
 #include <map>
 #include <unordered_map>
+#include <shared_mutex>
 #include <limits>
 #include <mutex>
 #include <string>
 #include <json.h>
 #include <string.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <time.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include "sqlite.h"
 #include "utils.h"
 
@@ -23,15 +29,18 @@ static bool verbose = false;
 static bool autofix = false;
 static bool recursive = false;
 static bool deleteall = false;
+static bool sync_dirty = false;
 static TrdPool *pool;
 static std::unordered_map<std::string, filemeta> objs;
+static std::mutex objs_lock;
 
 // 全局变量存储本地缓存文件信息
 
 // 直接使用utils.h中的cache_file_info
 static std::vector<cache_file_info> local_cache_files;
-static std::map<string, cache_file_info*> remote_path_to_cache; // 远程路径到缓存文件的映射
-static std::map<ino_t, cache_file_info*> inode_to_cache;        // inode到缓存文件的映射
+static std::unordered_map<string, cache_file_info*> remote_path_to_cache; // 远程路径到缓存文件的映射
+static std::unordered_map<ino_t, cache_file_info*> inode_to_cache;        // inode到缓存文件的映射
+static std::shared_mutex cache_index_lock;
 
 static mutex console_lock;
 
@@ -46,7 +55,243 @@ std::ostream& unlock(std::ostream& os) {
 }
 
 // 前向声明
-void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks);
+static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>& blks);
+static filekey* getpath(string path);
+static filekey uploadBlockFromCache(const std::string& remote_path, const filemeta& meta, uint64_t block_no);
+
+// 上传单个block数据，返回block key
+static int upload_block_data(filekey& file, const char* data, size_t size, off_t offset, bool encode) {
+    // 检查是否全零
+    if(isAllZero(data, size)){
+        file = filekey{"x", 0};
+        return 0;
+    }
+    int ret = 0;
+    if(encode) {
+        char* buff = (char*)malloc(size);
+        if (!buff) {
+            cerr << "Failed to allocate memory for block" << endl;
+            return -1;
+        }
+        defer(free, buff);
+
+        memcpy(buff, data, size);
+        xorcode(buff, offset, size, opt.secret);
+
+        // 上传block，fm_upload会更新result_key的private_key
+        ret = HANDLE_EAGAIN(fm_upload(dirname(file), file, buff, size, false));
+    } else {
+        // 直接上传原始数据
+        ret = HANDLE_EAGAIN(fm_upload(dirname(file), file, data, size, false));
+    }
+    if (ret != 0) {
+        cerr << "Failed to upload block " << file.path << " error: " << ret << endl;
+        return -1;
+    }
+
+    if (verbose) {
+        cout << "Successfully uploaded block " << file.path << " (size: " << size << ")" << endl;
+    }
+    return 0;
+}
+
+// 从本地cache上传指定的block，返回新的block key
+static filekey uploadBlockFromCache(const std::string& remote_path, const filemeta& meta, uint64_t block_no) {
+    cache_file_info* cache_file = nullptr;
+    {
+        std::shared_lock<std::shared_mutex> lock(cache_index_lock);
+        auto it = remote_path_to_cache.find(remote_path);
+        if (it == remote_path_to_cache.end()) {
+            return {{"x"}, 0};
+        }
+        cache_file = it->second;
+    }
+
+    // 验证文件大小
+    if ((size_t)cache_file->st.st_size != meta.size) {
+        return {{"x"}, 0};
+    }
+
+    // 检查block表中该block的状态
+    block_record record;
+    if (!load_block_from_db(cache_file->st.st_ino, block_no, record)) {
+        if (verbose) {
+            cerr << lock << "Block " << block_no << " not found in database for: " << remote_path << endl << unlock;
+        }
+        return {{"x"}, 0};
+    }
+
+    // 计算block参数
+    off_t offset = block_no * meta.blksize;
+    size_t block_size = std::min((size_t)meta.blksize, (size_t)(meta.size - offset));
+    if (offset >= (off_t)meta.size) {
+        return {{"x"}, 0};
+    }
+
+    // 打开和mmap cache文件
+    int fd = open(cache_file->path.c_str(), O_RDONLY);
+    if (fd < 0) return {{"x"}, 0};
+    defer(close, fd);
+
+    char* mmap_data = (char*)mmap(nullptr, meta.size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mmap_data == MAP_FAILED) return {{"x"}, 0};
+    defer(munmap, mmap_data, meta.size);
+
+    // 上传block
+    filekey new_block_key = makeChunkBlockKey(block_no);
+    if (upload_block_data(new_block_key, mmap_data + offset, block_size, offset, meta.flags & FILE_ENCODE_F) != 0) {
+        return {{"x"}, 0};
+    }
+
+    return basename(new_block_key);
+}
+
+static int sync_dirty_file(const string& path){
+    filemeta meta{};
+    std::vector<filekey> fblocks;
+
+    // 从数据库加载文件元数据
+    load_file_from_db(path, meta, fblocks);
+
+    if ((meta.flags & FILE_DIRTY_F) == 0) {
+        if (verbose) {
+            cout << "File " << path << " no longer dirty, skipping" << endl;
+        }
+        return 0;
+    }
+    string decoded_path = decodepath(path, file_encode_suffix);
+
+    bool succeed = false;
+    defer([&path, &decoded_path, &succeed, &meta, &fblocks]{
+        if(!succeed) {
+            return;
+        }
+        meta.flags &= ~FILE_DIRTY_F;
+        save_file_to_db(path, meta, fblocks);
+        if (verbose) {
+            cout << "Successfully synced: " << decoded_path << endl;
+        }
+    });
+
+    if (verbose) {
+        cout << "Syncing dirty file: " << decoded_path << endl;
+    }
+
+    filekey* file = getpath(path);
+    if (file == nullptr) {
+        cerr << "Failed to get filekey for: " << path << endl;
+        return -1;
+    }
+    defer([file] { delete file; });
+
+    if(meta.size == 0 || meta.inline_data.size() > 0) {
+        int ret = upload_meta(*file, meta, {});
+        if (ret != 0) {
+            cerr << "Failed to upload meta for file: " << decoded_path << " error: " << ret << endl;
+            return -1;
+        }
+        return 0;
+    }
+
+    // 获取缓存文件路径
+    string cache_path = get_cache_path(decoded_path);
+
+    // 打开并mmap缓存文件
+    int fd = open(cache_path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        cerr << "Failed to open cache file: " << cache_path << " error: " << strerror(errno) << endl;
+        return -1;
+    }
+    defer(close, fd);
+
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        cerr << "Failed to stat cache file: " << cache_path << endl;
+        return -1;
+    }
+    if(st.st_size != (off_t)meta.size) {
+        cerr << "Cache file size mismatch for " << cache_path << ": expected " << meta.size << ", got " << st.st_size << endl;
+        return -1;
+    }
+
+    // mmap文件
+    char* mmap_data = (char*)mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (mmap_data == MAP_FAILED) {
+        cerr << "Failed to mmap cache file: " << cache_path << " error: " << strerror(errno) << endl;
+        return -1;
+    }
+    defer(munmap, mmap_data, st.st_size);
+
+    // 1. 先同步所有dirty blocks
+    bool block_sync_failed = false;
+    std::vector<block_record> blocks;
+    get_blocks_for_inode(st.st_ino, blocks);
+    if(blocks.size() > fblocks.size()) {
+        cerr << "Block count mismatch for file: " << decoded_path << ", db has " << blocks.size() << ", meta has " << fblocks.size() << endl;
+        return -1;
+    }
+    for (const auto& block_rec : blocks) {
+        if (!block_rec.dirty && !block_rec.path.empty() && !block_rec.private_key.empty()) {
+            fblocks[block_rec.block_no].path = block_rec.path;
+            fblocks[block_rec.block_no].private_key = fm_get_private_key(block_rec.private_key.c_str());
+            continue;
+        }
+        off_t offset = block_rec.block_no * meta.blksize;
+        size_t block_size = std::min((size_t)meta.blksize, (size_t)(meta.size - offset));
+
+        filekey new_block_key = makeChunkBlockKey(block_rec.block_no);
+        int ret = upload_block_data(new_block_key, mmap_data + offset, block_size, offset, meta.flags & FILE_ENCODE_F);
+        if (ret != 0) {
+            block_sync_failed = true;
+            break;
+        }
+
+        // 更新fblocks和数据库
+        fblocks[block_rec.block_no] = basename(new_block_key);
+        save_block_to_db(st.st_ino, block_rec.block_no, new_block_key, false);
+    }
+
+    if (block_sync_failed) {
+        cerr << "Failed to sync blocks for file: " << decoded_path << endl;
+        return -1;
+    }
+
+    // 上传元数据到远程，使用更新后的fblocks
+    int ret = upload_meta(*file, meta, fblocks);
+    if (ret != 0) {
+        cerr << "Failed to upload meta for file: " << decoded_path << " error: " << ret << endl;
+        return -1;
+    }
+    // 更新数据库中的状态
+    meta.flags &= ~FILE_DIRTY_F;
+    save_file_to_db(path, meta, fblocks);
+    return 0;
+}
+
+// 同步所有dirty文件到远程存储
+static int sync_all_dirty_files() {
+    std::vector<std::string> dirty_files;
+    if(get_dirty_files(dirty_files) <= 0) {
+        cout << "No dirty files found." << endl;
+        return 0;
+    }
+
+    cout << "Found " << dirty_files.size() << " dirty files, syncing..." << endl;
+
+    int synced = 0;
+    int failed = 0;
+
+    for(const auto& file_path : dirty_files) {
+        if (sync_dirty_file(file_path) != 0) {
+            failed++;
+        }else{
+            synced++;
+        }
+    }
+
+    cout << "Sync completed: " << synced << " succeeded, " << failed << " failed" << endl;
+    return failed > 0 ? -1 : 0;
+}
 
 void fixNoMeta(const filekey& file, const std::map<std::string, struct filekey>& flist) {
     cerr << lock;
@@ -89,9 +334,20 @@ del:
     delete_file_from_db(file.path);
 }
 
-filekey fixMissBlock(const filekey& file, const std::map<std::string, struct filekey>& flist, uint64_t no) {
+filekey fixMissBlock(const std::string& path, const std::map<std::string, struct filekey>& flist, uint64_t no, const filemeta& meta) {
     cerr << lock;
     defer([]{cerr<<unlock;});
+
+    // 首先尝试从本地cache上传
+    if (autofix) {
+        string remote_path = decodepath(path, file_encode_suffix);
+        filekey cache_result = uploadBlockFromCache(remote_path, meta, no);
+        if (cache_result.path != "x") {
+            cerr << "Successfully uploaded block " << no << " from local cache for " << remote_path << endl;
+            return cache_result;
+        }
+    }
+
     std::vector<filekey> fit;
     string No = to_string(no);
     for (auto i : flist) {
@@ -99,14 +355,13 @@ filekey fixMissBlock(const filekey& file, const std::map<std::string, struct fil
             fit.push_back(filekey{basename(i.second.path), i.second.private_key});
         }
     }
-    filemeta meta{file};
     if (fit.empty()) {
-        cout<<decodepath(file.path, file_encode_suffix) << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
+        cout<< path << " has no block fit for " << No << ", should reset it to 'x'"<<endl;
         return {{"x"}, 0};
     }
     size_t n = 0;
 pick:
-    cerr << decodepath(file.path, file_encode_suffix) <<" has some block fit for " << No << ", please pick one:" << endl;
+    cerr << path <<" has some block fit for " << No << ", please pick one:" << endl;
     for(size_t i = 0; i < fit.size(); i++) {
         cerr << i << " -> " << fit[i].path << endl;
     }
@@ -142,29 +397,30 @@ void checkchunk(filekey* file) {
     for (auto f : flist) {
         fs[basename(f.key.path)] =  f.key;
     }
+    std::string path = decodepath(file->path, file_encode_suffix);
     if (fs.count(METANAME) == 0) {
-        cerr<<lock<< "file: "<<decodepath(file->path, file_encode_suffix)<<" have no meta.json"<<endl<<unlock;
+        cerr<<lock<< "file: "<<path<<" have no meta.json"<<endl<<unlock;
         if (autofix) {
             fixNoMeta(*file, fs);
         }
         return;
     }
-    filemeta meta;
-    std::vector<filekey> blks;
-    ret = download_meta(*file, meta, blks);
+    filemeta meta = initfilemeta(fs[METANAME]);
+    std::vector<filekey> fblocks;
+    ret = download_meta(meta.key, meta, fblocks);
     if(ret == 0){
-        if(meta.inline_data.size() && blks.size()){
+        if(meta.inline_data.size() && fblocks.size()){
             cerr<<lock<<"get inline_data and blocks/block_list: "<< meta.key.path <<endl <<unlock;
             ret = 4;
         }
 
-        if(meta.size && meta.inline_data.empty() && blks.empty()){
+        if(meta.size && meta.inline_data.empty() && fblocks.empty()){
             cerr<<lock<<"get none of inline_data/blocks/block_list: "<< meta.key.path <<endl <<unlock;
             ret = 6;
         }
     }
     if (ret != 0) {
-        cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" have malformed meta.json"<<endl<<unlock;
+        cerr<<lock<<"file: "<<path<<" have malformed meta.json"<<endl<<unlock;
         if (autofix) {
             fixNoMeta(*file, fs);
         }
@@ -172,59 +428,68 @@ void checkchunk(filekey* file) {
     }
     fs.erase(METANAME);
     bool fixed = false;
-    for(size_t i = 0; i < blks.size(); i++) {
-        if(blks[i].path == "x" || blks[i].path.empty()){
+    for(size_t i = 0; i < fblocks.size(); i++) {
+        if(fblocks[i].path == "x" || fblocks[i].path.empty()){
             continue;
         }
         bool haswrong = false;
-        if (!blockMatchNo(blks[i].path, i)) {
-            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has block "<<blks[i].path<<" on No."<<i<<endl<<unlock;
+        if (!blockMatchNo(fblocks[i].path, i)) {
+            cerr<<lock<<"file: "<<path<<" has block "<<fblocks[i].path<<" on No."<<i<<endl<<unlock;
             haswrong = true;
         }
         if(opt.flags & FM_RENAME_NOTSUPPRTED) {
-            if(objs.count(blks[i].path) == 0) {
-                haswrong = true;
-            }else{
-                objs[blks[i].path].flags |= META_KEY_CHECKED_F;
+            bool matched = false;
+            {
+                std::lock_guard<std::mutex> guard(objs_lock);
+                auto it = objs.find(fblocks[i].path);
+                if(it != objs.end()) {
+                    it->second.flags |= META_KEY_CHECKED_F;
+                    matched = true;
+                }
             }
-        } else if (fs.count(blks[i].path) == 0) {
+            if(!matched) {
+                haswrong = true;
+            }
+        } else if (fs.count(fblocks[i].path) == 0) {
             haswrong = true;
         }
         if (haswrong) {
-            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" miss block: "<<blks[i].path<<endl<<unlock;
+            cerr<<lock<<"file: "<<path<<" miss block: "<<fblocks[i].path<<endl<<unlock;
             if (autofix) {
                 fixed = true;
-                blks[i] = fixMissBlock(*file, fs, i);
+                fblocks[i] = basename(fixMissBlock(path, fs, i, meta));
             }
         }
     }
     if(fixed){
-        ret = upload_meta(*file, meta, blks);
+        ret = upload_meta(*file, meta, fblocks);
         if (ret != 0) {
             cerr<<lock<< "upload meta "<<meta.key.path<<" failed: "<<ret<<endl<<unlock;
             return;
         }
     }
-    save_file_to_db(file->path, meta, blks);
+    if (autofix) {
+        save_file_to_db(file->path, meta, fblocks);
+    }
     std::vector<filekey> ftrim;
     for (auto f : fs) {
         if (!isdigit(f.first[0])){
-            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has unwanted block: "<<f.first<<endl<<unlock;
+            cerr<<lock<<"file: "<<path<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
                 ftrim.push_back(f.second);
             }
             continue;
         }
         int i = stoi(f.first);
-        if(i < 0 || blks.size() <= (size_t)i){
-            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has unwanted block: "<<f.first<<endl<<unlock;
+        if(i < 0 || fblocks.size() <= (size_t)i){
+            cerr<<lock<<"file: "<<path<<" has unwanted block: "<<f.first<<endl<<unlock;
             if(autofix){
                 ftrim.push_back(f.second);
             }
             continue;
         }
-        if (blks[i].path != f.first) {
-            cerr<<lock<<"file: "<<decodepath(file->path, file_encode_suffix)<<" has lagecy block: "<<pathjoin(f.first, blks[i].path)<<endl<<unlock;
+        if (fblocks[i].path != f.first) {
+            cerr<<lock<<"file: "<<path<<" has lagecy block: "<<pathjoin(f.first, fblocks[i].path)<<endl<<unlock;
             if (autofix) {
                 ftrim.push_back(f.second);
             }
@@ -238,9 +503,9 @@ void checkchunk(filekey* file) {
     }
 
     // 检查本地缓存一致性
-    checkcache(*file, meta, blks);
+    checkcache(*file, meta, fblocks);
     if (verbose) {
-        cout <<lock<< decodepath(file->path, file_encode_suffix) << " check finish" << endl<<unlock;
+        cout <<lock<< path << " check finish" << endl<<unlock;
     }
     return;
 }
@@ -255,15 +520,16 @@ void checkdir(filekey* file) {
         return;
     }
     bool isRoot = file->path == "/";
-    delete_entry_prefix_from_db(file->path);
+    if (autofix) {
+        delete_entry_prefix_from_db(file->path);
+    }
     for (auto f : flist) {
         if(isRoot && (opt.flags & FM_RENAME_NOTSUPPRTED) && (f.key.path == ".objs" || f.key.path == ".objs/")){
             continue;
         }
         std::string path;
         if(f.key.path[0] != '/') {
-            path = "/";
-            path += f.key.path;
+            path = "/" + f.key.path;
         } else{
             path = f.key.path;
         }
@@ -271,7 +537,9 @@ void checkdir(filekey* file) {
             path.resize(path.size() - 1);
         }
         f.key.path = path;
-        save_entry_to_db(file->path, f);
+        if (autofix) {
+            save_entry_to_db(file->path, f);
+        }
         if (S_ISREG(f.mode)) {
             if (verbose) {
                 cout<<lock << f.key.path << " skip check" << endl<<unlock;
@@ -289,31 +557,53 @@ void checkdir(filekey* file) {
 
 // 删除不一致的缓存文件和相关block条目
 void fixCacheInconsistency(cache_file_info* cache_file) {
+    if (cache_file == nullptr) {
+        return;
+    }
+
+    const std::string cache_path = cache_file->path;
+    const std::string remote_path = cache_file->remote_path;
+    const ino_t inode = cache_file->st.st_ino;
+
     if (verbose) {
         cout << lock << "Deleted inconsistent cache file: " << cache_file->path << endl << unlock;
     }
 
     // 删除本地缓存文件
-    if (unlink(cache_file->path.c_str()) != 0) {
-        cerr << lock << "Failed to delete cache file: " << cache_file->path
-             << " error: " << strerror(errno) << endl << unlock;
+    int ret = unlink(cache_path.c_str());
+    bool removed = true;
+    if (ret != 0) {
+        if (errno != ENOENT) {
+            cerr << lock << "Failed to delete cache file: " << cache_path
+                 << " error: " << strerror(errno) << endl << unlock;
+            removed = false;
+        }
     }
 
-    delete_blocks_from_db(cache_file->st.st_ino);
-    inode_to_cache.erase(cache_file->st.st_ino);
+    if (removed) {
+        delete_blocks_from_db(inode);
+        std::unique_lock<std::shared_mutex> lock(cache_index_lock);
+        remote_path_to_cache.erase(remote_path);
+        inode_to_cache.erase(inode);
+    } else {
+        cache_file->checked = false;
+    }
 }
 
 // 检查本地缓存文件与远程meta信息的一致性
-void checkcache(const filekey& file, const filemeta& meta, const std::vector<filekey>& blks) {
+static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>& blks) {
     string remote_path = decodepath(file.path, file_encode_suffix);
 
-    // 查找对应的本地缓存文件
-    auto it = remote_path_to_cache.find(remote_path);
-    if (it == remote_path_to_cache.end()) {
-        return;
+    cache_file_info* cache_file = nullptr;
+    {
+        std::shared_lock<std::shared_mutex> lock(cache_index_lock);
+        // 查找对应的本地缓存文件
+        auto it = remote_path_to_cache.find(remote_path);
+        if (it == remote_path_to_cache.end()) {
+            return;
+        }
+        cache_file = it->second;
     }
-
-    cache_file_info* cache_file = it->second;
     cache_file->checked = true;  // 标记为已检查
 
     // 1. 验证文件大小是否一致
@@ -322,8 +612,8 @@ void checkcache(const filekey& file, const filemeta& meta, const std::vector<fil
              << "] local=" << cache_file->st.st_size << " remote=" << meta.size << endl << unlock;
         if (autofix) {
             fixCacheInconsistency(cache_file);
-            return;
         }
+        return;
     }
 
     // 2. 验证数据库blocks表中该文件相关记录的private_key
@@ -332,29 +622,28 @@ void checkcache(const filekey& file, const filemeta& meta, const std::vector<fil
         cerr << lock << "blocks for: [" << remote_path << "] not found"<< endl << unlock;
         if(autofix) {
             fixCacheInconsistency(cache_file);
-            return;
         }
+        return;
     }
     // 为每个数据库中的block找到对应的远程block并比较private_key
     for (const auto& db_block : db_blocks) {
         if (db_block.block_no >= blks.size()) {
             cerr << lock << "Block table has invalid block_no: [" << remote_path
-                    << "] block_no=" << db_block.block_no << " max_blocks=" << blks.size() << endl << unlock;
+                 << "] block_no=" << db_block.block_no << " max_blocks=" << blks.size() << endl << unlock;
             if (autofix) {
                 fixCacheInconsistency(cache_file);
-                return;
             }
+            return;
         }
         string expected_key = fm_private_key_tostring(blks[db_block.block_no].private_key);
         if (db_block.private_key != expected_key) {
             cerr << lock << "Block table private_key mismatch: [" << remote_path
-                    << "] block_no=" << db_block.block_no << " db_key=" << db_block.private_key
-                    << " expected=" << expected_key << endl << unlock;
-
+                 << "] block_no=" << db_block.block_no << " db_key=" << db_block.private_key
+                 << " expected=" << expected_key << endl << unlock;
             if (autofix) {
                 fixCacheInconsistency(cache_file);
-                return;  // 修复后直接返回
             }
+            return;
         }
     }
     if (verbose) {
@@ -406,8 +695,11 @@ void scanLocalCacheFiles(const char* checkpath) {
     local_cache_files = scan_cache_directory(checkpath);
 
     // 构建映射关系
+    std::unique_lock<std::shared_mutex> index_lock(cache_index_lock);
     remote_path_to_cache.clear();
     inode_to_cache.clear();
+    remote_path_to_cache.reserve(local_cache_files.size());
+    inode_to_cache.reserve(local_cache_files.size());
 
     for (auto& cache_file : local_cache_files) {
         remote_path_to_cache[cache_file.remote_path] = &cache_file;
@@ -422,19 +714,18 @@ void scanLocalCacheFiles(const char* checkpath) {
 filekey* getpath(string path){
     if(path == "/" || path == "."){
         return new filekey{"/", 0};
-    }else{
-        filekey* fileat = getpath(dirname(path));
-        if(fileat == nullptr){
-            return fileat;
-        }
-        filekey file{basename(path), 0};
-        if(HANDLE_EAGAIN(fm_getattrat(*fileat, file))){
-            delete fileat;
-            return nullptr;
-        }
-        delete fileat;
-        return new filekey(file);
     }
+    filekey* fileat = getpath(dirname(path));
+    if(fileat == nullptr){
+        return fileat;
+    }
+    filekey file{basename(path), 0};
+    if(HANDLE_EAGAIN(fm_getattrat(*fileat, file))){
+        delete fileat;
+        return nullptr;
+    }
+    delete fileat;
+    return new filekey(file);
 }
 
 
@@ -449,7 +740,7 @@ int main(int argc, char **argv) {
     char ch;
     bool isfile = false;
     int concurrent =  CHECKTHREADS;
-    while ((ch = getopt(argc, argv, "evfrdc:")) != -1)
+    while ((ch = getopt(argc, argv, "evfrdsc:")) != -1)
         switch (ch) {
         case 'e':
             cout<< "treat it as file"<<endl;
@@ -475,6 +766,10 @@ int main(int argc, char **argv) {
             cout<<"will delete all failed file"<<endl;
             deleteall = true;
             break;
+        case 's':
+            cout << "will sync dirty data before fsck" << endl;
+            sync_dirty = true;
+            break;
         case '?':
             return 1;
         }
@@ -485,6 +780,31 @@ int main(int argc, char **argv) {
         checkpath = "/";
     }
     cout << "will check path: " << checkpath << endl;
+
+    // 处理dirty数据
+    if (sync_dirty) {
+        // 如果指定了同步dirty数据，执行同步后退出
+        cout << "Syncing dirty data..." << endl;
+        int sync_result = sync_all_dirty_files();
+        if (sync_result != 0) {
+            cerr << "Failed to sync dirty data" << endl;
+            return -5;
+        }
+        cout << "Dirty data sync completed successfully" << endl;
+        return 0;
+    } else {
+        // 检查是否有dirty数据，如果有则报错退出
+        std::vector<std::string> dirty_files;
+        if (get_dirty_files(dirty_files) > 0) {
+            cerr << "ERROR: Found " << dirty_files.size() << " dirty files with uncommitted changes:" << endl;
+            for (const auto& file_path : dirty_files) {
+                cerr << "  " << decodepath(file_path, file_encode_suffix) << endl;
+            }
+            cerr << "Please sync dirty data first using '-s' option or mount the filesystem to commit changes." << endl;
+            cerr << "Running fsck on dirty data may cause data loss!" << endl;
+            return -6;
+        }
+    }
 
     // 扫描本地缓存文件
     scanLocalCacheFiles(checkpath);

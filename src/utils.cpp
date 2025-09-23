@@ -6,6 +6,7 @@
 #include <json.h>
 #include <dirent.h>
 #include <functional>
+#include <random>
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -672,3 +673,39 @@ std::vector<cache_file_info> scan_cache_directory(const string& checkpath) {
     scan_dir(cache_dir);
     return cache_files;
 }
+
+static std::string generateRandomSuffix(size_t length) {
+    static constexpr char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    static thread_local std::mt19937 generator(std::random_device{}());
+    std::uniform_int_distribution<size_t> dist(0, sizeof(charset) - 2);
+    std::string result;
+    result.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+        result.push_back(charset[dist(generator)]);
+    }
+    return result;
+}
+
+filekey makeChunkBlockKey(size_t block_no) {
+    std::string path;
+    if (opt.flags & FM_RENAME_NOTSUPPRTED) {
+        path = "/.objs/" + std::to_string(block_no);
+    } else {
+        path = std::to_string(block_no);
+    }
+    path += '_' + std::to_string(static_cast<long long>(time(nullptr))) + '_' + generateRandomSuffix(16);
+    return filekey{path, nullptr};
+}
+
+filekey basename(const filekey& file) {
+    return filekey{basename(file.path), file.private_key};
+}
+
+filekey dirname(const filekey& file) {
+    return filekey{dirname(file.path), file.private_key};
+}
+
+filekey decodepath(const filekey& file, const string& suffix) {
+    return filekey{decodepath(file.path, suffix), file.private_key};
+}
+

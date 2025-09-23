@@ -57,6 +57,7 @@ int sqlinit(){
                 "CREATE TABLE IF NOT EXISTS blocks("
                 "inode integer,"
                 "block_no integer,"
+                "path text,"
                 "private_key text,"
                 "dirty integer DEFAULT 0,"
                 "primary key (inode, block_no))", nullptr, nullptr, &err_msg))
@@ -74,6 +75,18 @@ int sqlinit(){
                 sqlite3_free(err_msg);
                 failed = true;
                 break;
+            }
+            if(sqlite3_exec(cachedb, "ALTER TABLE blocks ADD COLUMN path TEXT;", nullptr, nullptr, &err_msg) == SQLITE_OK){
+                //成功表示旧版本没有path列，升级时添加
+                infolog("upgrade blocks table add path column\n");
+            }else{
+                if(strcmp(err_msg, "duplicate column name: path") != 0){
+                    errorlog("upgrade blocks table add path column failed: %s\n", err_msg);
+                    failed = true;
+                    sqlite3_free(err_msg);
+                    break;
+                }
+                //已经存在，忽略
             }
         }while(0);
         if(failed){
@@ -293,12 +306,16 @@ int delete_entry_from_db(const string& path){
     return 0;
 }
 
-int save_block_to_db(ino_t inode, size_t block_no, std::shared_ptr<void> file_private_key, bool dirty){
+int save_block_to_db(ino_t inode, size_t block_no, const filekey& file, bool dirty){
     if(cachedb == nullptr || inode == 0){
         return 0;
     }
-    string sql = "replace into blocks (inode, block_no, private_key, dirty) values("
-        + std::to_string(inode) + ", " + std::to_string(block_no) + ", '" + escapPrivatekey(file_private_key) + "', " + (dirty ? '1' : '0') + ")";
+    string sql = "replace into blocks (inode, block_no, path, private_key, dirty) values("
+        + std::to_string(inode) + ", "
+        + std::to_string(block_no) + ", '"
+        + escapQuote(basename(file.path)) + "', '"
+        + escapPrivatekey(file.private_key) + "', "
+        + (dirty ? '1' : '0') + ")";
     char* err_msg;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
@@ -313,7 +330,7 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
     if(cachedb == nullptr || inode == 0){
         return false;
     }
-    string sql = "select inode, block_no, private_key, dirty from blocks where inode = " + std::to_string(inode)
+    string sql = "select inode, block_no, path, private_key, dirty from blocks where inode = " + std::to_string(inode)
                  + " and block_no = " + std::to_string(block_no);
     //use sqlite3_prepare_v2 to prepare the SQL statement
     sqlite3_stmt* stmt;
@@ -325,8 +342,9 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
     if(ret == SQLITE_ROW) {
         record.inode = sqlite3_column_int64(stmt, 0);
         record.block_no = sqlite3_column_int64(stmt, 1);
-        record.private_key = (const char*)sqlite3_column_text(stmt, 2);
-        record.dirty = (sqlite3_column_int(stmt, 3) == 1);
+        record.path = (const char*)sqlite3_column_text(stmt, 2) ?: "";
+        record.private_key = (const char*)sqlite3_column_text(stmt, 3);
+        record.dirty = (sqlite3_column_int(stmt, 4) == 1);
         sqlite3_finalize(stmt);
         return true;
     }
@@ -406,17 +424,18 @@ int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
         return -1;
     }
 
-    string sql = "SELECT inode, block_no, private_key, dirty FROM blocks WHERE inode = " + std::to_string(inode);
+    string sql = "SELECT inode, block_no, path, private_key, dirty FROM blocks WHERE inode = " + std::to_string(inode);
     char* err_msg;
 
     auto blocks_callback = [](void *data, int columns, char **field, char **colum) -> int {
         std::vector<block_record>* blocks = (std::vector<block_record>*)data;
-        if (field[0] && field[1] && field[2] && field[3]) {
+        if (field[0] && field[1] && field[3] && field[4]) {
             block_record record;
             record.inode = std::stoll(field[0]);
             record.block_no = std::stoull(field[1]);
-            record.private_key = field[2];
-            record.dirty = (std::stoi(field[3]) == 1);
+            record.path = field[2] ?: "";
+            record.private_key = field[3];
+            record.dirty = (std::stoi(field[4]) == 1);
             blocks->push_back(record);
         }
         return 0;

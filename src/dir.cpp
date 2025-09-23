@@ -38,14 +38,6 @@ static string subname(const string& path) {
     return path.substr(pos+1, path.length());
 }
 
-filekey basename(const filekey& file) {
-    return filekey{basename(file.path), file.private_key};
-}
-
-filekey decodepath(const filekey& file, const string& suffix) {
-    return filekey{decodepath(file.path, suffix), file.private_key};
-}
-
 dir_t* cache_root() {
     struct filemeta meta = initfilemeta(filekey{"/", 0});
     if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
@@ -148,7 +140,7 @@ int dir_t::pull_entrys_wlocked() {
     std::vector<filemeta> flist;
     auto key = getkey();
     if(load_entry_from_db(key.path, flist) == 0){
-        infolog("Miss from localcache: %s\n", key.path.c_str());
+        debuglog("Miss from localcache: %s\n", key.path.c_str());
         int ret = HANDLE_EAGAIN(fm_list(key, flist));
         if(ret < 0) {
             return ret;

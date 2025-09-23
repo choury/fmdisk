@@ -79,8 +79,6 @@ class TrdPool;
 extern TrdPool* upool;
 extern TrdPool* dpool;
 
-filekey basename(const filekey& file);
-filekey decodepath(const filekey& file, const string& suffix);
 int create_dirs_recursive(const string& path);
 
 #endif

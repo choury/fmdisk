@@ -12,7 +12,6 @@
 
 #include <semaphore.h>
 #include <set>
-#include <random>
 #include <algorithm>
 
 static std::string getRemotePathFromFd(int fd) {
@@ -100,10 +99,17 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     this->flags |= BLOCK_SYNC;
     if (record.dirty) {
         this->flags |= BLOCK_DIRTY;
-    } else if(!record.private_key.empty() && record.private_key != fk_private){
-        //数据库中blocks表保存的信息比files表更可靠,因为正常流程是先保存blocks再更新files
-        trim(getkey());
-        this->fk.private_key = fm_get_private_key(record.private_key.c_str());
+    }
+    if(record.private_key != fk_private) {
+        if(!record.private_key.empty() && !record.path.empty()){
+            //数据库中blocks表保存的信息比files表更可靠,因为正常流程是先保存blocks再更新files
+            trim(getkey());
+            this->fk.path = record.path;
+            this->fk.private_key = fm_get_private_key(record.private_key.c_str());
+        } else {
+            //数据库中blocks表保存的信息不完整，重新上传
+            this->flags |= BLOCK_DIRTY;
+        }
     }
 }
 
@@ -154,7 +160,7 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
         assert((size_t)ret == bs.size());
         b->flags |= BLOCK_SYNC;
-        save_block_to_db(b->inode, b->no, b->fk.private_key, false);
+        save_block_to_db(b->inode, b->no, b->fk, false);
     }
     return ret;
 }
@@ -189,16 +195,6 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
     return bs.size();
 }
 
-static std::string random_string() {
-     std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
-
-     std::random_device rd;
-     std::mt19937 generator(rd());
-
-     std::shuffle(str.begin(), str.end(), generator);
-     return str.substr(0, 16);    // assumes 16 < number of characters in str
-}
-
 void block_t::push(std::weak_ptr<block_t> wb) {
     if(wb.expired()) {
         return;
@@ -230,15 +226,7 @@ void block_t::push(std::weak_ptr<block_t> wb) {
     filekey file;
     if(len){
         //It must be chunk file, because native file can't be written
-        string path;
-        if(opt.flags & FM_RENAME_NOTSUPPRTED) {
-            //放到.objs/目录下，使用随机文件名，重命名也不移动它
-            path = std::string("/.objs/") + std::to_string(b->no);
-        } else {
-            path = std::to_string(b->no);
-        }
-        path +=  '_' + std::to_string(time(nullptr)) + '_' + random_string();
-        file = {path, nullptr};
+        file = makeChunkBlockKey(b->no);
 retry:
         int ret = HANDLE_EAGAIN(fm_upload({b->getpath(), nullptr}, file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
@@ -259,7 +247,7 @@ retry:
         return;
     }
     // 上传成功，清除dirty标记
-    if(save_block_to_db(b->inode, b->no, file.private_key, false) == 0) {
+    if(save_block_to_db(b->inode, b->no, file, false) == 0) {
         trim(b->getkey());
         b->fk = file;
         b->flags &= ~BLOCK_DIRTY;
@@ -305,7 +293,7 @@ void block_t::markdirty() {
     __r.upgrade();
     flags |=  BLOCK_DIRTY | BLOCK_SYNC;
     // 保存到数据库并标记为dirty
-    save_block_to_db(inode, no, fk.private_key, true);
+    save_block_to_db(inode, no, fk, true);
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(shared_from_this());
     pthread_mutex_unlock(&dblocks_lock);

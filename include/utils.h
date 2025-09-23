@@ -98,6 +98,7 @@ std::string get_cache_path(const std::string& remote_path);
 std::string get_remote_path(const std::string& cache_path);
 // 扫描缓存目录，获取所有缓存文件的信息
 std::vector<cache_file_info> scan_cache_directory(const std::string& checkpath = "/");
+filekey makeChunkBlockKey(size_t block_no);
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);
 extern "C" size_t Base64En(const char *src, size_t len, char *dst);
@@ -131,4 +132,9 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
 int unmarshal_meta(json_object *jobj, filemeta& meta, std::vector<filekey>& fblocks);
 int download_meta(const filekey& fileat, filemeta& meta, std::vector< filekey >& fblocks);
 int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks);
+
+
+filekey basename(const filekey& file);
+filekey dirname(const filekey& file);
+filekey decodepath(const filekey& file, const std::string& suffix);
 #endif
