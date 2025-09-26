@@ -3,8 +3,8 @@ cmake_minimum_required(VERSION 3.10)
 project(fmdisk)
 include_directories(include)
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char -D_POSIX_C_SOURCE")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_FILE_OFFSET_BITS=64 -fsigned-char -D_POSIX_C_SOURCE")
 
 include(CheckCXXCompilerFlag)
 include(CheckCXXSourceRuns)

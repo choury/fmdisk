@@ -25,7 +25,7 @@ int log_init(const char* log_path) {
     pthread_mutex_lock(&log_mutex);
 
     // Close existing log file if any
-    if (log_file && log_file != stderr) {
+    if (log_file) {
         fclose(log_file);
         log_file = NULL;
     }
@@ -55,7 +55,7 @@ void log_cleanup(void) {
     // Reset FUSE log handler to default
     fuse_set_log_func(NULL);
 
-    if (log_file && log_file != stderr) {
+    if (log_file) {
         fclose(log_file);
         log_file = NULL;
     }
@@ -64,18 +64,20 @@ void log_cleanup(void) {
 }
 
 void fuse_log_handler(enum fuse_log_level level, const char *fmt, va_list ap) {
-    pthread_mutex_lock(&log_mutex);
-
-    if (!log_file) {
-        log_file = stderr;
-    }
-
     // Get current time
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);
     char time_str[64];
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
 
+    pthread_mutex_lock(&log_mutex);
+    static int duped = 0;
+    if (log_file != stderr && !duped) {
+        //redirect stdout and stderr to log file
+        dup2(fileno(log_file), STDOUT_FILENO);
+        dup2(fileno(log_file), STDERR_FILENO);
+        duped = 1;
+    }
     // Print timestamp, level, and PID
     fprintf(log_file, "[%s] [%s] [%d] ",
             time_str,
@@ -85,10 +87,7 @@ void fuse_log_handler(enum fuse_log_level level, const char *fmt, va_list ap) {
     // Print the actual log message
     vfprintf(log_file, fmt, ap);
 
-    if(level != FUSE_LOG_DEBUG) {
-        // Ensure immediate write
-        fflush(log_file);
-    }
-
+    // Ensure immediate write
+    fflush(log_file);
     pthread_mutex_unlock(&log_mutex);
 }

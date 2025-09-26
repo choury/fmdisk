@@ -102,6 +102,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     }
     if(record.private_key != fk_private) {
         if(!record.private_key.empty() && !record.path.empty()){
+            infolog("load block from db: %s, inode=%d, no=%d\n", record.path.c_str(), inode, no);
             //数据库中blocks表保存的信息比files表更可靠,因为正常流程是先保存blocks再更新files
             trim(getkey());
             this->fk.path = record.path;
@@ -129,6 +130,8 @@ std::string block_t::getpath() const {
 filekey block_t::getkey() const {
     if(fk.path.empty()) {
         return filekey{getpath(), fk.private_key};
+    } else if(opt.flags & FM_RENAME_NOTSUPPRTED){
+        return filekey{pathjoin(".objs", fk.path), fk.private_key};
     } else {
         return filekey{pathjoin(getpath(), fk.path), fk.private_key};
     }
@@ -236,22 +239,24 @@ retry:
         if(ret != 0){
             throw "fm_upload IO Error";
         }
-        file = basename(file);
     }else{
         free(buff);
         file = filekey{"x", 0};
     }
     __r.upgrade();
     if (version != b->version || (b->flags & BLOCK_STALE)) {
+        infolog("version: %zd vs %zd, flags: %x\n", version, b->version.load(), b->flags);
         trim(file);
         return;
     }
+    auto stripfile = basename(file);
     // 上传成功，清除dirty标记
-    if(save_block_to_db(b->inode, b->no, file, false) == 0) {
+    if(save_block_to_db(b->inode, b->no, stripfile, false) == 0) {
         trim(b->getkey());
-        b->fk = file;
+        b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
     } else {
+        infolog("save failed: %d, %d\n", b->inode, b->no);
         trim(file);
     }
 }

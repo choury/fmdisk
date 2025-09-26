@@ -54,6 +54,16 @@ int sqlinit(){
                 break;
             }
             if(sqlite3_exec(cachedb,
+                "CREATE INDEX IF NOT EXISTS idx_dirty "
+                "ON files (dirty)", nullptr, nullptr, &err_msg))
+            {
+                errorlog("create index for files failed: %s\n", err_msg);
+                sqlite3_free(err_msg);
+                failed = true;
+                break;
+            }
+
+            if(sqlite3_exec(cachedb,
                 "CREATE TABLE IF NOT EXISTS blocks("
                 "inode integer,"
                 "block_no integer,"
@@ -68,7 +78,7 @@ int sqlinit(){
                 break;
             }
             if(sqlite3_exec(cachedb,
-                "CREATE INDEX IF NOT EXISTS idx_key "
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_key "
                 "ON blocks (private_key)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create index for blocks failed: %s\n", err_msg);

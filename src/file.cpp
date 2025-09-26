@@ -76,6 +76,7 @@ static bool cleanup_cache_by_size() {
             }
         }
 
+        infolog("drop cache: %s\n", file.path.c_str());
         // 删除对应的blocks表记录
         delete_blocks_from_db(file.st.st_ino);
 
@@ -103,6 +104,7 @@ void trim(const filekey& file) {
         return;
     }
     auto_lock(&droped_lock);
+    infolog("trim: %s\n", file.path.c_str());
     droped.push_back(file);
 }
 
@@ -422,10 +424,10 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     size_t endc = GetBlkNo(offset + size, blksize);
     if(!opt.no_cache) {
         for(size_t i = startc; i<= endc + (10*1024*1024/blksize) && i<= GetBlkNo(length, blksize); i++){
-            blocks[i]->prefetch(false);
+            blocks.at(i)->prefetch(false);
         }
         for(size_t i = startc; i<= endc; i++ ){
-            int ret = blocks[i]->prefetch(true);
+            int ret = blocks.at(i)->prefetch(true);
             if (ret < 0) {
                 return ret;
             }
@@ -437,8 +439,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
         offset -= startc * blksize;
         size_t left = size;
         for(size_t i = startc; i <= endc && left > 0; i++){
-            auto block = blocks[i];
-            ssize_t ret = block->read(getkey(), buff, offset, std::min(left, (size_t)blksize - offset));
+            ssize_t ret = blocks.at(i)->read(getkey(), buff, offset, std::min(left, (size_t)blksize - offset));
             if(ret < 0) {
                 return ret;
             }
@@ -477,8 +478,8 @@ int file_t::truncate_wlocked(off_t offset){
             blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data.empty()){
-        blocks[newc]->prefetch(true);
-        if((flags & ENTRY_DELETED_F) == 0) blocks[newc]->markdirty();
+        blocks.at(newc)->prefetch(true);
+        if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty();
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
         }
@@ -492,7 +493,7 @@ int file_t::truncate_wlocked(off_t offset){
             assert(!blocks.contains(0));
             blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
             inline_data.clear();
-            if((flags & ENTRY_DELETED_F) == 0) blocks[0]->markdirty();
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty();
         } else if(offset == 0) {
             inline_data.resize(1);
         } else if(offset > (off_t)inline_data.size()) {
@@ -542,8 +543,8 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     const size_t startc = GetBlkNo(offset, blksize);
     const size_t endc = GetBlkNo(offset + size, blksize);
     if(inline_data.empty()) {
-        blocks[startc]->prefetch(true);
-        blocks[endc]->prefetch(true);
+        blocks.at(startc)->prefetch(true);
+        blocks.at(endc)->prefetch(true);
     }
     assert(fd >= 0);
     int ret = pwrite(fd, buff, size, offset);
@@ -555,7 +556,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         memcpy(inline_data.data() + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
         for(size_t i = startc; i <= endc; i++){
-            blocks[i]->markdirty();
+            blocks.at(i)->markdirty();
         }
     }
     ctime = mtime = time(nullptr);
@@ -642,14 +643,24 @@ std::vector<filekey> file_t::getfblocks(){
 
 filekey file_t::getmetakey(){
     auto_rlock(this);
-    return filekey{METANAME, private_key};
+    return filekey{pathjoin(getkey().path, METANAME), private_key};
 }
 
 std::vector<filekey> file_t::getkeys() {
     auto_rlock(this);
     std::vector<filekey> flist = getfblocks();
-    flist.emplace_back(filekey{METANAME, private_key});
-    if(fk.load()->private_key == nullptr){
+    for(auto& fblock: flist){
+        if(fblock.path == "x" || fblock.path.empty()){
+            continue;
+        }
+        if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+            fblock.path = pathjoin(".objs", fblock.path);
+        } else {
+            fblock.path = pathjoin(getkey().path, fblock.path);
+        }
+    }
+    flist.emplace_back(getmetakey());
+    if(fm_private_key_tostring(fk.load()->private_key)[0] == '\0'){
         return flist;
     }
     string path;
@@ -838,6 +849,7 @@ int file_t::drop_cache_wlocked(bool mem_only) {
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
     }
+    //fblocks的获取不能后置，因为可能是通过blocks获取的
     auto fblocks = getfblocks();
     for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
         it->second->markstale();
@@ -916,14 +928,20 @@ int file_t::get_storage_classes(storage_class_info& info) {
         return 0;
     }
     auto fblocks = getfblocks();
+    std::string pwd = getkey().path;
     if(fblocks.size() > DOWNLOADTHREADS) {
         std::vector<std::future<filemeta>> futures;
         TrdPool pool(std::min((size_t)DOWNLOADTHREADS * 10, fblocks.size()));
-        for(const auto& fblock : fblocks) {
+        for(auto& fblock : fblocks) {
             if(fblock.path.empty() || fblock.path == "x") {
                 continue; // 跳过空或占位块
             }
-            futures.emplace_back(pool.submit([fblock] {
+            futures.emplace_back(pool.submit([pwd, fblock]() mutable{
+                if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+                    fblock.path = pathjoin(".objs", fblock.path);
+                } else {
+                    fblock.path = pathjoin(pwd, fblock.path);
+                }
                 filemeta meta = initfilemeta(fblock);
                 HANDLE_EAGAIN(fm_getattr(fblock, meta));
                 return meta;
@@ -938,9 +956,14 @@ int file_t::get_storage_classes(storage_class_info& info) {
             add_meta_to_storage_info(info, meta);
         }
     } else {
-        for(const auto& fblock : fblocks) {
+        for(auto& fblock : fblocks) {
             if(fblock.path.empty() || fblock.path == "x") {
                 continue; // 跳过空或占位块
+            }
+            if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+                fblock.path = pathjoin(".objs", fblock.path);
+            } else {
+                fblock.path = pathjoin(pwd, fblock.path);
             }
             filemeta meta = initfilemeta(fblock);
             HANDLE_EAGAIN(fm_getattr(fblock, meta));
@@ -1033,11 +1056,17 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
         return 0;
     }
     auto fblocks = getfblocks();
-    for(auto fblock : fblocks) {
+    std::string pwd = getkey().path;
+    for(auto& fblock : fblocks) {
         if (fblock.path.empty() || fblock.path == "x") {
             continue; // 跳过空或占位块
         }
-        futures.emplace_back(pool->submit([fblock, storage] {
+        futures.emplace_back(pool->submit([fblock, storage, pwd]() mutable {
+            if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+                fblock.path = pathjoin(".objs", fblock.path);
+            } else {
+                fblock.path = pathjoin(pwd, fblock.path);
+            }
             int ret = _set_storage_class(fblock, storage);
             if (ret < 0 && ret != -EEXIST) {
                 errorlog("set_storage_class failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
@@ -1079,8 +1108,26 @@ int file_t::get_etag(std::string& etag) {
         etag = etag.substr(std::max(ret - 32, 0));
         return 0;
     }
-    filemeta meta = initfilemeta(fblocks.back());
-    int ret = HANDLE_EAGAIN(fm_getattr(meta.key, meta));
+    filekey lastblock;
+    for(auto it = fblocks.rbegin(); it != fblocks.rend(); ++it) {
+        if(it->path != "x" && !it->path.empty()) {
+            lastblock = *it;
+            break;
+        }
+    }
+    if(lastblock.path.empty() || lastblock.path == "x") {
+        etag = "x"; // all blocks are empty
+        return 0;
+    }
+
+    if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+        lastblock.path = pathjoin(".objs", lastblock.path);
+    } else {
+        lastblock.path = pathjoin(getkey().path, lastblock.path);
+    }
+
+    filemeta meta = initfilemeta(lastblock);
+    int ret = HANDLE_EAGAIN(fm_getattr(lastblock, meta));
     if(ret < 0) {
         return ret;
     }
@@ -1098,5 +1145,6 @@ size_t file_t::release_clean_blocks() {
     for(auto& [_, block]: blocks) {
         released += block->release();
     }
+    infolog("released %zd for %s\n", released, getcwd().c_str());
     return released;
 }
