@@ -40,7 +40,7 @@ static bool cleanup_cache_by_size() {
     // 计算总大小（磁盘占用）
     off_t total_size = 0;
     for (const auto& file : cache_files) {
-        total_size += file.st.st_blocks * 512;
+        total_size += file.st.stx_blocks * 512;
     }
 
     if (total_size <= opt.cache_size) {
@@ -58,7 +58,7 @@ static bool cleanup_cache_by_size() {
         if (current_size <= opt.cache_size) {
             return false;
         }
-        if(opened_inodes.contains(file.st.st_ino)) {
+        if(opened_inodes.contains(file.st.stx_ino)) {
             continue; // 跳过正在使用的文件
         }
 
@@ -76,13 +76,13 @@ static bool cleanup_cache_by_size() {
             }
         }
 
-        infolog("drop cache: %s\n", file.path.c_str());
+        infolog("drop cache: %s, inode=%d\n", file.path.c_str(), file.st.stx_ino);
         // 删除对应的blocks表记录
-        delete_blocks_from_db(file.st.st_ino);
+        delete_blocks_from_db(file.st.stx_ino);
 
         // 删除缓存文件
         unlink(file.path.c_str());
-        current_size -= file.st.st_blocks * 512;
+        current_size -= file.st.stx_blocks * 512;
     }
     if(opt.cache_size == 0) {
         return false;
@@ -207,6 +207,7 @@ inline size_t GetBlkNo(size_t p, blksize_t blksize) {
 
 file_t::file_t(dir_t *parent, const filemeta& meta):
     entry_t(parent, meta),
+    fi{-1, 0, 0},
     blksize(meta.blksize),
     storage(meta.storage),
     last_meta_sync_time(0)
@@ -248,15 +249,17 @@ void file_t::reset_wlocked() {
         it->second->markstale();
     }
     blocks.clear();
-    if(fd < 0) {
+    if(fi.fd < 0) {
         return;
     }
     //delete blocks if is temp file
-    if(fgetxattr(fd, FM_TEMP_FILE_ATTR, nullptr, 0) >= 0) {
-        delete_blocks_from_db(inode);
+    if(fgetxattr(fi.fd, FM_TEMP_FILE_ATTR, nullptr, 0) >= 0) {
+        delete_blocks_from_db(fi.inode);
     }
-    close(fd);
-    fd = -1;
+    close(fi.fd);
+    infolog("close file: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
+    fi = {-1, 0, 0};
+
 }
 
 int file_t::open(){
@@ -269,28 +272,38 @@ int file_t::open(){
         }
     }
     opened++;
-    if(fd >= 0 || opt.no_cache) {
+    if(fi.fd >= 0 || opt.no_cache) {
         return 0;
     }
     assert(opened == 1 && blocks.empty());
-    fd = persistent_cache_file(getcwd());
-    if(fd < 0) {
+    fi.fd = persistent_cache_file(getcwd());
+    if(fi.fd < 0) {
         return -errno;
     }
-    TEMP_FAILURE_RETRY(ftruncate(fd, length));
-    struct stat st;
-    fstat(fd, &st);
-    inode = st.st_ino;
-    opened_inodes.emplace(inode, this);
+    TEMP_FAILURE_RETRY(ftruncate(fi.fd, length));
+    struct statx st;
+    //use statx to get st_ino and btime
+    if (statx(fi.fd, "", AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS | STATX_BTIME, &st) < 0) {
+        int err = errno;
+        close(fi.fd);
+        fi = {-1, 0, 0};
+        errorlog("statx failed for %s: %s\n", getcwd().c_str(), strerror(err));
+        return -err;
+    }
+
+    fi.inode = st.stx_ino;
+    fi.btime = st.stx_btime.tv_sec * 1000000000LL + st.stx_btime.tv_nsec;
+    infolog("open file: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
+    opened_inodes.emplace(fi.inode, this);
     if(flags & ENTRY_CHUNCED_F) {
         auto fblocks = getfblocks();
         assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
-            blocks.emplace(i, std::make_shared<block_t>(fd, inode, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
+            blocks.emplace(i, std::make_shared<block_t>(fi, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
     } else {
         for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
-            blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"", private_key}, i, blksize * i, blksize, 0));
+            blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
     return 0;
@@ -304,7 +317,7 @@ void file_t::clean(file_t* file) {
         return;
     }
     if(file->flags & ENTRY_DELETED_F){
-        opened_inodes.erase(file->inode);
+        opened_inodes.erase(file->fi.inode);
         __w.unlock();
         delete file;
         return;
@@ -315,7 +328,7 @@ void file_t::clean(file_t* file) {
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
     file->reset_wlocked();
-    opened_inodes.erase(file->inode);
+    opened_inodes.erase(file->fi.inode);
 }
 
 int file_t::release(){
@@ -393,11 +406,11 @@ int file_t::pull_wlocked() {
     if(flags & ENTRY_CHUNCED_F) {
         assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
-            blocks.emplace(i, std::make_shared<block_t>(-1, 0, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
+            blocks.emplace(i, std::make_shared<block_t>(fi, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
     } else {
         for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
-            blocks.emplace(i, std::make_shared<block_t>(-1, 0, filekey{"", private_key}, i, blksize * i, blksize, 0));
+            blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
     return 0;
@@ -432,7 +445,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
                 return ret;
             }
         }
-        return pread(fd, buff, size, offset);
+        return pread(fi.fd, buff, size, offset);
     }
     if(flags & ENTRY_CHUNCED_F) {
         //use block_t::read to read directly from startc to endc
@@ -475,7 +488,7 @@ int file_t::truncate_wlocked(off_t offset){
             return -1;
         }
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks.emplace(i, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data.empty()){
         blocks.at(newc)->prefetch(true);
@@ -486,12 +499,12 @@ int file_t::truncate_wlocked(off_t offset){
     }
     if(inline_data.size()) {
         if(offset >= (off_t)INLINE_DLEN){
-            int ret = pwrite(fd, inline_data.data(), length, 0);
+            int ret = pwrite(fi.fd, inline_data.data(), length, 0);
             if(ret < 0){
                 return ret;
             }
             assert(!blocks.contains(0));
-            blocks.emplace(0, std::make_shared<block_t>(fd, inode, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            blocks.emplace(0, std::make_shared<block_t>(fi, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
             inline_data.clear();
             if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty();
         } else if(offset == 0) {
@@ -505,8 +518,8 @@ int file_t::truncate_wlocked(off_t offset){
         flags |= FILE_DIRTY_F;
         sync_wlocked(true);
     }
-    assert(fd >= 0);
-    return TEMP_FAILURE_RETRY(ftruncate(fd, offset));
+    assert(fi.fd >= 0);
+    return TEMP_FAILURE_RETRY(ftruncate(fi.fd, offset));
 }
 
 int file_t::truncate(off_t offset){
@@ -546,8 +559,8 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         blocks.at(startc)->prefetch(true);
         blocks.at(endc)->prefetch(true);
     }
-    assert(fd >= 0);
-    int ret = pwrite(fd, buff, size, offset);
+    assert(fi.fd >= 0);
+    int ret = pwrite(fi.fd, buff, size, offset);
     if(ret <= 0){
         return ret;
     }
@@ -586,14 +599,15 @@ int file_t::remove_wlocked() {
         it->second->markstale();
     }
     delete_entry_from_db(key.path);
-    if(inode) {
-        delete_blocks_from_db(inode);       //打开过的文件，可以直接用inode删除
+    if(fi.inode) {
+        delete_blocks_from_db(fi.inode);       //打开过的文件，可以直接用inode删除
     }else if(flags & FILE_ENCODE_F) {
         delete_blocks_by_key(getfblocks()); //未打开的文件，inode为空，只能用key删除
     }else{
         delete_blocks_by_key({key});
     }
     delete_file_from_db(key.path);
+    infolog("remove file: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
 
     // 删除持久化缓存文件
     string cache_path = get_cache_path(getcwd());
@@ -756,7 +770,7 @@ int file_t::sync(int dataonly){
     if((flags & ENTRY_CHUNCED_F) == 0 || (flags & FILE_DIRTY_F) == 0){
         return 0;
     }
-    fsync(fd);
+    fsync(fi.fd);
     if(!dataonly) {
         dump_to_db(dirname(getcwd()), fk.load()->path);
     }
@@ -840,7 +854,7 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
 }
 
 int file_t::drop_cache_wlocked(bool mem_only) {
-    if(opened || fd >= 0){
+    if(opened || fi.fd >= 0){
         return -EBUSY;
     }
     if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F) || (flags & FILE_DIRTY_F)){
@@ -863,13 +877,14 @@ int file_t::drop_cache_wlocked(bool mem_only) {
     if(opt.no_cache || mem_only) {
         return 0;
     }
-    if(inode) {
-        delete_blocks_from_db(inode);
+    if(fi.inode) {
+        delete_blocks_from_db(fi.inode);
     }else if(flags & ENTRY_CHUNCED_F) {
         delete_blocks_by_key(fblocks);
     }else {
         delete_blocks_by_key({getkey()});
     }
+    infolog("drop cache: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
     return delete_file_from_db(getkey().path);
 }
 
@@ -1138,7 +1153,7 @@ int file_t::get_etag(std::string& etag) {
 
 size_t file_t::release_clean_blocks() {
     auto_wlock(this);
-    if((flags & ENTRY_INITED_F) == 0 || (flags & (ENTRY_DELETED_F | ENTRY_REASEWAIT_F)) || fd < 0) {
+    if((flags & ENTRY_INITED_F) == 0 || (flags & (ENTRY_DELETED_F | ENTRY_REASEWAIT_F)) || fi.fd < 0) {
         return 0;
     }
     size_t released = 0;

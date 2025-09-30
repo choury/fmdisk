@@ -18,12 +18,13 @@ int delete_entry_prefix_from_db(const std::string& path);
 struct block_record {
     ino_t inode;
     size_t block_no;
+    uint64_t btime;
     std::string path;
     std::string private_key;
     bool dirty;
 };
 
-int save_block_to_db(ino_t inode, size_t block_no, const filekey& file, bool dirty);
+int save_block_to_db(const fileInfo& fi, size_t block_no, const filekey& file, bool dirty);
 bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& record);
 int delete_blocks_from_db(ino_t inode);
 int delete_block_from_db(ino_t inode, size_t block_no);

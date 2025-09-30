@@ -67,6 +67,7 @@ int sqlinit(){
                 "CREATE TABLE IF NOT EXISTS blocks("
                 "inode integer,"
                 "block_no integer,"
+                "btime integer,"
                 "path text,"
                 "private_key text,"
                 "dirty integer DEFAULT 0,"
@@ -98,6 +99,18 @@ int sqlinit(){
                 }
                 //已经存在，忽略
             }
+            if(sqlite3_exec(cachedb, "ALTER TABLE blocks ADD COLUMN btime INTEGER DEFAULT 0;", nullptr, nullptr, &err_msg) == SQLITE_OK){
+                //成功表示旧版本没有btime列，升级时添加
+                infolog("upgrade blocks table add btime column\n");
+            }else{
+                if(strcmp(err_msg, "duplicate column name: btime") != 0){
+                    errorlog("upgrade blocks table add btime column failed: %s\n", err_msg);
+                    failed = true;
+                    sqlite3_free(err_msg);
+                    break;
+                }
+                //已经存在，忽略
+            }
         }while(0);
         if(failed){
             sqlite3_close(cachedb);
@@ -110,8 +123,8 @@ int sqlinit(){
             errorlog("set journal_mode failed: %s\n", err_msg);
             sqlite3_free(err_msg);
         }
-        //set synchronous=normal
-        if(sqlite3_exec(cachedb, "PRAGMA synchronous=NORMAL", nullptr, nullptr, &err_msg)){
+        //set synchronous=full
+        if(sqlite3_exec(cachedb, "PRAGMA synchronous=FULL", nullptr, nullptr, &err_msg)){
             errorlog("set synchronous failed: %s\n", err_msg);
             sqlite3_free(err_msg);
         }
@@ -316,13 +329,14 @@ int delete_entry_from_db(const string& path){
     return 0;
 }
 
-int save_block_to_db(ino_t inode, size_t block_no, const filekey& file, bool dirty){
-    if(cachedb == nullptr || inode == 0){
+int save_block_to_db(const fileInfo& fi, size_t block_no, const filekey& file, bool dirty){
+    if(cachedb == nullptr || fi.inode == 0){
         return 0;
     }
-    string sql = "replace into blocks (inode, block_no, path, private_key, dirty) values("
-        + std::to_string(inode) + ", "
-        + std::to_string(block_no) + ", '"
+    string sql = "replace into blocks (inode, block_no, btime, path, private_key, dirty) values("
+        + std::to_string(fi.inode) + ", "
+        + std::to_string(block_no) + ","
+        + std::to_string(fi.btime) + ", '"
         + escapQuote(basename(file.path)) + "', '"
         + escapPrivatekey(file.private_key) + "', "
         + (dirty ? '1' : '0') + ")";
@@ -340,7 +354,7 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
     if(cachedb == nullptr || inode == 0){
         return false;
     }
-    string sql = "select inode, block_no, path, private_key, dirty from blocks where inode = " + std::to_string(inode)
+    string sql = "select inode, block_no, btime, path, private_key, dirty from blocks where inode = " + std::to_string(inode)
                  + " and block_no = " + std::to_string(block_no);
     //use sqlite3_prepare_v2 to prepare the SQL statement
     sqlite3_stmt* stmt;
@@ -352,9 +366,10 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
     if(ret == SQLITE_ROW) {
         record.inode = sqlite3_column_int64(stmt, 0);
         record.block_no = sqlite3_column_int64(stmt, 1);
-        record.path = (const char*)sqlite3_column_text(stmt, 2) ?: "";
-        record.private_key = (const char*)sqlite3_column_text(stmt, 3);
-        record.dirty = (sqlite3_column_int(stmt, 4) == 1);
+        record.btime = sqlite3_column_int64(stmt, 2);
+        record.path = (const char*)sqlite3_column_text(stmt, 3) ?: "";
+        record.private_key = (const char*)sqlite3_column_text(stmt, 4);
+        record.dirty = (sqlite3_column_int(stmt, 5) == 1);
         sqlite3_finalize(stmt);
         return true;
     }
@@ -434,7 +449,7 @@ int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
         return -1;
     }
 
-    string sql = "SELECT inode, block_no, path, private_key, dirty FROM blocks WHERE inode = " + std::to_string(inode);
+    string sql = "SELECT inode, block_no, btime, path, private_key, dirty FROM blocks WHERE inode = " + std::to_string(inode);
     char* err_msg;
 
     auto blocks_callback = [](void *data, int columns, char **field, char **colum) -> int {
@@ -443,9 +458,10 @@ int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
             block_record record;
             record.inode = std::stoll(field[0]);
             record.block_no = std::stoull(field[1]);
-            record.path = field[2] ?: "";
-            record.private_key = field[3];
-            record.dirty = (std::stoi(field[4]) == 1);
+            record.btime = field[2] ? std::stoull(field[2]) : 0;
+            record.path = field[3] ?: "";
+            record.private_key = field[4];
+            record.dirty = (std::stoi(field[5]) == 1);
             blocks->push_back(record);
         }
         return 0;

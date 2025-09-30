@@ -108,13 +108,13 @@ static filekey uploadBlockFromCache(const std::string& remote_path, const fileme
     }
 
     // 验证文件大小
-    if ((size_t)cache_file->st.st_size != meta.size) {
+    if ((size_t)cache_file->st.stx_size != meta.size) {
         return {{"x"}, 0};
     }
 
     // 检查block表中该block的状态
     block_record record;
-    if (!load_block_from_db(cache_file->st.st_ino, block_no, record)) {
+    if (!load_block_from_db(cache_file->st.stx_ino, block_no, record)) {
         if (verbose) {
             cerr << lock << "Block " << block_no << " not found in database for: " << remote_path << endl << unlock;
         }
@@ -204,33 +204,43 @@ static int sync_dirty_file(const string& path){
     }
     defer(close, fd);
 
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        cerr << "Failed to stat cache file: " << cache_path << endl;
+    struct statx st;
+    if (statx(fd, "", AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW, STATX_INO | STATX_BTIME | STATX_SIZE, &st) != 0) {
+        cerr << "Failed to statx cache file: " << cache_path << " error: " << strerror(errno) << endl;
         return -1;
     }
-    if(st.st_size != (off_t)meta.size) {
-        cerr << "Cache file size mismatch for " << cache_path << ": expected " << meta.size << ", got " << st.st_size << endl;
+    if(st.stx_size != meta.size) {
+        cerr << "Cache file size mismatch for " << cache_path << ": expected " << meta.size << ", got " << st.stx_size << endl;
         return -1;
     }
 
     // mmap文件
-    char* mmap_data = (char*)mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    char* mmap_data = (char*)mmap(nullptr, st.stx_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (mmap_data == MAP_FAILED) {
         cerr << "Failed to mmap cache file: " << cache_path << " error: " << strerror(errno) << endl;
         return -1;
     }
-    defer(munmap, mmap_data, st.st_size);
+    defer(munmap, mmap_data, st.stx_size);
 
     // 1. 先同步所有dirty blocks
     bool block_sync_failed = false;
     std::vector<block_record> blocks;
-    get_blocks_for_inode(st.st_ino, blocks);
+    get_blocks_for_inode(st.stx_ino, blocks);
     if(blocks.size() > fblocks.size()) {
         cerr << "Block count mismatch for file: " << decoded_path << ", db has " << blocks.size() << ", meta has " << fblocks.size() << endl;
         return -1;
     }
-    for (const auto& block_rec : blocks) {
+    uint64_t btime = st.stx_btime.tv_sec * 1000000000LL + st.stx_btime.tv_nsec;
+    for (auto& block_rec : blocks) {
+        if(block_rec.btime != 0 && block_rec.btime != btime) {
+            // btime不匹配，说明是不同的文件，数据可能已被覆盖
+            if(block_rec.dirty) {
+                cerr << "Block " << block_rec.block_no << " btime mismatch but dirty for: " << decoded_path << ", db=" << block_rec.btime
+                     << ", file=" << btime << endl;
+                return -1;
+            }
+            block_rec.dirty = true; // 强制重新上传
+        }
         if (!block_rec.dirty && !block_rec.path.empty() && !block_rec.private_key.empty()) {
             fblocks[block_rec.block_no].path = block_rec.path;
             fblocks[block_rec.block_no].private_key = fm_get_private_key(block_rec.private_key.c_str());
@@ -248,7 +258,7 @@ static int sync_dirty_file(const string& path){
 
         // 更新fblocks和数据库
         fblocks[block_rec.block_no] = basename(new_block_key);
-        save_block_to_db(st.st_ino, block_rec.block_no, new_block_key, false);
+        save_block_to_db({-1, st.stx_ino, btime}, block_rec.block_no, new_block_key, false);
     }
 
     if (block_sync_failed) {
@@ -563,7 +573,7 @@ void fixCacheInconsistency(cache_file_info* cache_file) {
 
     const std::string cache_path = cache_file->path;
     const std::string remote_path = cache_file->remote_path;
-    const ino_t inode = cache_file->st.st_ino;
+    const ino_t inode = cache_file->st.stx_ino;
 
     if (verbose) {
         cout << lock << "Deleted inconsistent cache file: " << cache_file->path << endl << unlock;
@@ -607,9 +617,9 @@ static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>
     cache_file->checked = true;  // 标记为已检查
 
     // 1. 验证文件大小是否一致
-    if ((size_t)cache_file->st.st_size != meta.size) {
+    if ((size_t)cache_file->st.stx_size != meta.size) {
         cerr << lock << "Cache file size mismatch: [" << remote_path
-             << "] local=" << cache_file->st.st_size << " remote=" << meta.size << endl << unlock;
+             << "] local=" << cache_file->st.stx_size << " remote=" << meta.size << endl << unlock;
         if (autofix) {
             fixCacheInconsistency(cache_file);
         }
@@ -618,7 +628,7 @@ static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>
 
     // 2. 验证数据库blocks表中该文件相关记录的private_key
     std::vector<block_record> db_blocks;
-    if (get_blocks_for_inode(cache_file->st.st_ino, db_blocks) <= 0) {
+    if (get_blocks_for_inode(cache_file->st.stx_ino, db_blocks) <= 0) {
         cerr << lock << "blocks for: [" << remote_path << "] not found"<< endl << unlock;
         if(autofix) {
             fixCacheInconsistency(cache_file);
@@ -627,6 +637,15 @@ static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>
     }
     // 为每个数据库中的block找到对应的远程block并比较private_key
     for (const auto& db_block : db_blocks) {
+        uint64_t btime = cache_file->st.stx_btime.tv_sec * 1000000000LL + cache_file->st.stx_btime.tv_nsec;
+        if (db_block.btime != 0 && db_block.btime != btime) {
+            cerr << lock << "Block " << db_block.block_no << " btime mismatch for: [" << remote_path
+                 << "] db_btime=" << db_block.btime << " file_btime=" << btime << endl << unlock;
+            if (autofix) {
+                fixCacheInconsistency(cache_file);
+            }
+            return;
+        }
         if (db_block.block_no >= blks.size()) {
             cerr << lock << "Block table has invalid block_no: [" << remote_path
                  << "] block_no=" << db_block.block_no << " max_blocks=" << blks.size() << endl << unlock;
@@ -661,7 +680,7 @@ void checkOrphanedFiles(const char* checkpath) {
             continue;
         }
         cerr << lock << "Found arphaned cache file  " << cache_file.path << ", inode: "
-             << cache_file.st.st_ino << ", size: " << cache_file.st.st_size << endl << unlock;
+             << cache_file.st.stx_ino << ", size: " << cache_file.st.stx_size << endl << unlock;
 
         if (autofix) {
             fixCacheInconsistency(&cache_file);
@@ -703,7 +722,7 @@ void scanLocalCacheFiles(const char* checkpath) {
 
     for (auto& cache_file : local_cache_files) {
         remote_path_to_cache[cache_file.remote_path] = &cache_file;
-        inode_to_cache[cache_file.st.st_ino] = &cache_file;
+        inode_to_cache[cache_file.st.stx_ino] = &cache_file;
     }
 
     if (verbose) {

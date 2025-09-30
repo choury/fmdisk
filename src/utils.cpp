@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <sys/stat.h>
+#include <fcntl.h>      // For AT_FDCWD and AT_STATX_SYNC_AS_STAT
 #include <json.h>
 #include <dirent.h>
 #include <functional>
@@ -635,7 +636,7 @@ string get_cache_path(const string& remote_path) {
     return pathjoin(opt.cache_dir, "cache", remote_path);
 }
 
-cache_file_info::cache_file_info(const string& p, struct stat& st)
+cache_file_info::cache_file_info(const string& p, struct statx& st)
     : path(p), remote_path(get_remote_path(p)), st(st), checked(false) {
 }
 
@@ -656,13 +657,13 @@ std::vector<cache_file_info> scan_cache_directory(const string& checkpath) {
             }
 
             string full_path = pathjoin(dir, entry->d_name);
-            struct stat st;
-            if (stat(full_path.c_str(), &st) < 0) {
+            struct statx st;
+            if (statx(AT_FDCWD, full_path.c_str(), AT_SYMLINK_NOFOLLOW | AT_STATX_SYNC_AS_STAT, STATX_BASIC_STATS | STATX_BTIME, &st) < 0) {
                 continue;
             }
-            if (S_ISDIR(st.st_mode)) {
+            if (S_ISDIR(st.stx_mode)) {
                 scan_dir(full_path);  // 递归扫描子目录
-            } else if (S_ISREG(st.st_mode)) {
+            } else if (S_ISREG(st.stx_mode)) {
                 // 常规文件，记录其信息
                 cache_files.emplace_back(full_path, st);
             }

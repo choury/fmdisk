@@ -6,8 +6,7 @@
 #include <atomic>
 
 class block_t: locker, public std::enable_shared_from_this<block_t> {
-    int fd;
-    ino_t inode;  // 缓存文件的inode
+    const fileInfo fi;
     filekey fk;   //fk.path = 'x'表示空块(同时private_key也为空), fk.path = ''表示未分块的文件
     const size_t no;
     const off_t offset;
@@ -22,7 +21,7 @@ class block_t: locker, public std::enable_shared_from_this<block_t> {
     [[nodiscard]] std::string getpath() const;
     [[nodiscard]] filekey getkey() const;
 public:
-    block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
+    block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags);
     ~block_t() override;
     filekey getfk() {
         auto_rlock(this);

@@ -83,15 +83,21 @@ std::string URLDecode(const std::string& str);
 struct cache_file_info {
     std::string path;
     std::string remote_path; // 对应的远程路径
-    struct stat st;
+    struct statx st;
     bool checked;  // 是否已被检查过（用于fsck）
 
-    cache_file_info(const std::string& p, struct stat& st);
+    cache_file_info(const std::string& p, struct statx& st);
 
     // 按访问时间排序，最旧的在前
     bool operator<(const cache_file_info& other) const {
-        return st.st_atime < other.st.st_atime;
+        return st.stx_atime.tv_sec < other.st.stx_atime.tv_sec;
     }
+};
+
+struct fileInfo {
+    int fd;
+    ino_t inode;
+    uint64_t btime;
 };
 
 std::string get_cache_path(const std::string& remote_path);

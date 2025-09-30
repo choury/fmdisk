@@ -13,8 +13,7 @@
 #define file_encode_suffix ".def"
 
 class file_t: public entry_t {
-    int fd = -1;
-    ino_t inode = 0;
+    fileInfo fi;
     std::shared_ptr<void> private_key; //for meta.json
     std::string inline_data;
     blksize_t blksize;

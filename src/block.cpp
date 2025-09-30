@@ -72,9 +72,8 @@ void writeback_thread(bool* done){
 }
 
 
-block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
-    fd(fd),
-    inode(inode),
+block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
+    fi(fi),
     fk(basename(fk)),
     no(no),
     offset(offset),
@@ -82,7 +81,7 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     flags(flags),
     atime(0)
 {
-    assert(opt.no_cache || fd >= 0);
+    assert(opt.no_cache || fi.fd >= 0);
 
     std::string fk_private = fm_private_key_tostring(fk.private_key);
     if(fk.path == "" && fk_private[0] == '\0') {
@@ -93,16 +92,25 @@ block_t::block_t(int fd, ino_t inode, filekey fk, size_t no, off_t offset, size_
     }
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
     struct block_record record;
-    if(!load_block_from_db(inode, no, record)) {
+    if(!load_block_from_db(fi.inode, no, record)) {
         return;
     }
+
+    // 检查btime确定文件身份，如果btime不匹配则说明文件已被替换
+    if(record.btime != 0 && record.btime != fi.btime) {
+        infolog("btime mismatch for inode=%ju, no=%zu: db=%lu, file=%lu, treating as new file\n",
+                fi.inode, no, record.btime, fi.btime);
+        // btime不匹配，说明是不同的文件，不使用数据库中的记录
+        return;
+    }
+
     this->flags |= BLOCK_SYNC;
     if (record.dirty) {
         this->flags |= BLOCK_DIRTY;
     }
     if(record.private_key != fk_private) {
         if(!record.private_key.empty() && !record.path.empty()){
-            infolog("load block from db: %s, inode=%d, no=%d\n", record.path.c_str(), inode, no);
+            infolog("load block from db: %s, inode=%ju, no=%d\n", record.path.c_str(), fi.inode, no);
             //数据库中blocks表保存的信息比files表更可靠,因为正常流程是先保存blocks再更新files
             trim(getkey());
             this->fk.path = record.path;
@@ -124,7 +132,7 @@ block_t::~block_t() {
 }
 
 std::string block_t::getpath() const {
-    return getRemotePathFromFd(fd);
+    return getRemotePathFromFd(fi.fd);
 }
 
 filekey block_t::getkey() const {
@@ -158,12 +166,12 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
     if(b->flags & FILE_ENCODE_F){
         xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
     }
-    ret = TEMP_FAILURE_RETRY(pwrite(b->fd, bs.mutable_data(), bs.size(), b->offset));
+    ret = TEMP_FAILURE_RETRY(pwrite(b->fi.fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
         assert((size_t)ret == bs.size());
         b->flags |= BLOCK_SYNC;
-        save_block_to_db(b->inode, b->no, b->fk, false);
+        save_block_to_db(b->fi, b->no, b->fk, false);
     }
     return ret;
 }
@@ -209,7 +217,7 @@ void block_t::push(std::weak_ptr<block_t> wb) {
         return;
     }
     char *buff = (char*)malloc(b->size);
-    int ret = TEMP_FAILURE_RETRY(pread(b->fd, buff, b->size, b->offset));
+    int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
     if(ret < 0){
         free(buff);
         return;
@@ -251,12 +259,12 @@ retry:
     }
     auto stripfile = basename(file);
     // 上传成功，清除dirty标记
-    if(save_block_to_db(b->inode, b->no, stripfile, false) == 0) {
+    if(save_block_to_db(b->fi, b->no, stripfile, false) == 0) {
         trim(b->getkey());
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
     } else {
-        infolog("save failed: %d, %d\n", b->inode, b->no);
+        infolog("save failed: %ju, %d\n", b->fi.inode, b->no);
         trim(file);
     }
 }
@@ -298,7 +306,7 @@ void block_t::markdirty() {
     __r.upgrade();
     flags |=  BLOCK_DIRTY | BLOCK_SYNC;
     // 保存到数据库并标记为dirty
-    save_block_to_db(inode, no, fk, true);
+    save_block_to_db(fi, no, fk, true);
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(shared_from_this());
     pthread_mutex_unlock(&dblocks_lock);
@@ -332,11 +340,11 @@ int block_t::staled(){
 
 size_t block_t::release() {
     auto_wlock(this);
-    if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fd < 0 || staled() < 60) {
+    if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
         return 0;
     }
-    fallocate(fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
-    delete_block_from_db(inode, no);
+    fallocate(fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
+    delete_block_from_db(fi.inode, no);
     debuglog("release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);
     flags = flags & FILE_ENCODE_F;
     if(fk.path == "x") {
