@@ -505,8 +505,11 @@ int file_t::truncate_wlocked(off_t offset){
             blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data.empty()){
-        blocks.at(newc)->prefetch(true);
-        if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty();
+        // 如果offset正好在newc块的结束位置，不需要修改该块
+        if((size_t)offset != (newc + 1) * blksize) {
+            blocks.at(newc)->prefetch(true);
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty();
+        }
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
         }
@@ -735,16 +738,14 @@ int file_t::getmeta(filemeta& meta) {
     }else {
         meta.blocks = 1; //at least for meta.json
         const auto fblocks = getfblocks();
-        for(size_t i = 0; i < fblocks.size(); i++){
+        // last block may be not full, skip it first
+        for(size_t i = 0; i < fblocks.size() - 1; i++){
             if(fblocks[i].path == "x" || fblocks[i].path.empty()){
                 continue;
             }
-            if(i == GetBlkNo(length, blksize)){
-                break; // last block not full
-            }
             meta.blocks += blksize / 512;
         }
-        meta.blocks += (length % blksize) / 512 + 1;
+        meta.blocks += (length - blksize * (fblocks.size() - 1)) / 512 + 1;
         block_size = meta.blocks;
     }
     meta.ctime = ctime;
