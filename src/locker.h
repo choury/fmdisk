@@ -6,6 +6,7 @@
 #include <pthread.h>
 
 #include <set>
+#include <memory>
 
 class locker{
     pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -167,16 +168,19 @@ public:
 class auto_rlocker{
     bool locked = false;
     bool upgraded = false;
-    locker* l;
+    std::shared_ptr<locker> l;
 public:
     auto_rlocker(const auto_rlocker&) = delete;
-    auto_rlocker(locker* l):l(l){
+    auto_rlocker(std::shared_ptr<locker> ptr):l(ptr){
         int ret = l->rlock();
         if(ret == EDEADLK){
             return;
         }
         assert(ret == 0);
         locked = true;
+    }
+    template<typename T>
+    auto_rlocker(T* raw_l):auto_rlocker(raw_l->shared_from_this()){
     }
     int upgrade(){
         assert(locked);
@@ -214,16 +218,19 @@ public:
 
 class auto_wlocker{
     bool locked = false;
-    locker* l;
+    std::shared_ptr<locker> l;
 public:
     auto_wlocker(const auto_wlocker&) = delete;
-    auto_wlocker(locker* l):l(l){
+    auto_wlocker(std::shared_ptr<locker> ptr):l(ptr){
         int ret = l->wlock();
         if(ret == EDEADLK){
             return;
         }
         assert(ret == 0);
         locked = true;
+    }
+    template<typename T>
+    auto_wlocker(T* raw_l):auto_wlocker(raw_l->shared_from_this()){
     }
     void unlock(){
         if(!locked){

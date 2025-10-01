@@ -55,11 +55,11 @@ void writeback_thread(bool* done){
             if(upool->tasks_in_queue() >= UPLOADTHREADS){
                 break;
             }
-            if(i->expired()){
+            auto b = i->lock();
+            if(b == nullptr){
                 i = dblocks.erase(i);
                 continue;
             }
-            auto b = i->lock();
             if(b->staled() >= staled_threshold){
                 upool->submit_fire_and_forget([block = *i]{ block_t::push(block); });
                 i = dblocks.erase(i);
@@ -146,11 +146,11 @@ filekey block_t::getkey() const {
 }
 
 int block_t::pull(std::weak_ptr<block_t> wb) {
-    if(wb.expired()) {
+    auto b = wb.lock();
+    if(b == nullptr) {
         return 0;
     }
-    auto b = wb.lock();
-    auto_wlock(b.get());
+    auto_wlock(b);
     if(b->flags & (BLOCK_SYNC | BLOCK_STALE)){
         return 0;
     }
@@ -207,11 +207,11 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
 }
 
 void block_t::push(std::weak_ptr<block_t> wb) {
-    if(wb.expired()) {
+    auto b = wb.lock();
+    if(b == nullptr) {
         return;
     }
-    auto b = wb.lock();
-    auto_rlock(b.get());
+    auto_rlock(b);
     size_t version = b->version;
     if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
         return;

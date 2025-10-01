@@ -26,7 +26,15 @@ int cache_prepare() {
     return sqlinit();
 }
 
-void cache_destroy(dir_t* root){
+std::shared_ptr<dir_t> cache_root() {
+    struct filemeta meta = initfilemeta(filekey{"/", 0});
+    if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
+        throw "getattr of root failed";
+    }
+    return std::make_shared<dir_t>(nullptr, meta);
+}
+
+void cache_destroy(std::shared_ptr<dir_t> root){
     stop_gc();
     if(!opt.no_cache) {
         writeback_done = true;
@@ -37,7 +45,6 @@ void cache_destroy(dir_t* root){
         gc.join();
     }
     if(!opt.no_cache) stop_delay_thread();
-    delete root;
     if(!opt.no_cache) sqldeinit();
 }
 
@@ -67,7 +74,7 @@ int entry_t::statfs(const char*, struct statvfs* sf) {
     return HANDLE_EAGAIN(fm_statfs(sf));
 }
 
-entry_t::entry_t(dir_t* parent, const filemeta& meta):
+entry_t::entry_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
     parent(parent),
     fk(std::make_shared<filekey>(basename(meta.key))),
     mode(meta.mode),
@@ -87,30 +94,32 @@ entry_t::entry_t(dir_t* parent, const filemeta& meta):
 
 entry_t::~entry_t() {
     assert(opened == 0);
-    //pthread_mutex_destroy(&init_lock);
-    //pthread_cond_destroy(&init_cond);
 }
 
 filekey entry_t::getkey() {
-    if(parent == nullptr){
+    auto p = parent.lock();
+    if(p == nullptr){
         return filekey{pathjoin("/", getrealname()), fk.load()->private_key};
     }else{
-        return filekey{pathjoin(parent->getcwd(), getrealname()), fk.load()->private_key};
+        return filekey{pathjoin(p->getcwd(), getrealname()), fk.load()->private_key};
     }
 }
 
 string entry_t::getcwd() {
-    if(parent == nullptr){
+    auto p = parent.lock();
+    if(p == nullptr){
         return "/";
     }
-    return pathjoin(parent->getcwd(), fk.load()->path);
+    return pathjoin(p->getcwd(), fk.load()->path);
 }
 
-void entry_t::pull(entry_t* entry){
+void entry_t::pull(std::weak_ptr<entry_t> entry_){
+    auto entry = entry_.lock();
+    if(entry == nullptr) {
+        return;
+    }
     auto_wlock(entry);
     if(entry->flags & ENTRY_DELETED_F){
-        __w.unlock();
-        delete entry;
         return;
     }
     try{

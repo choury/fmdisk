@@ -38,37 +38,19 @@ static string subname(const string& path) {
     return path.substr(pos+1, path.length());
 }
 
-dir_t* cache_root() {
-    struct filemeta meta = initfilemeta(filekey{"/", 0});
-    if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
-        throw "getattr of root failed";
-    }
-    return new dir_t(nullptr, meta);
-}
 
-
-dir_t::dir_t(dir_t* parent, const filemeta& meta): entry_t(parent, meta) {
+dir_t::dir_t(std::shared_ptr<dir_t> parent, const filemeta& meta): entry_t(parent, meta) {
     mode = (meta.mode & ~S_IFMT) | S_IFDIR;
-    if(flags & ENTRY_CREATE_F) {
-        entrys.emplace(".", this);
-        entrys.emplace("..",  parent);
-    }
 }
 
 dir_t::~dir_t(){
-    locker::wlock();
-    for(const auto& i: entrys){
-        if(i.first != "." && i.first != ".."){
-            delete i.second;
-        }
-    }
 }
 
 std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& flist, bool save) {
     std::set<std::string> existnames;
     for(auto i: flist){
         string bname = basename(i.key.path);
-        if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && bname == ".objs"){
+        if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && bname == ".objs"){
             continue;
         }
         bool is_dir = S_ISDIR(i.mode), is_link = false;
@@ -86,11 +68,11 @@ std::set<std::string> dir_t::insert_meta_wlocked(const std::vector<filemeta>& fl
             continue;
         }
         if(is_dir){
-            entrys.emplace(bname, new dir_t(this, i));
+            entrys.emplace(bname, std::make_shared<dir_t>(shared_dir_from_this(), i));
         }else if(is_link){
-            entrys.emplace(bname, new symlink_t(this, i));
+            entrys.emplace(bname, std::make_shared<symlink_t>(shared_dir_from_this(), i));
         }else{
-            entrys.emplace(bname, new file_t(this, i));
+            entrys.emplace(bname, std::make_shared<file_t>(shared_dir_from_this(), i));
         }
         if(save){
             save_entry_to_db(getkey().path, i);
@@ -133,8 +115,6 @@ int dir_t::pull_entrys_wlocked() {
     }
 
     assert(entrys.empty());
-    entrys.emplace(".", this);
-    entrys.emplace("..", parent);
 
     bool cached = false;
     std::vector<filemeta> flist;
@@ -153,9 +133,9 @@ int dir_t::pull_entrys_wlocked() {
     return 0;
 }
 
-entry_t* dir_t::find(std::string path) {
+std::shared_ptr<entry_t> dir_t::find(std::string path) {
     if(path == "." || path == "/"){
-        return this;
+        return shared_from_this();
     }
     if(path[0] == '/'){
         path = path.substr(1);
@@ -172,8 +152,8 @@ entry_t* dir_t::find(std::string path) {
     if(cname == path) {
         return entrys[cname];
     }
-    if(dynamic_cast<dir_t*>(entrys[cname])){
-        return dynamic_cast<dir_t*>(entrys[cname])->find(subname(path));
+    if(std::dynamic_pointer_cast<dir_t>(entrys[cname])){
+        return std::dynamic_pointer_cast<dir_t>(entrys[cname])->find(subname(path));
     }
     return nullptr;
 }
@@ -202,20 +182,20 @@ int dir_t::open() {
         }
         __r.upgrade();
         entry->flags |= ENTRY_PULLING_F;
-        dpool->submit_fire_and_forget([entry]{ pull(entry); });
+        dpool->submit_fire_and_forget([entry = std::weak_ptr<entry_t>(entry)]{
+            pull(entry);
+        });
     }
     opened++;
     return 0;
 }
 
-const std::map<string, entry_t*>& dir_t::get_entrys(){
+const std::map<string, std::shared_ptr<entry_t>>& dir_t::get_entrys(){
     auto_rlock(this);
     if((flags & DIR_PULLED_F) == 0){
         __r.upgrade();
         pull_entrys_wlocked();
     }
-    //at least '.' and '..'
-    assert(entrys.size() >= 2);
     return entrys;
 }
 
@@ -240,7 +220,7 @@ int dir_t::getmeta(filemeta& meta) {
     return 0;
 }
 
-entry_t* dir_t::insert_child_wlocked(const string& name, entry_t* entry){
+std::shared_ptr<entry_t> dir_t::insert_child_wlocked(const string& name, std::shared_ptr<entry_t> entry){
     assert(!entrys.contains(name));
     assert(entrys.size() < MAXFILE);
     entry->dump_to_db(getcwd(), name);
@@ -254,7 +234,7 @@ int dir_t::remove_wlocked() {
             return ret;
         }
     }
-    if(entrys.size() != 2){
+    if(!entrys.empty()){
         return -ENOTEMPTY;
     }
     auto key = getkey();
@@ -267,7 +247,7 @@ int dir_t::remove_wlocked() {
     delete_file_from_db(key.path);
     ::rmdir(get_cache_path(getcwd()).c_str());
     flags |= ENTRY_DELETED_F;
-    parent = nullptr;
+    parent.reset();
     if(opened || (flags & ENTRY_REASEWAIT_F)|| (flags & ENTRY_PULLING_F)) {
         //delete this in release or pull
         return 0;
@@ -280,13 +260,13 @@ size_t dir_t::children() {
     return entrys.size();
 }
 
-dir_t* dir_t::mkdir(const string& name) {
+std::shared_ptr<dir_t> dir_t::mkdir(const string& name) {
     if(endwith(name, file_encode_suffix)){
         errno = EINVAL;
         return nullptr;
     }
     auto_wlock(this);
-    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
+    if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
         return nullptr;
     }
@@ -303,16 +283,16 @@ dir_t* dir_t::mkdir(const string& name) {
     ctime = mtime = meta.ctime = meta.mtime = time(nullptr);
     meta.flags = ENTRY_CREATE_F | DIR_PULLED_F;
     meta.mode = S_IFDIR | 0755;
-    return dynamic_cast<dir_t*>(insert_child_wlocked(name, new dir_t(this, meta)));
+    return std::dynamic_pointer_cast<dir_t>(insert_child_wlocked(name, std::make_shared<dir_t>(shared_dir_from_this(), meta)));
 }
 
-file_t* dir_t::create(const string& name){
+std::shared_ptr<file_t> dir_t::create(const string& name){
     if(endwith(name, symlink_encode_suffix)){
         errno = EINVAL;
         return nullptr;
     }
     auto_wlock(this);
-    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
+    if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
         return nullptr;
     }
@@ -334,12 +314,12 @@ file_t* dir_t::create(const string& name){
     meta.flags =  ENTRY_CHUNCED_F | ENTRY_CREATE_F | FILE_ENCODE_F | FILE_DIRTY_F ;
     meta.blksize = opt.block_len;
     meta.mode = S_IFREG | 0644;
-    return dynamic_cast<file_t*>(insert_child_wlocked(name, new file_t(this, meta)));
+    return std::dynamic_pointer_cast<file_t>(insert_child_wlocked(name, std::make_shared<file_t>(shared_dir_from_this(), meta)));
 }
 
-symlink_t* dir_t::symlink(const string& name, const string& target) {
+std::shared_ptr<symlink_t> dir_t::symlink(const string& name, const string& target) {
     auto_wlock(this);
-    if(parent == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
+    if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
         return nullptr;
     }
@@ -362,7 +342,7 @@ symlink_t* dir_t::symlink(const string& name, const string& target) {
 
     flags |= DIR_DIRTY_F;
     mtime = ctime = time(nullptr);
-    return dynamic_cast<symlink_t*>(insert_child_wlocked(name, new symlink_t(this, meta)));
+    return std::dynamic_pointer_cast<symlink_t>(insert_child_wlocked(name, std::make_shared<symlink_t>(shared_dir_from_this(), meta)));
 }
 
 int dir_t::unlink(const string& name) {
@@ -371,21 +351,18 @@ int dir_t::unlink(const string& name) {
     if(!entrys.contains(name)){
         return -ENOENT;
     }
-    entry_t* entry = entrys[name];
+    auto entry = entrys[name];
     auto_wlocker __w2(entry);
 
-    if(dynamic_cast<dir_t*>(entry)){
+    if(std::dynamic_pointer_cast<dir_t>(entry)){
         return -EISDIR;
     }
     int ret = entry->remove_wlocked();
     if(ret < 0) {
         return ret;
     }
+    __w2.unlock();
     entrys.erase(name);
-    if(ret > 0) {
-        __w2.unlock();
-        delete entry;
-    }
     mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
     return 0;
@@ -397,37 +374,34 @@ int dir_t::rmdir(const string& name) {
     if(!entrys.contains(name)){
         return -ENOENT;
     }
-    entry_t* entry = entrys[name];
+    auto entry = entrys[name];
     auto_wlocker __w2(entry);
-    if(dynamic_cast<file_t*>(entry)){
+    if(std::dynamic_pointer_cast<file_t>(entry)){
         return -ENOTDIR;
     }
     int ret = entry->remove_wlocked();
     if (ret < 0) {
         return ret;
     }
+    __w2.unlock();
     entrys.erase(name);
-    if(ret > 0) {
-        __w2.unlock();
-        delete entry;
-    }
     mtime = time(nullptr);
     flags |= DIR_DIRTY_F;
     return 0;
 }
 
-int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname, unsigned int mv_flags) {
+int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const string& newname, unsigned int mv_flags) {
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(oldname)){
         return -ENOENT;
     }
 
-    if(this != newparent && newparent->trywlock()) {
+    if(this != newparent.get() && newparent->trywlock()) {
         return -EDEADLK;
     }
     defer([this, newparent] {
-        if(this != newparent) newparent->unwlock();
+        if(this != newparent.get()) newparent->unwlock();
     });
     if(newparent->children() >= MAXFILE){
         return -ENOSPC;
@@ -445,14 +419,14 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
     }
 #endif
 
-    entry_t* entry = entrys[oldname];
+    auto entry = entrys[oldname];
     auto_wlocker __3(entry);
     std::shared_ptr<void> new_private_key;
     int ret = 0;
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
         if(S_ISREG(entry->getmode())) {
-            file_t* file = dynamic_cast<file_t*>(entry);
+            auto file = std::dynamic_pointer_cast<file_t>(entry);
             if(fm_private_key_tostring(file->private_key)[0] == '\0') {
                 // 这个文件还没来得及上传到远程
                 assert(file->flags & FILE_DIRTY_F);
@@ -475,12 +449,12 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
                 }
             }
         } else if(S_ISDIR(entry->getmode())){
-            dir_t* dir = dynamic_cast<dir_t*>(entry);
+            auto dir = std::dynamic_pointer_cast<dir_t>(entry);
             ret = dir->pull_entrys_wlocked();
             if(ret < 0) {
                 return ret;
             }
-            if(dir->entrys.size() > 2) {
+            if(!dir->entrys.empty()) {
                 return -ENOTEMPTY;
             }
             filekey newfile{newname, 0};
@@ -490,7 +464,7 @@ int dir_t::moveto(dir_t* newparent, const string& oldname, const string& newname
                 new_private_key = newfile.private_key;
             }
         } else if(S_ISLNK(entry->getmode())) {
-            symlink_t* symlink = dynamic_cast<symlink_t*>(entry);
+            auto symlink = std::dynamic_pointer_cast<symlink_t>(entry);
             assert(symlink->flags & ENTRY_CHUNCED_F);
             filekey newfile{encodepath(newname, symlink_encode_suffix), 0};
             ret = HANDLE_EAGAIN(fm_copy(symlink->getkey(), newparent->getkey(), newfile));
@@ -578,7 +552,6 @@ int dir_t::sync(int dataonly) {
                 continue;
             }
             delete_entry_from_db(it->second->getkey().path);
-            delete it->second;
             it = entrys.erase(it);
         }
         return 0;
@@ -673,18 +646,12 @@ int dir_t::drop_cache_wlocked(bool mem_only){
     if(ret != 0) {
         return ret;
     }
-    for(auto i: entrys) {
-        if(i.first == "." || i.first == ".."){
-            continue;
-        }
-        delete i.second;
-    }
     entrys.clear();
     flags &= ~DIR_PULLED_F;
     if(opt.no_cache || mem_only) {
         return 0;
     }
-    return delete_entry_prefix_from_db(parent ? getkey().path: "");
+    return delete_entry_prefix_from_db(parent.lock() ? getkey().path: "");
 }
 
 int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {

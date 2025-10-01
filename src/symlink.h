@@ -13,7 +13,7 @@ class symlink_t: public entry_t {
     virtual int remove_wlocked() override;
 
 public:
-    symlink_t(dir_t* parent, const filemeta& meta);
+    symlink_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~symlink_t() override;
     virtual int getmeta(filemeta& meta) override;
 

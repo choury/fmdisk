@@ -24,7 +24,7 @@
 static pthread_mutex_t droped_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<filekey> droped;
 static pthread_mutex_t openfile_lock = PTHREAD_MUTEX_INITIALIZER;
-static std::map<ino_t, file_t*> opened_inodes;
+static std::map<ino_t, std::shared_ptr<file_t>> opened_inodes;
 static std::atomic<bool> gc_stop(false);
 
 // 清理缓存直到满足大小限制
@@ -109,7 +109,7 @@ void trim(const filekey& file) {
 }
 
 // 恢复dirty数据并重新上传
-void recover_dirty_data(dir_t* root) {
+void recover_dirty_data(std::shared_ptr<dir_t> root) {
     std::vector<std::string> dirty_files;
     if(get_dirty_files(dirty_files) <= 0) {
         return;
@@ -118,7 +118,7 @@ void recover_dirty_data(dir_t* root) {
 
     for(const auto& file_path : dirty_files) {
         string path = decodepath(file_path, file_encode_suffix);
-        file_t* file = dynamic_cast<file_t*>(root->find(path));
+        auto file = std::dynamic_pointer_cast<file_t>(root->find(path));
         if(file == nullptr) {
             warnlog("File %s not found in cache, skipping\n", file_path.c_str());
             continue;
@@ -205,7 +205,7 @@ inline size_t GetBlkNo(size_t p, blksize_t blksize) {
     return (p - 1) / blksize;
 }
 
-file_t::file_t(dir_t *parent, const filemeta& meta):
+file_t::file_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
     entry_t(parent, meta),
     fi{-1, 0, 0},
     blksize(meta.blksize),
@@ -231,7 +231,7 @@ file_t::file_t(dir_t *parent, const filemeta& meta):
 }
 
 file_t::~file_t() {
-    auto_wlock(this);
+    //这里不需要加锁, 因为走到这里的话其他地方已经没有shared_ptr指向这个对象了
     flags |= ENTRY_DELETED_F;
     reset_wlocked();
 }
@@ -294,7 +294,7 @@ int file_t::open(){
     fi.inode = st.stx_ino;
     fi.btime = st.stx_btime.tv_sec * 1000000000LL + st.stx_btime.tv_nsec;
     infolog("open file: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
-    opened_inodes.emplace(fi.inode, this);
+    opened_inodes.emplace(fi.inode, shared_file_from_this());
     if(flags & ENTRY_CHUNCED_F) {
         auto fblocks = getfblocks();
         assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
@@ -309,7 +309,11 @@ int file_t::open(){
     return 0;
 }
 
-void file_t::clean(file_t* file) {
+void file_t::clean(std::weak_ptr<file_t> file_) {
+    auto file = file_.lock();
+    if(file == nullptr) {
+        return;
+    }
     auto_lock(&openfile_lock); //for removing inode from opened_inodes
     auto_wlock(file);
     if(file->opened > 0){
@@ -318,12 +322,12 @@ void file_t::clean(file_t* file) {
     }
     if(file->flags & ENTRY_DELETED_F){
         opened_inodes.erase(file->fi.inode);
-        __w.unlock();
-        delete file;
         return;
     }
     if (file->flags & FILE_DIRTY_F && file->sync_wlocked()) {
-        add_delay_job((taskfunc)clean, file, 60);
+        submit_delay_job([file_]() {
+            file_t::clean(file_);
+        }, 60);
         return;
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
@@ -348,7 +352,10 @@ int file_t::release(){
     }
 
     flags |= ENTRY_REASEWAIT_F;
-    add_delay_job((taskfunc)clean, this, 0);
+    //add_delay_job((taskfunc)clean, this, 0);
+    submit_delay_job([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
+        file_t::clean(file);
+    }, 0);
     return 0;
 }
 
@@ -535,7 +542,9 @@ int file_t::truncate(off_t offset){
     ctime = mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
-        upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
+        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
+            upload_meta_async_task(file);
+        });
     }
     return 0;
 }
@@ -578,7 +587,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         sync_wlocked(true);
     }else if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
-        upool->submit_fire_and_forget([this]{ upload_meta_async_task(this); });
+        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
+             upload_meta_async_task(file);
+        });
     }
     return ret;
 }
@@ -615,7 +626,7 @@ int file_t::remove_wlocked() {
         warnlog("failed to unlink cache file %s: %s\n", cache_path.c_str(), strerror(errno));
     }
     flags |= ENTRY_DELETED_F;
-    parent = nullptr;
+    parent.reset();
     if(opened || (flags & ENTRY_REASEWAIT_F)) {
         //do delete in clean
         return 0;
@@ -888,11 +899,15 @@ int file_t::drop_cache_wlocked(bool mem_only) {
     return delete_file_from_db(getkey().path);
 }
 
-void file_t::upload_meta_async_task(file_t* file) {
+void file_t::upload_meta_async_task(std::weak_ptr<file_t> file_) {
+    auto file = file_.lock();
+    if(file == nullptr) {
+        return;
+    }
     if(file->trywlock()) {
         return;  // 获取不到锁，放弃本次上传
     }
-    defer(&file_t::unwlock, dynamic_cast<locker*>(file));
+    defer([file]{ file->unwlock(); });
     if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
         return;
     }

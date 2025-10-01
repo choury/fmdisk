@@ -11,9 +11,7 @@
 #include "threadpool.h"
 
 class TrdPool {
-private:
-    struct thrdpool* pool_;
-
+public:
     template<typename T>
     struct TaskWrapper {
         std::function<T()> func;
@@ -39,6 +37,9 @@ private:
         delete wrapper;
         return nullptr;
     }
+
+private:
+    struct thrdpool* pool_;
 
 public:
     explicit TrdPool(size_t thread_count = std::thread::hardware_concurrency())
@@ -110,5 +111,11 @@ public:
         }
     }
 };
+
+inline void submit_delay_job(std::function<void()> func, unsigned int delay_sec) {
+    using TaskWrapper = TrdPool::TaskWrapper<void>;
+    auto wrapper = new TaskWrapper(std::move(func));
+    add_delay_job(TrdPool::execute_task<void>, wrapper, delay_sec);
+}
 
 #endif

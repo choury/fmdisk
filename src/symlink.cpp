@@ -7,7 +7,7 @@
 #include <errno.h>
 #include <string.h>
 
-symlink_t::symlink_t(dir_t* parent, const filemeta& meta):
+symlink_t::symlink_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
     entry_t(parent, meta),
     target_path(meta.inline_data)
 {
@@ -116,7 +116,7 @@ int symlink_t::utime(const struct timespec tv[2]) {
     } else {
         meta.mtime = tv[1].tv_sec;
     }
-    int ret = HANDLE_EAGAIN(upload_meta(parent->getkey(), meta, {}));
+    int ret = HANDLE_EAGAIN(upload_meta(parent.lock()->getkey(), meta, {}));
     if(ret){
         return ret;
     }
@@ -148,7 +148,7 @@ int symlink_t::remove_wlocked() {
     }
 
     flags |= ENTRY_DELETED_F;
-    parent = nullptr;
+    parent.reset();
     delete_entry_from_db(key.path);
     return delete_file_from_db(key.path);
 }

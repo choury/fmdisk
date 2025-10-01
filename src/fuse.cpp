@@ -12,6 +12,7 @@
 #include <memory>
 #include <sstream>
 
+std::shared_ptr<dir_t> root = nullptr;
 std::unique_ptr<struct statvfs> fs = nullptr;
 struct fmoption opt{};
 
@@ -23,12 +24,13 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     conn->max_readahead = 10*1024*1024;
 #if FUSE_VERSION >= 317 && FUSE_HOTFIX_VERSION >= 1
     conn->no_interrupt = 1;
-    fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
+    //we should make fuse framwork to lookup . and .., so disable FUSE_CAP_EXPORT_SUPPORT
+    //fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
     fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
     //fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
     fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
 #else
-    conn->want |= conn->capable & (FUSE_CAP_EXPORT_SUPPORT | FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_PARALLEL_DIROPS);
+    conn->want |= conn->capable & (FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_PARALLEL_DIROPS);
     conn->want &= ~FUSE_CAP_ATOMIC_O_TRUNC;
 #endif
     cfg->hard_remove = 1; // 不隐藏删除的文件
@@ -41,15 +43,16 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     //这个理论上需要3.14.1，但是FUSE_HOTFIX_VERSION还没有引入，所以只能判断 > 3.14
     cfg->parallel_direct_writes = 1;
 #endif
-    dir_t* root = cache_root();
+    root = cache_root();
     // 恢夏dirty数据并重新上传
     recover_dirty_data(root);
-    return root;
+    return root.get();
 }
 
-void fm_fuse_destroy(void* root){
+void fm_fuse_destroy(void*){
     fs = nullptr;
-    cache_destroy((dir_t*)root);
+    cache_destroy(root);
+    root.reset();
     log_cleanup();
     if(opt.clean) {
         opt.clean();
@@ -75,7 +78,8 @@ int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
 
 int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
                     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags){
-    dir_t* dir = (dir_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto dir = std::dynamic_pointer_cast<dir_t>(*entry_ptr);
     auto entrys = dir->get_entrys();
     for(const auto& i: entrys){
         filler(buf, i.first.c_str(), nullptr, 0, (enum fuse_fill_dir_flags)0);
@@ -84,7 +88,8 @@ int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
 }
 
 int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {
-    dir_t* entry = (dir_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto entry = std::dynamic_pointer_cast<dir_t>(*entry_ptr);
     return entry->sync(dataonly);
 }
 
@@ -93,8 +98,7 @@ int fm_fuse_releasedir(const char*, struct fuse_file_info *fi){
 }
 
 int fm_fuse_access(const char* path, int mask){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    entry_t* entry = root->find(path);
+    auto entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -102,11 +106,10 @@ int fm_fuse_access(const char* path, int mask){
 }
 
 int fm_fuse_getattr(const char *path, struct stat *st, struct fuse_file_info *fi){
-    entry_t* entry = nullptr;
+    std::shared_ptr<entry_t> entry;
     if(fi){
-        entry = (entry_t*)fi->fh;
+        entry = *(std::shared_ptr<entry_t>*)fi->fh;
     }else{
-        dir_t* root = (dir_t*)fuse_get_context()->private_data;
         entry = root->find(path);
     }
     if(entry == nullptr){
@@ -134,8 +137,7 @@ int fm_fuse_getattr(const char *path, struct stat *st, struct fuse_file_info *fi
 
 
 int fm_fuse_mkdir(const char *path, mode_t mode){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t* parent =  dynamic_cast<dir_t*>(root->find(dirname(path)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
@@ -147,8 +149,7 @@ int fm_fuse_mkdir(const char *path, mode_t mode){
 }
 
 int fm_fuse_unlink(const char *path){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t* parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
@@ -157,8 +158,7 @@ int fm_fuse_unlink(const char *path){
 }
 
 int fm_fuse_rmdir(const char *path){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t* parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
@@ -167,12 +167,11 @@ int fm_fuse_rmdir(const char *path){
 }
 
 int fm_fuse_rename(const char *oldname, const char *newname, unsigned int flags){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t* parent =  dynamic_cast<dir_t*>(root->find(dirname(oldname)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(oldname)));
     if(parent == nullptr){
         return -ENOENT;
     }
-    dir_t* newparent = dynamic_cast<dir_t*>(root->find(dirname(newname)));
+    auto newparent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(newname)));
     if(newparent == nullptr){
         return -ENOENT;
     }
@@ -184,28 +183,28 @@ int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
     if(opt.no_cache) {
         return -EROFS; // 禁止创建文件
     }
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t *parent = dynamic_cast<dir_t*>(root->find(dirname(path)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(path)));
     if(parent == nullptr){
         return -ENOENT;
     }
-    file_t *entry = parent->create(basename(path));
+    auto entry = parent->create(basename(path));
     if(entry == nullptr){
         return -errno;
     }
-    fi->fh = (uint64_t)entry;
+    // Store shared_ptr on heap to maintain reference count
+    fi->fh = (uint64_t)(new std::shared_ptr<entry_t>(entry));
     fi->direct_io = 1;
     fs = nullptr;
     return entry->open();
 }
 
 int fm_fuse_open(const char *path, struct fuse_file_info *fi){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    entry_t* entry = root->find(path);
+    auto entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
-    fi->fh = (uint64_t)entry;
+    // Store shared_ptr on heap to maintain reference count
+    fi->fh = (uint64_t)(new std::shared_ptr<entry_t>(entry));
     if(opt.no_cache) {
         fi->keep_cache = 1;
         fi->noflush = 1;
@@ -222,12 +221,12 @@ int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
     if(opt.no_cache) {
         return -EROFS;
     }
-    file_t* entry = nullptr;
+    std::shared_ptr<file_t> entry;
     if(fi){
-        entry = (file_t*)fi->fh;
+        auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+        entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
     }else{
-        dir_t* root = (dir_t*)fuse_get_context()->private_data;
-        entry = dynamic_cast<file_t*>(root->find(path));
+        entry = std::dynamic_pointer_cast<file_t>(root->find(path));
     }
     if(entry == nullptr){
         return -ENOENT;
@@ -237,7 +236,8 @@ int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
 }
 
 int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    file_t* entry = (file_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
     return entry->read(buf, offset, size);
 }
 
@@ -245,7 +245,8 @@ int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, stru
     if(opt.no_cache) {
         return -EROFS;
     }
-    file_t* entry = (file_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
     fs = nullptr;
     return entry->write(buf, offset, size);
 }
@@ -254,29 +255,32 @@ int fm_fuse_fsync(const char *, int dataonly, struct fuse_file_info *fi){
     if(opt.no_cache) {
         return -EROFS;
     }
-    file_t* entry = (file_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
     return entry->sync(dataonly);
 }
 
 int fm_fuse_flush(const char*, struct fuse_file_info *fi){
-    file_t* entry = (file_t*)fi->fh;
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
     return entry->sync(1);
 }
 
 int fm_fuse_release(const char *, struct fuse_file_info *fi){
-    entry_t* entry = (entry_t*)fi->fh;
-    return entry->release();
+    auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
+    int ret = (*entry_ptr)->release();
+    delete entry_ptr;  // Release the shared_ptr, decrement reference count
+    return ret;
 }
 
 int fm_fuse_utimens(const char *path, const struct timespec tv[2], struct fuse_file_info *fi){
     if(opt.no_cache) {
         return -EROFS;
     }
-    entry_t* entry = nullptr;
+    std::shared_ptr<entry_t> entry;
     if(fi){
-        entry = (entry_t*)fi->fh;
+        entry = *(std::shared_ptr<entry_t>*)fi->fh;
     }else{
-        dir_t* root = (dir_t*)fuse_get_context()->private_data;
         entry = root->find(path);
     }
     if(entry == nullptr){
@@ -290,11 +294,10 @@ int fm_fuse_chmod(const char *path, mode_t mode, struct fuse_file_info *fi){
     if(opt.no_cache) {
         return -EROFS;
     }
-    entry_t* entry = nullptr;
+    std::shared_ptr<entry_t> entry;
     if(fi){
-        entry = (entry_t*)fi->fh;
+        entry = *(std::shared_ptr<entry_t>*)fi->fh;
     }else{
-        dir_t* root = (dir_t*)fuse_get_context()->private_data;
         entry = root->find(path);
     }
     if(entry == nullptr){
@@ -307,11 +310,10 @@ int fm_fuse_chown(const char* path, uid_t, gid_t, struct fuse_file_info *fi) {
     if(opt.no_cache) {
         return -EROFS;
     }
-    entry_t* entry = nullptr;
+    std::shared_ptr<entry_t> entry;
     if(fi){
-        entry = (entry_t*)fi->fh;
+        entry = *(std::shared_ptr<entry_t>*)fi->fh;
     }else{
-        dir_t* root = (dir_t*)fuse_get_context()->private_data;
         entry = root->find(path);
     }
     if(entry == nullptr){
@@ -321,12 +323,11 @@ int fm_fuse_chown(const char* path, uid_t, gid_t, struct fuse_file_info *fi) {
 }
 
 int fm_fuse_symlink(const char *target, const char *linkpath){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    dir_t *parent = dynamic_cast<dir_t*>(root->find(dirname(linkpath)));
+    auto parent = std::dynamic_pointer_cast<dir_t>(root->find(dirname(linkpath)));
     if(parent == nullptr){
         return -ENOENT;
     }
-    symlink_t *entry = parent->symlink(basename(linkpath), target);
+    auto entry = parent->symlink(basename(linkpath), target);
     if(entry == nullptr){
         return -errno;
     }
@@ -335,8 +336,7 @@ int fm_fuse_symlink(const char *target, const char *linkpath){
 }
 
 int fm_fuse_readlink(const char *path, char *buf, size_t bufsiz){
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    symlink_t* entry = dynamic_cast<symlink_t*>(root->find(path));
+    auto entry = std::dynamic_pointer_cast<symlink_t>(root->find(path));
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -367,8 +367,7 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
 #else
 int fm_fuse_setxattr(const char *path, const char *name, const char *value, size_t size, int flags){
 #endif
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    entry_t* entry = root->find(path);
+    auto entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }
@@ -412,8 +411,7 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
 #else
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
 #endif
-    dir_t* root = (dir_t*)fuse_get_context()->private_data;
-    entry_t* entry = root->find(path);
+    auto entry = root->find(path);
     if(entry == nullptr){
         return -ENOENT;
     }

@@ -22,16 +22,19 @@ class file_t: public entry_t {
     size_t block_size = 0; // cache for getmeta
     int truncate_wlocked(off_t offset);
     virtual int pull_wlocked() override;
-    static void clean(file_t* file);
+    static void clean(std::weak_ptr<file_t> file);
     virtual std::string getrealname() override;
+    std::shared_ptr<file_t> shared_file_from_this() {
+        return std::static_pointer_cast<file_t>(shared_from_this());
+    }
 
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
-    static void upload_meta_async_task(file_t* file);  // 异步上传meta的静态函数
+    static void upload_meta_async_task(std::weak_ptr<file_t> file);  // 异步上传meta的静态函数
     virtual int drop_cache_wlocked(bool mem_only) override;
     virtual int remove_wlocked() override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
 public:
-    file_t(dir_t* parent, const filemeta& meta);
+    file_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~file_t();
     void reset_wlocked();
 
@@ -65,6 +68,6 @@ void writeback_thread(bool* done);
 void start_gc();
 void stop_gc();
 void trim(const filekey& file);
-void recover_dirty_data(dir_t* root);
+void recover_dirty_data(std::shared_ptr<dir_t> root);
 
 #endif

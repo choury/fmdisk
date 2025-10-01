@@ -5,7 +5,7 @@
 
 #include <atomic>
 
-class block_t: locker, public std::enable_shared_from_this<block_t> {
+class block_t: public locker, public std::enable_shared_from_this<block_t> {
     const fileInfo fi;
     filekey fk;   //fk.path = 'x'表示空块(同时private_key也为空), fk.path = ''表示未分块的文件
     const size_t no;

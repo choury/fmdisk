@@ -23,9 +23,9 @@ struct storage_class_info {
     size_t size_deep_archive_restoring;
 };
 
-class entry_t: public locker {
+class entry_t: public locker, public std::enable_shared_from_this<entry_t> {
 protected:
-    dir_t* parent;
+    std::weak_ptr<dir_t> parent;
     std::atomic<std::shared_ptr<filekey>> fk;
     std::atomic<mode_t> mode;
     size_t length;
@@ -38,13 +38,13 @@ protected:
     virtual int pull_wlocked() = 0;
     virtual int drop_cache_wlocked(bool mem_only) = 0;
     virtual int remove_wlocked() = 0;
-    static void pull(entry_t* entry);
+    static void pull(std::weak_ptr<entry_t> entry);
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
         return -EINVAL;
     }
 public:
     static int statfs(const char* path, struct statvfs *sf);
-    entry_t(dir_t* parent, const filemeta& meta);
+    entry_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~entry_t() override;
     filekey getkey();
     mode_t getmode() const {
@@ -79,6 +79,9 @@ class TrdPool;
 extern TrdPool* upool;
 extern TrdPool* dpool;
 
+int cache_prepare();
+std::shared_ptr<dir_t> cache_root();
+void cache_destroy(std::shared_ptr<dir_t> root);
 int create_dirs_recursive(const string& path);
 
 #endif
