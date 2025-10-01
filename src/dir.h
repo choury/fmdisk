@@ -23,7 +23,7 @@ class dir_t: public entry_t {
     virtual std::string getrealname() override {
         return fk.load()->path;
     }
-    virtual int drop_cache_wlocked(bool mem_only) override;
+    virtual int drop_cache_wlocked(bool mem_only, time_t before) override;
     virtual int remove_wlocked() override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
 public:
@@ -36,6 +36,7 @@ public:
 
     virtual int open() override;
     virtual int release() override{
+        atime = time(nullptr);
         auto_wlock(this);
         assert(opened > 0);
         opened--;

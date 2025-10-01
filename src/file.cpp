@@ -109,7 +109,7 @@ void trim(const filekey& file) {
 }
 
 // 恢复dirty数据并重新上传
-void recover_dirty_data(std::shared_ptr<dir_t> root) {
+void recover_dirty_data() {
     std::vector<std::string> dirty_files;
     if(get_dirty_files(dirty_files) <= 0) {
         return;
@@ -118,7 +118,7 @@ void recover_dirty_data(std::shared_ptr<dir_t> root) {
 
     for(const auto& file_path : dirty_files) {
         string path = decodepath(file_path, file_encode_suffix);
-        auto file = std::dynamic_pointer_cast<file_t>(root->find(path));
+        auto file = std::dynamic_pointer_cast<file_t>(cache_root()->find(path));
         if(file == nullptr) {
             warnlog("File %s not found in cache, skipping\n", file_path.c_str());
             continue;
@@ -147,6 +147,10 @@ void start_gc() {
         // 定期检查缓存大小并清理
         if (!opt.no_cache && opt.cache_size >= 0 && cleanup_cache_by_size()) {
             haswork = true;
+        }
+
+        if(opt.entry_cache_second >= 0) {
+            clean_entry_cache();
         }
 
         if(haswork) {
@@ -263,6 +267,7 @@ void file_t::reset_wlocked() {
 }
 
 int file_t::open(){
+    atime = time(nullptr);
     auto_lock(&openfile_lock); //for putting inode into opened_inodes
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
@@ -336,6 +341,7 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
 }
 
 int file_t::release(){
+    atime = time(nullptr);
     auto_wlock(this);
     opened--;
     if(opened > 0) {
@@ -424,6 +430,7 @@ int file_t::pull_wlocked() {
 }
 
 int file_t::read(void* buff, off_t offset, size_t size) {
+    atime = time(nullptr);
     auto_rlock(this);
     assert(opened);
     if((size_t)offset > length){
@@ -530,6 +537,7 @@ int file_t::truncate_wlocked(off_t offset){
 }
 
 int file_t::truncate(off_t offset){
+    atime = time(nullptr);
     auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
@@ -550,6 +558,7 @@ int file_t::truncate(off_t offset){
 }
 
 int file_t::write(const void* buff, off_t offset, size_t size) {
+    atime = time(nullptr);
     auto_wlock(this);
     assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
@@ -699,6 +708,7 @@ std::vector<filekey> file_t::getkeys() {
 }
 
 int file_t::getmeta(filemeta& meta) {
+    atime = time(nullptr);
     auto_rlock(this);
     assert(fm_private_key_tostring(fk.load()->private_key)[0] != '\0');
     if((flags & ENTRY_INITED_F) == 0){
@@ -773,6 +783,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
 
 
 int file_t::sync(int dataonly){
+    atime = time(nullptr);
     auto_wlock(this);
     if(flags & ENTRY_DELETED_F) {
         return 0;
@@ -789,6 +800,7 @@ int file_t::sync(int dataonly){
 }
 
 int file_t::utime(const struct timespec tv[2]) {
+    atime = time(nullptr);
     //ignore atime
     if(tv[1].tv_nsec == UTIME_OMIT) {
         return 0; // no change
@@ -864,7 +876,7 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
     }
 }
 
-int file_t::drop_cache_wlocked(bool mem_only) {
+int file_t::drop_cache_wlocked(bool mem_only, time_t before) {
     if(opened || fi.fd >= 0){
         return -EBUSY;
     }
@@ -873,6 +885,9 @@ int file_t::drop_cache_wlocked(bool mem_only) {
     }
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
+    }
+    if(before && atime > before) {
+        return -EAGAIN;
     }
     //fblocks的获取不能后置，因为可能是通过blocks获取的
     auto fblocks = getfblocks();

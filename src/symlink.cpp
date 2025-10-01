@@ -1,8 +1,6 @@
 #include "common.h"
 #include "symlink.h"
 #include "dir.h"
-//#include "fmdisk.h"
-//#include "utils.h"
 #include "sqlite.h"
 #include <errno.h>
 #include <string.h>
@@ -33,6 +31,7 @@ std::string symlink_t::getrealname() {
 }
 
 int symlink_t::getmeta(filemeta& meta) {
+    atime = time(nullptr);
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F) {
         return -ENOENT;
@@ -87,6 +86,7 @@ int symlink_t::pull_wlocked() {
 }
 
 int symlink_t::utime(const struct timespec tv[2]) {
+    atime = time(nullptr);
     //no atime in filemeta
     if(tv[1].tv_nsec == UTIME_OMIT){
         return 0;
@@ -127,12 +127,15 @@ int symlink_t::utime(const struct timespec tv[2]) {
     return 0;
 }
 
-int symlink_t::drop_cache_wlocked(bool mem_only) {
+int symlink_t::drop_cache_wlocked(bool mem_only, time_t before) {
     if(flags & FILE_DIRTY_F){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
         return 0;
+    }
+    if(before && atime > before) {
+        return -EAGAIN;
     }
     if(opt.no_cache || mem_only) {
         return 0;

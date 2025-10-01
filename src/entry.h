@@ -28,6 +28,7 @@ protected:
     std::weak_ptr<dir_t> parent;
     std::atomic<std::shared_ptr<filekey>> fk;
     std::atomic<mode_t> mode;
+    std::atomic<time_t> atime;
     size_t length;
     time_t mtime = 0;
     time_t ctime = 0;
@@ -36,7 +37,7 @@ protected:
     string getcwd();
     virtual string getrealname() = 0;
     virtual int pull_wlocked() = 0;
-    virtual int drop_cache_wlocked(bool mem_only) = 0;
+    virtual int drop_cache_wlocked(bool mem_only, time_t before) = 0;
     virtual int remove_wlocked() = 0;
     static void pull(std::weak_ptr<entry_t> entry);
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
@@ -59,9 +60,18 @@ public:
     virtual int release() = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
     virtual void dump_to_db(const std::string& path, const std::string& name) = 0;
-    int drop_cache(bool mem_only) {
-        auto_wlock(this);
-        return drop_cache_wlocked(mem_only);
+    int drop_cache(bool mem_only, time_t before = 0) {
+        if(before == 0) {
+            auto_wlock(this);
+            return drop_cache_wlocked(mem_only, 0);
+        } else {
+            if(trywlock() != 0) {
+                return -EBUSY;
+            }
+            int ret = drop_cache_wlocked(mem_only, before);
+            unwlock();
+            return ret;
+        }
     }
     virtual int get_storage_classes(storage_class_info& info) {
         info.size_store[STORAGE_UNKNOWN] += length;
@@ -81,7 +91,8 @@ extern TrdPool* dpool;
 
 int cache_prepare();
 std::shared_ptr<dir_t> cache_root();
-void cache_destroy(std::shared_ptr<dir_t> root);
+void cache_destroy();
 int create_dirs_recursive(const string& path);
+void clean_entry_cache();
 
 #endif

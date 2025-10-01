@@ -134,6 +134,7 @@ int dir_t::pull_entrys_wlocked() {
 }
 
 std::shared_ptr<entry_t> dir_t::find(std::string path) {
+    atime = time(nullptr);
     if(path == "." || path == "/"){
         return shared_from_this();
     }
@@ -159,6 +160,7 @@ std::shared_ptr<entry_t> dir_t::find(std::string path) {
 }
 
 int dir_t::open() {
+    atime = time(nullptr);
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         int ret = pull_wlocked();
@@ -201,6 +203,7 @@ const std::map<string, std::shared_ptr<entry_t>>& dir_t::get_entrys(){
 
 
 int dir_t::getmeta(filemeta& meta) {
+    atime = time(nullptr);
     auto_rlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
@@ -261,6 +264,7 @@ size_t dir_t::children() {
 }
 
 std::shared_ptr<dir_t> dir_t::mkdir(const string& name) {
+    atime = time(nullptr);
     if(endwith(name, file_encode_suffix)){
         errno = EINVAL;
         return nullptr;
@@ -287,6 +291,7 @@ std::shared_ptr<dir_t> dir_t::mkdir(const string& name) {
 }
 
 std::shared_ptr<file_t> dir_t::create(const string& name){
+    atime = time(nullptr);
     if(endwith(name, symlink_encode_suffix)){
         errno = EINVAL;
         return nullptr;
@@ -318,6 +323,7 @@ std::shared_ptr<file_t> dir_t::create(const string& name){
 }
 
 std::shared_ptr<symlink_t> dir_t::symlink(const string& name, const string& target) {
+    atime = time(nullptr);
     auto_wlock(this);
     if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
         errno = EINVAL;
@@ -346,6 +352,7 @@ std::shared_ptr<symlink_t> dir_t::symlink(const string& name, const string& targ
 }
 
 int dir_t::unlink(const string& name) {
+    atime = time(nullptr);
     auto_wlock(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(name)){
@@ -369,6 +376,7 @@ int dir_t::unlink(const string& name) {
 }
 
 int dir_t::rmdir(const string& name) {
+    atime = time(nullptr);
     auto_wlock(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(name)){
@@ -391,6 +399,7 @@ int dir_t::rmdir(const string& name) {
 }
 
 int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const string& newname, unsigned int mv_flags) {
+    atime = time(nullptr);
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(oldname)){
@@ -528,6 +537,7 @@ skip_remote:
 }
 
 int dir_t::sync(int dataonly) {
+    atime = time(nullptr);
     auto_rlock(this);
     assert(flags & ENTRY_INITED_F);
     if(flags & ENTRY_DELETED_F){
@@ -547,7 +557,7 @@ int dir_t::sync(int dataonly) {
                 ++it;
                 continue;
             }
-            if(it->second->drop_cache(false) != 0){
+            if(it->second->drop_cache(false, time(nullptr)) != 0){
                 ++it;
                 continue;
             }
@@ -568,6 +578,7 @@ int dir_t::sync(int dataonly) {
 }
 
 int dir_t::utime(const struct timespec tv[2]) {
+    atime = time(nullptr);
     //no atime in filemeta
     if(tv[1].tv_nsec == UTIME_OMIT){
         return 0;
@@ -626,11 +637,11 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
     }
 }
 
-int dir_t::drop_cache_wlocked(bool mem_only){
+int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     if(opened){
         return -EBUSY;
     }
-    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F) || (flags & DIR_DIRTY_F)){
+    if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F)){
         return -EAGAIN;
     }
     if((flags & ENTRY_INITED_F) == 0){
@@ -638,13 +649,13 @@ int dir_t::drop_cache_wlocked(bool mem_only){
     }
     int ret = 0;
     for(auto i : entrys){
-        if(i.first == "." || i.first == ".."){
-            continue;
-        }
-        ret |= i.second->drop_cache(mem_only);
+        ret |= i.second->drop_cache(mem_only, before);
     }
     if(ret != 0) {
         return ret;
+    }
+    if(before && atime > before) {
+        return -EAGAIN;
     }
     entrys.clear();
     flags &= ~DIR_PULLED_F;

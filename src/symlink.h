@@ -9,7 +9,7 @@ class symlink_t: public entry_t {
 
     virtual int pull_wlocked() override;
     virtual std::string getrealname() override;
-    virtual int drop_cache_wlocked(bool mem_only) override;
+    virtual int drop_cache_wlocked(bool mem_only, time_t before) override;
     virtual int remove_wlocked() override;
 
 public:

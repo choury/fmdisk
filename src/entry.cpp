@@ -13,10 +13,17 @@ TrdPool* dpool;
 std::thread gc;
 bool writeback_done = false;
 
+std::shared_ptr<dir_t> root = nullptr;
+
 int cache_prepare() {
     assert(opt.block_len > INLINE_DLEN);
-    gc = std::thread(start_gc);
     dpool = new TrdPool(DOWNLOADTHREADS);
+    struct filemeta meta = initfilemeta(filekey{"/", 0});
+    if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
+        throw "getattr of root failed";
+    }
+    root = std::make_shared<dir_t>(nullptr, meta);
+    gc = std::thread(start_gc);
     if(opt.no_cache) {
         return 0;
     }
@@ -27,14 +34,10 @@ int cache_prepare() {
 }
 
 std::shared_ptr<dir_t> cache_root() {
-    struct filemeta meta = initfilemeta(filekey{"/", 0});
-    if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
-        throw "getattr of root failed";
-    }
-    return std::make_shared<dir_t>(nullptr, meta);
+    return root;
 }
 
-void cache_destroy(std::shared_ptr<dir_t> root){
+void cache_destroy(){
     stop_gc();
     if(!opt.no_cache) {
         writeback_done = true;
@@ -46,6 +49,11 @@ void cache_destroy(std::shared_ptr<dir_t> root){
     }
     if(!opt.no_cache) stop_delay_thread();
     if(!opt.no_cache) sqldeinit();
+    root = nullptr;
+}
+
+void clean_entry_cache() {
+    cache_root()->drop_cache(true, time(nullptr) - opt.entry_cache_second);
 }
 
 int create_dirs_recursive(const string& path) {
@@ -78,6 +86,7 @@ entry_t::entry_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
     parent(parent),
     fk(std::make_shared<filekey>(basename(meta.key))),
     mode(meta.mode),
+    atime(time(nullptr)),
     length(meta.size),
     mtime(meta.mtime),
     ctime(meta.ctime),
