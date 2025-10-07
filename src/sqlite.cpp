@@ -290,7 +290,8 @@ static string escapSQL(const string& sql){
     s = replaceAll(s, "%", "\\%");
     s = replaceAll(s, "_", "\\_");
     s = replaceAll(s, "[", "\\[");
-    return replaceAll(s, "]", "\\]");
+    s = replaceAll(s, "]", "\\]");
+    return replaceAll(s, "'", "''");
 }
 
 int delete_entry_prefix_from_db(const string& path){

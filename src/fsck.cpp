@@ -27,6 +27,7 @@ using namespace std;
 struct fmoption opt{};
 static bool verbose = false;
 static bool autofix = false;
+static bool no_db = false;
 static bool recursive = false;
 static bool deleteall = false;
 static bool sync_dirty = false;
@@ -753,13 +754,11 @@ int main(int argc, char **argv) {
         cerr<<"fm_prepare failed!"<<endl;
         return -1;
     }
-    sqlinit();
-    defer(sqldeinit);
 
     char ch;
     bool isfile = false;
     int concurrent =  CHECKTHREADS;
-    while ((ch = getopt(argc, argv, "evfrdsc:")) != -1)
+    while ((ch = getopt(argc, argv, "evfrdsc:n")) != -1)
         switch (ch) {
         case 'e':
             cout<< "treat it as file"<<endl;
@@ -777,6 +776,10 @@ int main(int argc, char **argv) {
             cout << "will try fix error" << endl;
             autofix = true;
             break;
+        case 'n':
+            cout << "no db operation" << endl;
+            no_db = true;
+            break;
         case 'r':
             cout << "will check recursive" <<endl;
             recursive = true;
@@ -792,6 +795,10 @@ int main(int argc, char **argv) {
         case '?':
             return 1;
         }
+    if(!no_db){
+        sqlinit();
+    }
+    defer(sqldeinit);
     const char *checkpath;
     if (argv[optind]) {
         checkpath = argv[optind];
