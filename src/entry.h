@@ -59,6 +59,7 @@ public:
     virtual int sync(int dataonly) = 0;
     virtual int release(bool waitsync) = 0;
     virtual int utime(const struct timespec tv[2]) = 0;
+    virtual int chmod(mode_t mode);
     virtual void dump_to_db(const std::string& path, const std::string& name) = 0;
     int drop_cache(bool mem_only, time_t before = 0) {
         if(before == 0) {

@@ -302,7 +302,7 @@ int fm_fuse_chmod(const char *path, mode_t mode, struct fuse_file_info *fi){
     if(entry == nullptr){
         return -ENOENT;
     }
-    return 0;
+    return entry->chmod(mode);
 }
 
 int fm_fuse_chown(const char* path, uid_t, gid_t, struct fuse_file_info *fi) {

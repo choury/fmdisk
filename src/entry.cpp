@@ -171,3 +171,22 @@ int entry_t::set_storage_class(enum storage_class storage) {
     }
     return failed ? -EIO : 0;
 }
+
+int entry_t::chmod(mode_t mode) {
+    atime = time(nullptr);
+    auto_wlock(this);
+    if(flags & ENTRY_DELETED_F){
+        this->mode = (mode & ~S_IFMT) | (this->mode & S_IFMT);
+        this->ctime = time(nullptr);
+        return 0;
+    }
+    if((flags & ENTRY_INITED_F) == 0){
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    this->mode = (mode & ~S_IFMT) | (this->mode & S_IFMT);
+    this->ctime = time(nullptr);
+    return 0;
+}
