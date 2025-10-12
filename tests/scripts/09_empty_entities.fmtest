@@ -1,0 +1,29 @@
+# Test handling of empty files and directories
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# 1. Create empty file and check it
+MKDIR path="/testdir" mode=0755
+CREATE path="/testdir/empty.txt" mode=0644 handle=h1
+RELEASE handle=h1
+GETATTR path="/testdir/empty.txt" expect_type=file expect_size=0
+
+# 2. Rename and delete empty file
+RENAME old="/testdir/empty.txt" new="/testdir/empty_renamed.txt"
+GETATTR path="/testdir/empty.txt" expect_error=ENOENT
+GETATTR path="/testdir/empty_renamed.txt" expect_type=file expect_size=0
+UNLINK path="/testdir/empty_renamed.txt"
+GETATTR path="/testdir/empty_renamed.txt" expect_error=ENOENT
+
+# 3. Test directory deletion logic
+MKDIR path="/testdir/subdir" mode=0755
+RMDIR path="/testdir" expect_error=ENOTEMPTY
+RMDIR path="/testdir/subdir"
+RMDIR path="/testdir"
+
+# 4. Verify everything is gone
+GETATTR path="/testdir" expect_error=ENOENT
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

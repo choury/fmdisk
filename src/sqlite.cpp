@@ -27,7 +27,7 @@ int sqlinit(){
                 failed = true;
                 break;
             }
-            char *err_msg;
+            char *err_msg = nullptr;
             if(sqlite3_exec(cachedb,
                 "CREATE TABLE IF NOT EXISTS entrys("
                 "parent text,"
@@ -37,7 +37,7 @@ int sqlinit(){
                 "primary key (parent, path))", nullptr, nullptr, &err_msg))
             {
                 errorlog("create table entrys failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
+                if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
             }
@@ -49,7 +49,7 @@ int sqlinit(){
                 "dirty integer DEFAULT 0)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create table files failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
+                if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
             }
@@ -58,7 +58,7 @@ int sqlinit(){
                 "ON files (dirty)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create index for files failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
+                if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
             }
@@ -74,7 +74,7 @@ int sqlinit(){
                 "primary key (inode, block_no))", nullptr, nullptr, &err_msg))
             {
                 errorlog("create table blocks failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
+                if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
             }
@@ -83,7 +83,7 @@ int sqlinit(){
                 "ON blocks (private_key)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create index for blocks failed: %s\n", err_msg);
-                sqlite3_free(err_msg);
+                if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
             }
@@ -94,9 +94,9 @@ int sqlinit(){
                 if(strcmp(err_msg, "duplicate column name: path") != 0){
                     errorlog("upgrade blocks table add path column failed: %s\n", err_msg);
                     failed = true;
-                    sqlite3_free(err_msg);
-                    break;
                 }
+                if(err_msg) sqlite3_free(err_msg);
+                if(failed) break;
                 //已经存在，忽略
             }
             if(sqlite3_exec(cachedb, "ALTER TABLE blocks ADD COLUMN btime INTEGER DEFAULT 0;", nullptr, nullptr, &err_msg) == SQLITE_OK){
@@ -106,9 +106,9 @@ int sqlinit(){
                 if(strcmp(err_msg, "duplicate column name: btime") != 0){
                     errorlog("upgrade blocks table add btime column failed: %s\n", err_msg);
                     failed = true;
-                    sqlite3_free(err_msg);
-                    break;
                 }
+                if(err_msg) sqlite3_free(err_msg);
+                if(failed) break;
                 //已经存在，忽略
             }
         }while(0);
@@ -118,25 +118,25 @@ int sqlinit(){
             return -1;
         }
         //set journal_mode=wal
-        char *err_msg;
+        char *err_msg = nullptr;
         if(sqlite3_exec(cachedb, "PRAGMA journal_mode=WAL", nullptr, nullptr, &err_msg)){
             errorlog("set journal_mode failed: %s\n", err_msg);
-            sqlite3_free(err_msg);
+            if(err_msg) sqlite3_free(err_msg);
         }
         //set synchronous=full
         if(sqlite3_exec(cachedb, "PRAGMA synchronous=FULL", nullptr, nullptr, &err_msg)){
             errorlog("set synchronous failed: %s\n", err_msg);
-            sqlite3_free(err_msg);
+            if(err_msg) sqlite3_free(err_msg);
         }
         //set cache_size 128M
         if(sqlite3_exec(cachedb, "PRAGMA cache_size=-131072", nullptr, nullptr, &err_msg)){
             errorlog("set cache_size failed: %s\n", err_msg);
-            sqlite3_free(err_msg);
+            if(err_msg) sqlite3_free(err_msg);
         }
         //set temp_store=memory
         if(sqlite3_exec(cachedb, "PRAGMA temp_store=MEMORY", nullptr, nullptr, &err_msg)){
             errorlog("set temp_store failed: %s\n", err_msg);
-            sqlite3_free(err_msg);
+            if(err_msg) sqlite3_free(err_msg);
         }
         return 0;
     }else{
@@ -148,6 +148,7 @@ int sqlinit(){
 void sqldeinit(){
     if(cachedb){
         sqlite3_close(cachedb);
+        cachedb = nullptr;
     }
 }
 
@@ -165,10 +166,10 @@ static void save_file_to_db(const string& path, const filekey& metakey, const ch
     }
     string sql = "replace into files (path, private_key, meta, dirty) values('"
      + escapQuote(path) + "', '" + escapPrivatekey(metakey.private_key) + "', '"+ escapQuote(json) + "', " + ((flags & FILE_DIRTY_F) ? '1' : '0') + ")";
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
     }
 }
 
@@ -211,12 +212,12 @@ void load_file_from_db(const std::string& path, filemeta& meta, std::vector<file
         return;
     }
     string sql = "select private_key, meta, dirty from files where path='" + escapQuote(path) + "'";
-    char* err_msg;
+    char* err_msg = nullptr;
     std::pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>> data =
         make_pair<reference_wrapper<filemeta>, reference_wrapper<std::vector<filekey>>>(meta, fblocks);
     if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &data, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
     }
 }
 
@@ -225,10 +226,10 @@ int delete_file_from_db(const string& path){
         return -1;
     }
     string sql = "delete from files where path='" + escapQuote(path) + "'";
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -242,10 +243,10 @@ void save_entry_to_db(const string& path, const filemeta& meta){
     string sql = "replace into entrys(parent, path, private_key, mode) values('" + escapQuote(path)
     + "', '" + escapQuote(basename(meta.key.path)) + "', '" + escapPrivatekey(meta.key.private_key)
     + "', " + std::to_string(meta.mode) + ")";
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
     }
 }
 
@@ -276,10 +277,10 @@ int load_entry_from_db(const string& path, std::vector<filemeta>& flist){
         return 0;
     }
     string sql = "select path, private_key, mode from entrys where parent = '" + escapQuote(path) + "'";
-    char *err_msg;
+    char *err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), entrys_callback, &flist, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         flist.clear();
     }
     return flist.size();
@@ -299,10 +300,10 @@ int delete_entry_prefix_from_db(const string& path){
         return -1;
     }
     string sql = "delete from entrys where parent = '" + escapQuote(path) + "' or parent like '" + escapSQL(path) + "/%' escape '\\'";
-    char *err_msg;
+    char *err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     sql = "delete from files where (path  = '"
@@ -310,7 +311,7 @@ int delete_entry_prefix_from_db(const string& path){
         + escapSQL(path) + "/%' escape '\\') and dirty = 0";
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -321,10 +322,10 @@ int delete_entry_from_db(const string& path){
         return -1;
     }
     string sql = "delete from entrys where parent = '" + escapQuote(dirname(path)) + "' and path= '" + escapQuote(basename(path)) + "'";
-    char *err_msg;
+    char *err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -341,10 +342,10 @@ int save_block_to_db(const fileInfo& fi, size_t block_no, const filekey& file, b
         + escapQuote(basename(file.path)) + "', '"
         + escapPrivatekey(file.private_key) + "', "
         + (dirty ? '1' : '0') + ")";
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -391,10 +392,10 @@ int delete_blocks_from_db(ino_t inode) {
     }
     assert(inode != 0);
     string sql = "delete from blocks where inode = " + std::to_string(inode);
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -409,10 +410,10 @@ int delete_block_from_db(ino_t inode, size_t block_no) {
     string sql = "delete from blocks where inode = " + std::to_string(inode)
                 + " and block_no = " + std::to_string(block_no)
                 + " and dirty = 0";
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -436,10 +437,10 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys){
     sql += ")";
     if(first) return 0; // 没有有效的private_key
 
-    char* err_msg;
+    char* err_msg = nullptr;
     if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return 0;
@@ -451,7 +452,7 @@ int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
     }
 
     string sql = "SELECT inode, block_no, btime, path, private_key, dirty FROM blocks WHERE inode = " + std::to_string(inode);
-    char* err_msg;
+    char* err_msg = nullptr;
 
     auto blocks_callback = [](void *data, int columns, char **field, char **colum) -> int {
         std::vector<block_record>* blocks = (std::vector<block_record>*)data;
@@ -470,7 +471,7 @@ int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks) {
 
     if(sqlite3_exec(cachedb, sql.c_str(), blocks_callback, &blocks, &err_msg)) {
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return blocks.size();
@@ -482,7 +483,7 @@ int get_all_block_inodes(std::vector<ino_t>& inodes) {
     }
 
     string sql = "SELECT DISTINCT inode FROM blocks WHERE inode > 0";
-    char* err_msg;
+    char* err_msg = nullptr;
 
     auto inodes_callback = [](void *data, int columns, char **field, char **colum) -> int {
         std::vector<ino_t>* inodes = (std::vector<ino_t>*)data;
@@ -494,7 +495,7 @@ int get_all_block_inodes(std::vector<ino_t>& inodes) {
 
     if(sqlite3_exec(cachedb, sql.c_str(), inodes_callback, &inodes, &err_msg)) {
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return inodes.size();
@@ -507,7 +508,7 @@ int get_dirty_files(std::vector<std::string>& dirty_files) {
     }
 
     string sql = "SELECT path FROM files WHERE dirty = 1";
-    char* err_msg;
+    char* err_msg = nullptr;
 
     auto files_callback = [](void *data, int columns, char **field, char **colum) -> int {
         std::vector<std::string>* files = (std::vector<std::string>*)data;
@@ -519,7 +520,7 @@ int get_dirty_files(std::vector<std::string>& dirty_files) {
 
     if(sqlite3_exec(cachedb, sql.c_str(), files_callback, &dirty_files, &err_msg)) {
         errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        sqlite3_free(err_msg);
+        if(err_msg) sqlite3_free(err_msg);
         return -1;
     }
     return dirty_files.size();

@@ -30,7 +30,19 @@ int cache_prepare() {
     upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
     upool->submit_fire_and_forget([&]() { writeback_thread(&writeback_done); });
     start_delay_thread();
-    return sqlinit();
+    if((opt.flags & FM_RENAME_NOTSUPPRTED) && (opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
+        filekey objs = {".objs"};
+        if(HANDLE_EAGAIN(fm_mkdir({"/"}, objs))) {
+            throw "create .objs dir failed";
+        }
+    }
+    int ret = sqlinit();
+    if (ret != 0) {
+        throw "sqlinit failed";
+    }
+    root->open();
+    root->release(false);
+    return 0;
 }
 
 std::shared_ptr<dir_t> cache_root() {

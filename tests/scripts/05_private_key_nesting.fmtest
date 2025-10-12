@@ -1,0 +1,19 @@
+# exercises fm_get_private_key on nested parents to ensure it doesn't deadlock
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+GETATTR path="/projects" expect_error=ENOENT
+MKDIR path="/projects" mode=0755
+GETATTR path="/projects" expect_type=dir
+MKDIR path="/projects/alpha" mode=0755
+CREATE path="/projects/alpha/readme.txt" mode=0644 handle=alpha
+WRITE handle=alpha data="alpha docs"
+FLUSH handle=alpha
+RELEASE handle=alpha
+GETATTR path="/projects/alpha/readme.txt" expect_type=file expect_size=10
+RENAME old="/projects/alpha/readme.txt" new="/projects/alpha/notes.txt"
+OPEN path="/projects/alpha/notes.txt" handle=reader
+READ handle=reader size=16 expect_data="alpha docs"
+RELEASE handle=reader
+UNMOUNT
+BACKEND_CLEAR_CACHE

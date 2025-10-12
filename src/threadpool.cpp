@@ -95,6 +95,17 @@ thrdpool* creatpool(size_t threadnum) {
 }
 
 void destroypool(struct thrdpool* pool) {
+    while (true) {
+        pthread_mutex_lock(&pool->lock);
+        bool empty = pool->tasks.empty();
+        bool idle = pool->doing == 0;
+        pthread_mutex_unlock(&pool->lock);
+        if (empty && idle) {
+            break;
+        }
+        usleep(10000); // 10ms
+    }
+
     pool->done.store(true);
     for (size_t i = 0; i < pool->num; ++i) {
         sem_post(&pool->wait);
@@ -242,29 +253,36 @@ static void do_delay_task() {
 std::thread* delay_thread;
 
 void start_delay_thread(){
+    delay_task_stop.store(false);
     sem_init(&delay_task, 0 ,0);
     delay_thread = new std::thread(do_delay_task);
 }
 
 void stop_delay_thread() {
+    if(delay_thread == nullptr) {
+        return;
+    }
     delay_task_stop.store(true);
+    sem_post(&delay_task);
     delay_thread->join();
     delete delay_thread;
+    delay_thread = nullptr;
     sem_destroy(&delay_task);
-    pthread_mutex_destroy(&delay_task_lock);
     for(auto i: delay_tasks){
+        i->func(i->param);
         free(i);
     }
     delay_tasks.clear();
 }
 
 
-void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
-    if (delay_task_stop) {
-        return;
-    }
+bool add_delay_job(taskfunc func, void* param, unsigned int delaySec){
     task_t* task = nullptr;
     pthread_mutex_lock(&delay_task_lock);
+    if (delay_task_stop) {
+        pthread_mutex_unlock(&delay_task_lock);
+        return false;
+    }
     for(auto i = delay_tasks.begin(); i != delay_tasks.end(); i++){
         if((*i)->func == func && (*i)->param == param){
             task = *i;
@@ -282,4 +300,5 @@ void add_delay_job(taskfunc func, void* param, unsigned int delaySec){
     delay_tasks.emplace_back(task);
     pthread_mutex_unlock(&delay_task_lock);
     sem_post(&delay_task);
+    return true;
 }

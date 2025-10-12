@@ -1,0 +1,38 @@
+# Test overwriting files with O_TRUNC and partial block writes
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# 1. Create and write initial data
+CREATE path="/data.txt" mode=0644 handle=h1
+WRITE handle=h1 data="----------"
+RELEASE handle=h1
+
+# 2. Reopen with truncation and verify
+OPEN path="/data.txt" flags=RDWR handle=h2
+TRUNCATE handle=h2 length=0
+GETATTR handle=h2 expect_size=0
+
+# 3. Write new, shorter data
+WRITE handle=h2 data="hello"
+RELEASE handle=h2 sync=true
+GETATTR path="/data.txt" expect_size=5
+
+# 4. Verify content
+OPEN path="/data.txt" flags=RDONLY handle=h3
+READ handle=h3 size=10 expect_data="hello"
+RELEASE handle=h3
+
+# 5. Perform a partial write in the middle
+OPEN path="/data.txt" flags=RDWR handle=h4
+WRITE handle=h4 data=" world" offset=5
+RELEASE handle=h4 sync=true
+
+# 6. Verify final content
+GETATTR path="/data.txt" expect_size=11
+OPEN path="/data.txt" flags=RDONLY handle=h5
+READ handle=h5 size=20 expect_data="hello world"
+RELEASE handle=h5
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

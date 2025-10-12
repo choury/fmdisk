@@ -1,0 +1,31 @@
+# cached flow exercises cached writes and renames
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+STATFS expect_block_size=1048576
+MKDIR path="/docs" mode=0755
+CREATE path="/docs/report.txt" mode=0644 handle=report
+WRITE handle=report data="integration payload"
+FLUSH handle=report
+RELEASE handle=report
+GETATTR path="/docs/report.txt" expect_type=file expect_size=19
+RENAME old="/docs/report.txt" new="/docs/report_v2.txt"
+GETATTR path="/docs/report.txt" expect_error=ENOENT
+OPEN path="/docs/report_v2.txt" handle=reader
+READ handle=reader size=64 expect_data="integration payload"
+RELEASE handle=reader
+OPEN path="/docs/report_v2.txt" handle=trunc_target
+TRUNCATE handle=trunc_target length=5
+GETATTR path="/docs/report_v2.txt" expect_size=5
+RELEASE handle=trunc_target
+SYMLINK target="/docs/report_v2.txt" link="/docs/report_link"
+READLINK path="/docs/report_link" size=256 expect="/docs/report_v2.txt"
+UNLINK path="/docs/report_link"
+MKDIR path="/docs/projects" mode=0755
+RENAME old="/docs/projects" new="/docs/projects_old"
+GETATTR path="/docs/projects" expect_error=ENOENT
+GETATTR path="/docs/projects_old" expect_type=dir
+RMDIR path="/docs" expect_error=ENOTEMPTY
+RMDIR path="/docs/projects_old"
+UNMOUNT
+BACKEND_CLEAR_CACHE

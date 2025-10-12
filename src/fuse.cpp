@@ -43,7 +43,9 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     cfg->parallel_direct_writes = 1;
 #endif
     // 恢复dirty数据并重新上传
-    recover_dirty_data();
+    if(!opt.no_cache) {
+        recover_dirty_data();
+    }
     return cache_root().get();
 }
 
@@ -265,7 +267,7 @@ int fm_fuse_flush(const char*, struct fuse_file_info *fi){
 
 int fm_fuse_release(const char *, struct fuse_file_info *fi){
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
-    int ret = (*entry_ptr)->release();
+    int ret = (*entry_ptr)->release(fi->flags & (O_SYNC | O_DSYNC));
     delete entry_ptr;  // Release the shared_ptr, decrement reference count
     return ret;
 }

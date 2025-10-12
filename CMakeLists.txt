@@ -106,3 +106,4 @@ pkg_check_modules(FUSE REQUIRED "fuse3>=3.11" IMPORTED_TARGET fuse3)
 pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
 
 add_subdirectory(src)
+add_subdirectory(tests)

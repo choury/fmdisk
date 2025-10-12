@@ -124,7 +124,7 @@ void recover_dirty_data() {
             continue;
         }
         file->open();
-        file->release();
+        file->release(false);
     }
 }
 
@@ -155,9 +155,10 @@ void start_gc() {
 
         if(haswork) {
             sleep(1);  // 有工作时每秒检查一次
-        }else {
-            //wait 30s
-            sleep(30);
+        } else {
+            for(int i = 0; i < 30 && !gc_stop.load(); ++i) {
+                sleep(1); // 可中断的30秒等待
+            }
         }
     }
 }
@@ -245,6 +246,15 @@ string file_t::getrealname() {
         return encodepath(fk.load()->path, file_encode_suffix);
     }
     return fk.load()->path;
+}
+
+filekey file_t::getblockdir() {
+    if(opt.flags & FM_RENAME_NOTSUPPRTED) {
+        filekey objs = {".objs"};
+        fm_getattrat({"/"}, objs);
+        return objs;
+    }
+    return *fk.load();
 }
 
 void file_t::reset_wlocked() {
@@ -340,7 +350,7 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
     file->reset_wlocked();
 }
 
-int file_t::release(){
+int file_t::release(bool waitsync){
     atime = time(nullptr);
     auto_wlock(this);
     opened--;
@@ -355,6 +365,11 @@ int file_t::release(){
         }
         blocks.clear();
         return 0;
+    }
+    if(waitsync && (flags & FILE_DIRTY_F)) {
+        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+            it->second->sync(getblockdir(), true);
+        }
     }
 
     flags |= ENTRY_REASEWAIT_F;
@@ -508,7 +523,7 @@ int file_t::truncate_wlocked(off_t offset){
         // 如果offset正好在newc块的结束位置，不需要修改该块
         if((size_t)offset != (newc + 1) * blksize) {
             blocks.at(newc)->prefetch(true);
-            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty();
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir());
         }
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
@@ -523,7 +538,7 @@ int file_t::truncate_wlocked(off_t offset){
             assert(!blocks.contains(0));
             blocks.emplace(0, std::make_shared<block_t>(fi, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
             inline_data.clear();
-            if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty();
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty(getblockdir());
         } else if(offset == 0) {
             inline_data.resize(1);
         } else if(offset > (off_t)inline_data.size()) {
@@ -582,15 +597,15 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     assert(fi.fd >= 0);
     int ret = pwrite(fi.fd, buff, size, offset);
-    if(ret <= 0){
-        return ret;
+    if(ret < 0){
+        return -errno;
     }
     if(inline_data.size()){
         assert(inline_data.size() == length);
         memcpy(inline_data.data() + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
         for(size_t i = startc; i <= endc; i++){
-            blocks.at(i)->markdirty();
+            blocks.at(i)->markdirty(getblockdir());
         }
     }
     ctime = mtime = time(nullptr);
@@ -759,7 +774,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
         dirty = true;
     } else {
         for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
-            dirty |= it->second->sync();
+            dirty |= it->second->sync(getblockdir(), false);
         }
     }
     assert(!dirty || (flags & FILE_DIRTY_F));
@@ -768,7 +783,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
     if(getmeta(meta) < 0) {
         return true;
     }
-    meta.key = getmetakey();
+    meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     if(upload_meta(key, meta, fblocks)){
         throw "upload_meta IO Error";
@@ -823,7 +838,7 @@ int file_t::utime(const struct timespec tv[2]) {
     if(ret < 0) {
         return ret;
     }
-    meta.key = getmetakey();
+    meta.key = basename(getmetakey());
     meta.ctime = time(nullptr);
     if(tv[1].tv_nsec == UTIME_NOW) {
         meta.mtime = time(nullptr);

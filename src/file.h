@@ -27,6 +27,7 @@ class file_t: public entry_t {
     std::shared_ptr<file_t> shared_file_from_this() {
         return std::static_pointer_cast<file_t>(shared_from_this());
     }
+    filekey getblockdir();
 
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
     static void upload_meta_async_task(std::weak_ptr<file_t> file);  // 异步上传meta的静态函数
@@ -43,7 +44,7 @@ public:
     virtual int getmeta(filemeta& meta) override;
 
     virtual int open() override;
-    virtual int release() override;
+    virtual int release(bool waitsync) override;
     //如果仍然是dirty状态，返回true
     bool sync_wlocked(bool forcedirty = false);
     virtual int sync(int dataonly) override;

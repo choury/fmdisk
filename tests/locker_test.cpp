@@ -1,4 +1,4 @@
-#include "locker.h"
+#include "../src/locker.h"
 #include <iostream>
 #include <thread>
 

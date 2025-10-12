@@ -436,24 +436,28 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
         //copy and delete
         if(S_ISREG(entry->getmode())) {
             auto file = std::dynamic_pointer_cast<file_t>(entry);
+            if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
+                filekey newdir = {encodepath(newname, file_encode_suffix), 0};
+                ret = HANDLE_EAGAIN(fm_mkdir(newparent->getkey(), newdir));
+                new_private_key = newdir.private_key;
+            } else {
+                filekey newdir = {encodepath(newname, file_encode_suffix), 0};
+                fm_getattrat(newparent->getkey(), newdir);
+                new_private_key = newdir.private_key;
+            }
             if(fm_private_key_tostring(file->private_key)[0] == '\0') {
                 // 这个文件还没来得及上传到远程
                 assert(file->flags & FILE_DIRTY_F);
                 assert(file->flags & ENTRY_CHUNCED_F);
-                new_private_key = fk.load()->private_key;
                 goto skip_remote;
             }
             filekey newfile = filekey{entry->flags & ENTRY_CHUNCED_F ?
                 pathjoin(encodepath(newname, file_encode_suffix), METANAME) : newname, 0};
             ret = HANDLE_EAGAIN(fm_copy(file->getmetakey(), newparent->getkey(), newfile));
             if(ret == 0){
-                ret = HANDLE_EAGAIN(fm_delete(file->getmetakey()));
+                HANDLE_EAGAIN(fm_delete(file->getmetakey()));
                 file->private_key = newfile.private_key;
                 if((file->flags & ENTRY_CHUNCED_F) == 0) {
-                    new_private_key = newfile.private_key;
-                } else {
-                    newfile = filekey{encodepath(newname, file_encode_suffix), 0};
-                    fm_getattrat(newparent->getkey(), newfile);
                     new_private_key = newfile.private_key;
                 }
             }

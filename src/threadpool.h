@@ -29,7 +29,7 @@ int taskinqueu(struct thrdpool* pool);
 
 void start_delay_thread();
 void stop_delay_thread();
-void add_delay_job(taskfunc func, void* param, unsigned int delaySec);
+bool add_delay_job(taskfunc func, void* param, unsigned int delaySec);
 #ifdef  __cplusplus
 }
 #endif  /* end of __cplusplus */

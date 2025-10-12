@@ -34,7 +34,7 @@ static std::string getRemotePathFromFd(int fd) {
     return get_remote_path({buffer.data(), (size_t)len});
 }
 
-std::set<std::weak_ptr<block_t>, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
+std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
@@ -55,13 +55,15 @@ void writeback_thread(bool* done){
             if(upool->tasks_in_queue() >= UPLOADTHREADS){
                 break;
             }
-            auto b = i->lock();
+            auto b = i->first.lock();
             if(b == nullptr){
                 i = dblocks.erase(i);
                 continue;
             }
             if(b->staled() >= staled_threshold){
-                upool->submit_fire_and_forget([block = *i]{ block_t::push(block); });
+                upool->submit_fire_and_forget([block = i->first, fileat = i->second]{
+                     block_t::push(block, fileat);
+                });
                 i = dblocks.erase(i);
             }else{
                 i++;
@@ -141,7 +143,7 @@ filekey block_t::getkey() const {
     } else if(opt.flags & FM_RENAME_NOTSUPPRTED){
         return filekey{pathjoin(".objs", fk.path), fk.private_key};
     } else {
-        return filekey{pathjoin(getpath(), fk.path), fk.private_key};
+        return filekey{pathjoin(encodepath(getpath(), file_encode_suffix), fk.path), fk.private_key};
     }
 }
 
@@ -206,7 +208,7 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
     return bs.size();
 }
 
-void block_t::push(std::weak_ptr<block_t> wb) {
+void block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     auto b = wb.lock();
     if(b == nullptr) {
         return;
@@ -239,7 +241,7 @@ void block_t::push(std::weak_ptr<block_t> wb) {
         //It must be chunk file, because native file can't be written
         file = makeChunkBlockKey(b->no);
 retry:
-        int ret = HANDLE_EAGAIN(fm_upload({b->getpath(), nullptr}, file, buff, len, false));
+        int ret = HANDLE_EAGAIN(fm_upload(fileat, file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
@@ -296,7 +298,7 @@ int block_t::prefetch(bool wait) {
     }
 }
 
-void block_t::markdirty() {
+void block_t::markdirty(filekey fileat) {
     version++;
     atime = time(nullptr);
     auto_rlock(this);
@@ -308,7 +310,7 @@ void block_t::markdirty() {
     // 保存到数据库并标记为dirty
     save_block_to_db(fi, no, fk, true);
     pthread_mutex_lock(&dblocks_lock);
-    dblocks.emplace(shared_from_this());
+    dblocks.emplace(shared_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
 }
 
@@ -317,13 +319,18 @@ void block_t::markstale() {
     flags |= BLOCK_STALE;
 }
 
-bool block_t::sync(){
+bool block_t::sync(filekey fileat, bool wait){
     auto_rlock(this);
     if ((flags & BLOCK_DIRTY) == 0 || (flags & BLOCK_STALE)) {
         return false;
     }
+    if(wait) {
+        __r.unlock();
+        push(shared_from_this(), fileat);
+        return true;
+    }
     pthread_mutex_lock(&dblocks_lock);
-    dblocks.emplace(shared_from_this());
+    dblocks.emplace(shared_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
     return true;
 }

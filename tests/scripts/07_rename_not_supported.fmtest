@@ -1,0 +1,20 @@
+# rename-not-supported flag keeps data under .objs while rename still works
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT rename_not_supported=true
+OPENDIR path="/"
+MKDIR path="/documents" mode=0755
+CREATE path="/documents/report.txt" mode=0644 handle=writer
+WRITE handle=writer data="ABCDEFGH" repeat=131072
+RENAME old="/documents/report.txt" new="/documents/report_v2.txt"
+OPEN path="/documents/report_v2.txt" handle=reader
+READ handle=reader size=8 expect_data="ABCDEFGH"
+RELEASE handle=writer sync=true
+RELEASE handle=reader sync=true
+GETATTR path="/documents/report.txt" expect_error=ENOENT
+BACKEND_SLEEP ms=1000
+UNMOUNT
+BACKEND_EXPECT_META path="/documents/report_v2.txt" field="encoding" value="xor"
+BACKEND_EXPECT_META path="/documents/report_v2.txt" field="size" value="1048576"
+BACKEND_EXPECT_BLOCK path="/documents/report_v2.txt" block=0 offset=0 data_hex="282c37212234263c"
+BACKEND_CLEAR_CACHE

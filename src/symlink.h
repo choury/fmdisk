@@ -20,7 +20,7 @@ public:
     virtual int open() override {
         return -ELOOP;
     };
-    virtual int release() override {
+    virtual int release(bool) override {
         return 0;
     };
     virtual int sync(int dataonly) override {

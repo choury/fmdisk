@@ -35,7 +35,7 @@ public:
     size_t children();
 
     virtual int open() override;
-    virtual int release() override{
+    virtual int release(bool) override{
         atime = time(nullptr);
         auto_wlock(this);
         assert(opened > 0);

@@ -1,0 +1,24 @@
+# This test verifies data consistency across remounts.
+# 1. Mount, create a file, write data, and sync it.
+# 2. Unmount.
+# 3. Mount again.
+# 4. Read the file and verify its content.
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+# Mount, write, and unmount
+MOUNT no_cache=false
+CREATE path="/persistent_file.txt" mode=0644 handle=writer
+WRITE handle=writer data="hello persistence"
+RELEASE handle=writer
+UNMOUNT
+
+# Mount again and verify
+MOUNT no_cache=false
+OPEN path="/persistent_file.txt" flags=RDONLY handle=reader
+READ handle=reader size=1024 expect_data="hello persistence"
+RELEASE handle=reader
+UNMOUNT
+
+BACKEND_CLEAR_CACHE

@@ -115,7 +115,9 @@ public:
 inline void submit_delay_job(std::function<void()> func, unsigned int delay_sec) {
     using TaskWrapper = TrdPool::TaskWrapper<void>;
     auto wrapper = new TaskWrapper(std::move(func));
-    add_delay_job(TrdPool::execute_task<void>, wrapper, delay_sec);
+    if(!add_delay_job(TrdPool::execute_task<void>, wrapper, delay_sec)) {
+        delete wrapper;
+    }
 }
 
 #endif

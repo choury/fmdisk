@@ -1,0 +1,18 @@
+# no-cache mount refuses write paths
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/seed/data.txt" data="remote-only"
+MOUNT no_cache=true
+GETATTR path="/seed" expect_type=dir
+GETATTR path="/seed/data.txt" expect_type=file expect_size=11
+OPEN path="/seed/data.txt" handle=reader
+READ handle=reader size=32 expect_data="remote-only"
+RELEASE handle=reader
+OPEN path="/seed/data.txt" handle=writer
+WRITE handle=writer data="X" expect_error=EROFS
+RELEASE handle=writer
+CREATE path="/seed/new.txt" mode=0644 handle=temp expect_error=EROFS
+TRUNCATE path="/seed/data.txt" length=1 expect_error=EROFS
+UNMOUNT
+BACKEND_EXPECT path="/seed/data.txt" data="remote-only"
+BACKEND_CLEAR_CACHE

@@ -1,0 +1,36 @@
+# 10_delete_cleanup.fmtest
+# Verifies that unlink cleans up backend files.
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# Create a file and write to it to ensure it's uploaded
+CREATE path="/test.txt" mode=0644 handle=f
+WRITE handle=f data="some data"
+RELEASE handle=f sync=true
+BACKEND_SLEEP ms=1000
+
+# Check that the meta file and directory exist
+# Base64 encoding of "test.txt" is dGVzdC50eHQ=
+BACKEND_PATH_EXISTS path="/dGVzdC50eHQ=.def/meta.json" expected=true
+BACKEND_PATH_EXISTS path="/dGVzdC50eHQ=.def" expected=true
+
+# Unlink the file
+UNLINK path="/test.txt"
+
+# Verify that the meta file and directory are gone
+BACKEND_PATH_EXISTS path="/dGVzdC50eHQ=.def" expected=false
+BACKEND_PATH_EXISTS path="/test.txt" expected=false
+
+
+CREATE path="/test.txt" mode=0644 handle=f
+UNLINK path="/test.txt"
+WRITE handle=f data="some data"
+RELEASE handle=f sync=true
+# Verify that the meta file and directory are gone
+BACKEND_PATH_EXISTS path="/dGVzdC50eHQ=.def" expected=false
+BACKEND_PATH_EXISTS path="/test.txt" expected=false
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

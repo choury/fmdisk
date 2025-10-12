@@ -1,0 +1,21 @@
+# multi-block write exercises block list management
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+CREATE path="/big.bin" mode=0644 handle=big
+WRITE handle=big data="ABCDEFGH" repeat=131072               # 1 MiB chunk
+WRITE handle=big data="QRSTUVWX" repeat=65536 offset=1048576 # extend into second block
+WRITE handle=big data="ijklmnop" repeat=131072 offset=1572864
+FLUSH handle=big
+RELEASE handle=big
+GETATTR path="/big.bin" expect_size=2621440 expect_type=file
+OPEN path="/big.bin" handle=reader
+READ handle=reader size=4 expect_data="ABCD"
+READ handle=reader size=8 offset=1048576 expect_data="QRSTUVWX"
+READ handle=reader size=4 offset=2600000 expect_data="ijkl"
+RELEASE handle=reader sync=true
+BACKEND_SLEEP ms=1000
+UNMOUNT
+BACKEND_EXPECT_META path="/big.bin" field="encoding" value="xor"
+BACKEND_EXPECT_BLOCK path="/big.bin" block=0 offset=0 data_hex="282c37212234263c"
+BACKEND_CLEAR_CACHE

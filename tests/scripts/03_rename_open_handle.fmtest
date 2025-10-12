@@ -1,0 +1,17 @@
+# rename while file handle remains open
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+MKDIR path="/logs" mode=0755
+CREATE path="/logs/app.txt" mode=0644 handle=writer
+WRITE handle=writer data="initial"
+RENAME old="/logs/app.txt" new="/logs/app_renamed.txt"
+WRITE handle=writer data="_more" offset=7
+FLUSH handle=writer
+RELEASE handle=writer
+GETATTR path="/logs/app.txt" expect_error=ENOENT
+OPEN path="/logs/app_renamed.txt" handle=reader
+READ handle=reader size=32 expect_data="initial_more"
+RELEASE handle=reader
+UNMOUNT
+BACKEND_CLEAR_CACHE

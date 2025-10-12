@@ -688,12 +688,7 @@ static std::string generateRandomSuffix(size_t length) {
 }
 
 filekey makeChunkBlockKey(size_t block_no) {
-    std::string path;
-    if (opt.flags & FM_RENAME_NOTSUPPRTED) {
-        path = "/.objs/" + std::to_string(block_no);
-    } else {
-        path = std::to_string(block_no);
-    }
+    std::string path = std::to_string(block_no);
     path += '_' + std::to_string(static_cast<long long>(time(nullptr))) + '_' + generateRandomSuffix(16);
     return filekey{path, nullptr};
 }

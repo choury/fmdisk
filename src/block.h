@@ -16,7 +16,7 @@ class block_t: public locker, public std::enable_shared_from_this<block_t> {
     std::atomic<size_t> version = 0;
     int staled();
     static int pull(std::weak_ptr<block_t> b);
-    static void push(std::weak_ptr<block_t> b);
+    static void push(std::weak_ptr<block_t> b, filekey fileat);
     friend void writeback_thread(bool* done);
     [[nodiscard]] std::string getpath() const;
     [[nodiscard]] filekey getkey() const;
@@ -29,9 +29,9 @@ public:
     }
     int prefetch(bool wait);
     ssize_t read(filekey fileat, void* buff, off_t offset, size_t len);
-    void markdirty();
+    void markdirty(filekey fileat);
     void markstale();
-    bool sync();
+    bool sync(filekey fileat, bool wait);
     [[nodiscard]] bool dummy();
     [[nodiscard]] size_t release();
 };
