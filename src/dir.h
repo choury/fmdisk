@@ -45,8 +45,8 @@ public:
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
 
-    std::shared_ptr<file_t> create(const string& name);
-    std::shared_ptr<dir_t>  mkdir(const string& name);
+    std::shared_ptr<file_t> create(const string& name, mode_t mode);
+    std::shared_ptr<dir_t>  mkdir(const string& name, mode_t mode);
     std::shared_ptr<symlink_t> symlink(const string& name, const string& target);
     int unlink(const string& name);
     int rmdir(const string& name);

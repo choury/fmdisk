@@ -140,7 +140,7 @@ int fm_fuse_mkdir(const char *path, mode_t mode){
     if(parent == nullptr){
         return -ENOENT;
     }
-    if(parent->mkdir(basename(path)) == nullptr){
+    if(parent->mkdir(basename(path), mode) == nullptr){
         return -errno;
     }
     fs = nullptr;
@@ -186,7 +186,7 @@ int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
     if(parent == nullptr){
         return -ENOENT;
     }
-    auto entry = parent->create(basename(path));
+    auto entry = parent->create(basename(path), mode);
     if(entry == nullptr){
         return -errno;
     }

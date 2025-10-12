@@ -574,11 +574,7 @@ int download_meta(const filekey& file, filemeta& meta, std::vector<filekey>& fbl
 json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblocks){
     json_object *jobj = json_object_new_object();
     json_object_object_add(jobj, "size", json_object_new_int64(meta.size));
-    if(meta.flags & ENTRY_CHUNCED_F){
-        json_object_object_add(jobj, "mode", json_object_new_int64(S_IFDIR | (meta.mode & 0777)));
-    }else{
-        json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
-    }
+    json_object_object_add(jobj, "mode", json_object_new_int64(meta.mode));
     json_object_object_add(jobj, "ctime", json_object_new_int64(meta.ctime));
     json_object_object_add(jobj, "mtime", json_object_new_int64(meta.mtime));
     json_object_object_add(jobj, "blksize", json_object_new_int64(meta.blksize));

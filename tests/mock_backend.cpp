@@ -64,31 +64,33 @@ RemoteEntry* find_entry_unlocked(const std::string& path) {
     return (final_it == id_map.end()) ? nullptr : &final_it->second;
 }
 
-RemoteEntry& ensure_directory_unlocked(const std::string& path) {
-    RemoteEntry* existing = find_entry_unlocked(path);
-    if(existing != nullptr) {
-        return *existing;
-    }
+RemoteEntry* ensure_directory_unlocked(RemoteEntry* parent, const std::string& path) {
+    RemoteEntry* current_entry = parent;
+    for (const auto& part : std::filesystem::path(path)) {
+        if (part == "/" || part.empty()) continue;
 
-    uint64_t new_id = next_id++;
-    RemoteEntry dir;
-    dir.id = new_id;
-    dir.is_dir = true;
-    dir.mode = S_IFDIR | 0755;
-    dir.ctime = dir.mtime = time(nullptr);
-    auto [it, inserted] = id_map.emplace(new_id, std::move(dir));
-    (void)inserted;
+        auto it = current_entry->children.find(part);
+        if (it != current_entry->children.end()) {
+            current_entry = &id_map.at(it->second);
+            if (!current_entry->is_dir) {
+                return nullptr;
+            }
+        } else {
+            uint64_t new_id = next_id++;
+            RemoteEntry dir;
+            dir.id = new_id;
+            dir.is_dir = true;
+            dir.mode = S_IFDIR | 0755;
+            dir.ctime = dir.mtime = time(nullptr);
+            auto [new_dir_it, _] = id_map.emplace(new_id, std::move(dir));
 
-    if(path != "/") {
-        std::string parent = dirname(path);
-        std::string name = basename(path);
-        if(parent != path) {
-            RemoteEntry& parent_entry = ensure_directory_unlocked(parent);
-            parent_entry.children[name] = new_id;
-            parent_entry.mtime = time(nullptr);
+            current_entry->children[part] = new_id;
+            current_entry->mtime = time(nullptr);
+
+            current_entry = &new_dir_it->second;
         }
     }
-    return it->second;
+    return current_entry;
 }
 
 void reset_remote_unlocked() {
@@ -101,14 +103,6 @@ void reset_remote_unlocked() {
     root.mode = S_IFDIR | 0755;
     root.ctime = root.mtime = now;
     id_map.emplace(root.id, std::move(root));
-}
-
-void ensure_parent_directory_unlocked(const std::string& path) {
-    if(path == "/") {
-        return;
-    }
-    std::string parent = dirname(path);
-    ensure_directory_unlocked(parent);
 }
 
 void backend_clear_cache_dir() {
@@ -388,28 +382,8 @@ int fm_copy(const filekey& file, const filekey& newat, filekey& newfile) {
         return -errno;
     }
 
-
-    std::filesystem::path full_path(newfile.path);
-    for(const auto& path: full_path.parent_path()) {
-        RemoteEntry subpath;
-        subpath.id = next_id++;
-        subpath.is_dir = true;
-        subpath.mode = S_IFDIR | 0755;
-        subpath.ctime = subpath.mtime = time(nullptr);
-        id_map.emplace(subpath.id, std::move(subpath));
-
-        RemoteEntry& parent = id_map[parent_id];
-        if(!parent.is_dir) {
-            errno = ENOTDIR;
-            return -errno;
-        }
-        parent.children[path] = subpath.id;
-        parent.mtime = time(nullptr);
-        parent_id = subpath.id;
-    }
-
-    RemoteEntry& parent = id_map[parent_id];
-    if(!parent.is_dir) {
+    RemoteEntry* parent = ensure_directory_unlocked(&id_map[parent_id], dirname(newfile.path));
+    if(parent == nullptr) {
         errno = ENOTDIR;
         return -errno;
     }
@@ -425,8 +399,8 @@ int fm_copy(const filekey& file, const filekey& newat, filekey& newfile) {
     cloned.ctime = src.ctime;
     cloned.mtime = src.mtime;
     id_map.emplace(new_id, std::move(cloned));
-    parent.children[basename(newfile.path)] = new_id;
-    parent.mtime = time(nullptr);
+    parent->children[basename(newfile.path)] = new_id;
+    parent->mtime = time(nullptr);
     newfile.private_key = make_private_key(new_id);
     return 0;
 }
@@ -475,7 +449,7 @@ void backend_reset_state() {
 
 void backend_seed_file(const std::string& path, const std::string& content) {
     std::lock_guard<std::mutex> guard(remote_lock);
-    ensure_parent_directory_unlocked(path);
+    ensure_directory_unlocked(&id_map[1], dirname(path));
 
     RemoteEntry* existing_entry = find_entry_unlocked(path);
     if(existing_entry == nullptr) {

@@ -263,7 +263,7 @@ size_t dir_t::children() {
     return entrys.size();
 }
 
-std::shared_ptr<dir_t> dir_t::mkdir(const string& name) {
+std::shared_ptr<dir_t> dir_t::mkdir(const string& name, mode_t mode) {
     atime = time(nullptr);
     if(endwith(name, file_encode_suffix)){
         errno = EINVAL;
@@ -286,11 +286,11 @@ std::shared_ptr<dir_t> dir_t::mkdir(const string& name) {
     flags |= DIR_DIRTY_F;
     ctime = mtime = meta.ctime = meta.mtime = time(nullptr);
     meta.flags = ENTRY_CREATE_F | DIR_PULLED_F;
-    meta.mode = S_IFDIR | 0755;
+    meta.mode = S_IFDIR | (mode & ~S_IFMT);
     return std::dynamic_pointer_cast<dir_t>(insert_child_wlocked(name, std::make_shared<dir_t>(shared_dir_from_this(), meta)));
 }
 
-std::shared_ptr<file_t> dir_t::create(const string& name){
+std::shared_ptr<file_t> dir_t::create(const string& name, mode_t mode){
     atime = time(nullptr);
     if(endwith(name, symlink_encode_suffix)){
         errno = EINVAL;
@@ -318,7 +318,7 @@ std::shared_ptr<file_t> dir_t::create(const string& name){
     mtime = ctime = meta.ctime = meta.mtime = time(nullptr);
     meta.flags =  ENTRY_CHUNCED_F | ENTRY_CREATE_F | FILE_ENCODE_F | FILE_DIRTY_F ;
     meta.blksize = opt.block_len;
-    meta.mode = S_IFREG | 0644;
+    meta.mode = S_IFREG | (mode & ~S_IFMT);
     return std::dynamic_pointer_cast<file_t>(insert_child_wlocked(name, std::make_shared<file_t>(shared_dir_from_this(), meta)));
 }
 
