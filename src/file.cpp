@@ -815,14 +815,13 @@ int file_t::sync(int dataonly){
     return 0;
 }
 
-int file_t::utime(const struct timespec tv[2]) {
-    atime = time(nullptr);
-    //ignore atime
-    if(tv[1].tv_nsec == UTIME_OMIT) {
-        return 0; // no change
-    }
-    auto_wlock(this);
+int file_t::update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> meta_updater) {
     if(flags & ENTRY_DELETED_F) {
+        int ret = getmeta(meta);
+        if(ret < 0) {
+            return ret;
+        }
+        meta_updater(meta);
         return 0;
     }
     if((flags & ENTRY_INITED_F) == 0){
@@ -831,27 +830,25 @@ int file_t::utime(const struct timespec tv[2]) {
             return ret;
         }
     }
+
     const filekey& key = getkey();
     std::vector<filekey> fblocks = getfblocks();
-    filemeta meta;
     int ret = getmeta(meta);
     if(ret < 0) {
         return ret;
     }
-    meta.key = basename(getmetakey());
-    meta.ctime = time(nullptr);
-    if(tv[1].tv_nsec == UTIME_NOW) {
-        meta.mtime = time(nullptr);
-    }else{
-        meta.mtime = tv[1].tv_sec;
-    }
+
+    // Apply the user-defined modifications
+    meta_updater(meta);
     if(flags & ENTRY_CHUNCED_F){
+        meta.key = basename(getmetakey());
         int ret = upload_meta(key, meta, fblocks);
         if(ret){
             return -errno;
         }
         private_key = meta.key.private_key;
     } else {
+        // For non-chunked files, we only update the times using utime
         time_t ttv[2];
         ttv[0] = meta.ctime;
         ttv[1] = meta.mtime;
@@ -860,9 +857,48 @@ int file_t::utime(const struct timespec tv[2]) {
             return ret;
         }
     }
+    save_file_to_db(key.path, meta, fblocks);
+    return 0;
+}
+
+int file_t::utime(const struct timespec tv[2]) {
+    atime = time(nullptr);
+    //ignore atime
+    if(tv[1].tv_nsec == UTIME_OMIT) {
+        return 0; // no change
+    }
+    filemeta meta;
+    auto_wlock(this);
+    int ret = update_meta_wlocked(meta, [&tv](filemeta& meta) {
+        meta.ctime = time(nullptr);
+        if(tv[1].tv_nsec == UTIME_NOW) {
+            meta.mtime = time(nullptr);
+        }else{
+            meta.mtime = tv[1].tv_sec;
+        }
+    });
+    if (ret < 0) {
+        return ret;
+    }
+    // Update the file_t object state from the modified meta
     ctime = meta.ctime;
     mtime = meta.mtime;
-    save_file_to_db(key.path, meta, fblocks);
+    return 0;
+}
+
+int file_t::chmod(mode_t mode) {
+    atime = time(nullptr);
+    filemeta meta;
+    auto_wlock(this);
+    int ret = update_meta_wlocked(meta, [mode](filemeta& meta) {
+        meta.mode = (mode & ~S_IFMT) | S_IFREG;
+        meta.ctime = time(nullptr);
+    });
+    if(ret < 0) {
+        return ret;
+    }
+    this->mode = meta.mode;
+    this->ctime = meta.ctime;
     return 0;
 }
 

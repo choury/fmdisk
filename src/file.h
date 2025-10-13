@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 #include <map>
+#include <functional>
 
 #define FM_REMOTE_PATH_ATTR "user.fm_remote_path"
 #define FM_TEMP_FILE_ATTR "user.fm_temp_file"
@@ -21,6 +22,7 @@ class file_t: public entry_t {
     std::map<uint32_t, std::shared_ptr<block_t>> blocks;
     size_t block_size = 0; // cache for getmeta
     int truncate_wlocked(off_t offset);
+    int update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> meta_updater);
     virtual int pull_wlocked() override;
     static void clean(std::weak_ptr<file_t> file);
     virtual std::string getrealname() override;
@@ -49,6 +51,7 @@ public:
     bool sync_wlocked(bool forcedirty = false);
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
+    virtual int chmod(mode_t mode) override;
     int read(void* buff, off_t offset, size_t size);
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);

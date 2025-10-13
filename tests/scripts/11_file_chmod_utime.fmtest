@@ -1,0 +1,70 @@
+# validate chmod and utimens across chunked and non-chunked files
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/legacy.txt" data="legacy data"
+MOUNT no_cache=false
+
+# chunked file exercises metadata uploads
+CREATE path="/chunk.bin" mode=0644 handle=chunk
+WRITE handle=chunk data="payload"
+FLUSH handle=chunk
+RELEASE handle=chunk sync=true
+GETATTR path="/chunk.bin" expect_type=file expect_size=7 expect_mode=0644
+BACKEND_SLEEP ms=200
+BACKEND_EXPECT_META path="/chunk.bin" field="mode" value="33188"
+
+# explicit utimens updates mtime and leaves permissions intact
+UTIMENS path="/chunk.bin" atime_sec=1 atime_nsec=0 mtime_sec=123456789 mtime_nsec=0
+GETATTR path="/chunk.bin" expect_mtime=123456789 expect_mode=0644
+BACKEND_SLEEP ms=200
+BACKEND_EXPECT_META path="/chunk.bin" field="mtime" value="123456789"
+
+# UTIME_OMIT skips updates
+UTIMENS path="/chunk.bin" atime_sec=2 atime_nsec=0 mtime_sec=0 mtime_nsec=1073741822
+GETATTR path="/chunk.bin" expect_mtime=123456789
+BACKEND_SLEEP ms=200
+BACKEND_EXPECT_META path="/chunk.bin" field="mtime" value="123456789"
+
+# chmod propagates to cached metadata without clobbering timestamps
+CHMOD path="/chunk.bin" mode=0600
+GETATTR path="/chunk.bin" expect_mode=0600
+BACKEND_SLEEP ms=200
+BACKEND_EXPECT_META path="/chunk.bin" field="mode" value="33152"
+BACKEND_EXPECT_META path="/chunk.bin" field="mtime" value="123456789"
+
+# non-chunked file exercises fm_utime path
+GETATTR path="/legacy.txt" expect_type=file expect_size=11 expect_mode=0644
+UTIMENS path="/legacy.txt" atime_sec=5 atime_nsec=0 mtime_sec=2000000000 mtime_nsec=0
+GETATTR path="/legacy.txt" expect_mtime=2000000000
+CHMOD path="/legacy.txt" mode=0660
+GETATTR path="/legacy.txt" expect_mode=0660
+
+UNMOUNT
+MOUNT no_cache=false
+
+GETATTR path="/chunk.bin" expect_type=file expect_size=7 expect_mode=0600 expect_mtime=123456789
+GETATTR path="/legacy.txt" expect_type=file expect_size=11 expect_mode=0660 expect_mtime=2000000000
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+MOUNT no_cache=false
+GETATTR path="/chunk.bin" expect_type=file expect_size=7 expect_mode=0600 expect_mtime=123456789
+
+CREATE path="/temp.bin" mode=0644 handle=temp
+WRITE handle=temp data="xyz"
+GETATTR handle=temp expect_type=file expect_size=3 expect_mode=0644
+
+UNLINK path="/temp.bin"
+GETATTR path="/temp.bin" expect_error=ENOENT
+
+UTIMENS handle=temp atime_sec=10 atime_nsec=0 mtime_sec=222222222 mtime_nsec=0
+CHMOD handle=temp mode=0600
+GETATTR handle=temp expect_mode=0600 expect_mtime=222222222
+
+RELEASE handle=temp
+GETATTR path="/temp.bin" expect_error=ENOENT
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+

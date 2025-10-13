@@ -372,6 +372,7 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "BACKEND_CLEAR_CACHE") {
         backend_clear_cache_dir();
+        cache_dir.clear();
         return;
     }
     if(cmd.name == "BACKEND_SEED") {
@@ -635,9 +636,12 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     if(rename_not_supported) {
         flags |= FM_RENAME_NOTSUPPRTED;
     }
-    cache_dir = std::filesystem::temp_directory_path() / "fmdisk_itest_XXXXXX";
+    if(cache_dir.empty()) {
+        cache_dir = std::filesystem::temp_directory_path() / "fmdisk_itest_XXXXXX";
+        mkdtemp(cache_dir.data());
+    }
     struct fmoption options {
-        .cache_dir = mkdtemp(cache_dir.data()),
+        .cache_dir = cache_dir.c_str(),
         .secret = secret.c_str(),
         .block_len = 1 << 20,
         .flags = flags,
@@ -840,6 +844,39 @@ void exec_getattr(ExecutionContext& ctx, const Command& cmd) {
         if(st.st_size != static_cast<off_t>(want)) {
             std::ostringstream oss;
             oss << "expected size " << want << " got " << st.st_size;
+            fail(ctx, cmd, oss.str());
+        }
+    }
+    if(auto expect_mode = optional_arg(cmd, "expect_mode"); expect_mode.has_value()) {
+        mode_t want = static_cast<mode_t>(parse_ulong(expect_mode.value(), 0));
+        mode_t actual = st.st_mode & 07777;
+        if(actual != want) {
+            std::ostringstream oss;
+            oss << "expected mode " << std::oct << want << " got " << (actual);
+            fail(ctx, cmd, oss.str());
+        }
+    }
+    if(auto expect_mtime = optional_arg(cmd, "expect_mtime"); expect_mtime.has_value()) {
+        long want = parse_long(expect_mtime.value(), 0);
+        if(st.st_mtime != static_cast<time_t>(want)) {
+            std::ostringstream oss;
+            oss << "expected mtime " << want << " got " << st.st_mtime;
+            fail(ctx, cmd, oss.str());
+        }
+    }
+    if(auto expect_atime = optional_arg(cmd, "expect_atime"); expect_atime.has_value()) {
+        long want = parse_long(expect_atime.value(), 0);
+        if(st.st_atime != static_cast<time_t>(want)) {
+            std::ostringstream oss;
+            oss << "expected atime " << want << " got " << st.st_atime;
+            fail(ctx, cmd, oss.str());
+        }
+    }
+    if(auto expect_ctime = optional_arg(cmd, "expect_ctime"); expect_ctime.has_value()) {
+        long want = parse_long(expect_ctime.value(), 0);
+        if(st.st_ctime != static_cast<time_t>(want)) {
+            std::ostringstream oss;
+            oss << "expected ctime " << want << " got " << st.st_ctime;
             fail(ctx, cmd, oss.str());
         }
     }
@@ -1070,6 +1107,23 @@ void exec_utimens(ExecutionContext& ctx, const Command& cmd) {
     validate_errno(ret, expected_errno, ctx, cmd, "utimens");
 }
 
+void exec_chmod(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    if(!cmd.args.contains("mode")) {
+        fail(ctx, cmd, "CHMOD requires 'mode=' argument");
+    }
+    struct fuse_file_info* info_ptr = nullptr;
+    if(optional_arg(cmd, "handle").has_value()) {
+        HandleState& state = require_file_handle(ctx, cmd, "handle");
+        info_ptr = &state.info;
+    }
+    auto path = optional_arg(cmd, "path");
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    mode_t mode = parse_mode(cmd);
+    int ret = fm_fuse_chmod(path.has_value() ? path->c_str() : nullptr, mode, info_ptr);
+    validate_errno(ret, expected_errno, ctx, cmd, "chmod");
+}
+
 void exec_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name.rfind("BACKEND_", 0) == 0) {
         run_backend_command(ctx, cmd);
@@ -1157,6 +1211,10 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "UTIMENS") {
         exec_utimens(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "CHMOD") {
+        exec_chmod(ctx, cmd);
         return;
     }
     fail(ctx, cmd, "unknown command");

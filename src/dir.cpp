@@ -690,9 +690,6 @@ int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vec
     }
     int ret = 0;
     for(auto i : entrys){
-        if(i.first == "." || i.first == ".."){
-            continue;
-        }
         ret |= i.second->set_storage_class(storage, pool, futures);
     }
     if(ret == 0) {
