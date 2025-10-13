@@ -26,6 +26,7 @@ class dir_t: public entry_t {
     virtual int drop_cache_wlocked(bool mem_only, time_t before) override;
     virtual int remove_wlocked() override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
+    virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) override;
 public:
     dir_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~dir_t() override;

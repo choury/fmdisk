@@ -669,6 +669,36 @@ int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     return delete_entry_prefix_from_db(parent.lock() ? getkey().path: "");
 }
 
+int dir_t::collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) {
+    assert(pool != nullptr);
+    auto_rlock(this);
+    if(flags & ENTRY_DELETED_F) {
+        return -ENOENT;
+    }
+    if((flags & ENTRY_INITED_F) == 0) {
+        __r.upgrade();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    if((flags & DIR_PULLED_F) == 0) {
+        __r.upgrade();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    bool failed = false;
+    for(auto& entry : entrys) {
+        int ret = entry.second->collect_storage_classes(pool, futures);
+        if(ret < 0) {
+            failed = true;
+        }
+    }
+    return failed ? -EIO : 0;
+}
+
 int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
     auto_rlock(this);
     if(flags & ENTRY_DELETED_F){

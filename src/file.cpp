@@ -19,6 +19,7 @@
 #include <random>
 #include <algorithm>
 #include <dirent.h>
+#include <utility>
 
 
 static pthread_mutex_t droped_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -1001,13 +1002,12 @@ static void add_meta_to_storage_info(storage_class_info& info, const filemeta& m
     }
 }
 
-int file_t::get_storage_classes(storage_class_info& info) {
-    memset(&info, 0, sizeof(info));
-    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
-        info.size_store[STORAGE_STANDARD] = length;
-        return 0;
-    }
+int file_t::collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) {
+    assert(pool != nullptr);
     auto_rlock(this);
+    if(flags & ENTRY_DELETED_F) {
+        return -ENOENT;
+    }
     if((flags & ENTRY_INITED_F) == 0) {
         __r.upgrade();
         int ret = pull_wlocked();
@@ -1016,56 +1016,40 @@ int file_t::get_storage_classes(storage_class_info& info) {
         }
     }
     if((flags & ENTRY_CHUNCED_F) == 0) {
-        filemeta meta = initfilemeta(getkey());
-        int ret = HANDLE_EAGAIN(fm_getattr(getkey(), meta));
-        if(ret < 0) {
-            return ret;
-        }
-        add_meta_to_storage_info(info, meta);
+        auto file_key = getkey();
+        futures.emplace_back(pool->submit([file_key]() mutable -> std::pair<int, storage_class_info> {
+            storage_class_info info{};
+            filemeta meta = initfilemeta(file_key);
+            int ret = HANDLE_EAGAIN(fm_getattr(file_key, meta));
+            if(ret < 0) {
+                return std::make_pair(ret, info);
+            }
+            add_meta_to_storage_info(info, meta);
+            return std::make_pair(0, info);
+        }));
         return 0;
     }
     auto fblocks = getfblocks();
     std::string pwd = getkey().path;
-    if(fblocks.size() > DOWNLOADTHREADS) {
-        std::vector<std::future<filemeta>> futures;
-        TrdPool pool(std::min((size_t)DOWNLOADTHREADS * 10, fblocks.size()));
-        for(auto& fblock : fblocks) {
-            if(fblock.path.empty() || fblock.path == "x") {
-                continue; // 跳过空或占位块
-            }
-            futures.emplace_back(pool.submit([pwd, fblock]() mutable{
-                if(opt.flags & FM_RENAME_NOTSUPPRTED) {
-                    fblock.path = pathjoin(".objs", fblock.path);
-                } else {
-                    fblock.path = pathjoin(pwd, fblock.path);
-                }
-                filemeta meta = initfilemeta(fblock);
-                HANDLE_EAGAIN(fm_getattr(fblock, meta));
-                return meta;
-            }));
+    for(auto fblock : fblocks) {
+        if(fblock.path.empty() || fblock.path == "x") {
+            continue; // 跳过空或占位块
         }
-        pool.wait_all();
-        for(auto& future : futures) {
-            if(!future.valid()) {
-                continue; // 跳过无效的future
-            }
-            auto meta = future.get();
-            add_meta_to_storage_info(info, meta);
-        }
-    } else {
-        for(auto& fblock : fblocks) {
-            if(fblock.path.empty() || fblock.path == "x") {
-                continue; // 跳过空或占位块
-            }
+        futures.emplace_back(pool->submit([fblock, pwd]() mutable -> std::pair<int, storage_class_info> {
+            storage_class_info info{};
             if(opt.flags & FM_RENAME_NOTSUPPRTED) {
                 fblock.path = pathjoin(".objs", fblock.path);
             } else {
                 fblock.path = pathjoin(pwd, fblock.path);
             }
             filemeta meta = initfilemeta(fblock);
-            HANDLE_EAGAIN(fm_getattr(fblock, meta));
+            int ret = HANDLE_EAGAIN(fm_getattr(fblock, meta));
+            if(ret < 0) {
+                return std::make_pair(ret, info);
+            }
             add_meta_to_storage_info(info, meta);
-        }
+            return std::make_pair(0, info);
+        }));
     }
     return 0;
 }

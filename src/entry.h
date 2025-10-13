@@ -8,6 +8,7 @@
 #include <time.h>
 #include <atomic>
 #include <future>
+#include <utility>
 
 using std::string;
 
@@ -43,6 +44,9 @@ protected:
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
         return -EINVAL;
     }
+    virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>&) {
+        return -EINVAL;
+    }
 public:
     static int statfs(const char* path, struct statvfs *sf);
     entry_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
@@ -74,10 +78,7 @@ public:
             return ret;
         }
     }
-    virtual int get_storage_classes(storage_class_info& info) {
-        info.size_store[STORAGE_UNKNOWN] += length;
-        return 0;
-    }
+    int get_storage_classes(storage_class_info& info);
     virtual int get_etag(std::string&) {
         return -ENODATA;
     }

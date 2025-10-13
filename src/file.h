@@ -59,7 +59,7 @@ public:
     std::vector<filekey> getfblocks();
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;
-    virtual int get_storage_classes(storage_class_info& info) override;
+    virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) override;
     virtual int get_etag(std::string& etag) override;
 
     // 使用fallocate释放clean状态block的磁盘空间，返回释放的字节数

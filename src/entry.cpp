@@ -5,6 +5,7 @@
 #include "trdpool.h"
 #include "sqlite.h"
 
+#include <string.h>
 #include <thread>
 #include <assert.h>
 
@@ -153,7 +154,7 @@ void entry_t::pull(std::weak_ptr<entry_t> entry_){
 
 int entry_t::set_storage_class(enum storage_class storage) {
     if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
-        return -ENODATA; // 不支持分块存储类设置
+        return -ENODATA; // 不支持
     }
     std::vector<std::future<int>> futures;
     TrdPool pool(DOWNLOADTHREADS * 10);
@@ -168,6 +169,40 @@ int entry_t::set_storage_class(enum storage_class storage) {
         if(ret < 0) {
             failed = true;
         }
+    }
+    return failed ? -EIO : 0;
+}
+
+static void merge_storage_info(storage_class_info& dst, const storage_class_info& src) {
+    for(size_t i = 0; i < sizeof(dst.size_store) / sizeof(dst.size_store[0]); ++i) {
+        dst.size_store[i] += src.size_store[i];
+    }
+    dst.size_archive_restored += src.size_archive_restored;
+    dst.size_archive_restoring += src.size_archive_restoring;
+    dst.size_deep_archive_restored += src.size_deep_archive_restored;
+    dst.size_deep_archive_restoring += src.size_deep_archive_restoring;
+}
+
+int entry_t::get_storage_classes(storage_class_info& info) {
+    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
+        return -ENODATA; // 不支持
+    }
+    memset(&info, 0, sizeof(info));
+    std::vector<std::future<std::pair<int, storage_class_info>>> futures;
+    TrdPool pool(DOWNLOADTHREADS * 10);
+    int ret = collect_storage_classes(&pool, futures);
+    if(ret < 0) {
+        return ret;
+    }
+    pool.wait_all();
+    bool failed = false;
+    for(auto& future : futures) {
+        auto result = future.get();
+        if(result.first < 0) {
+            failed = true;
+            continue;
+        }
+        merge_storage_info(info, result.second);
     }
     return failed ? -EIO : 0;
 }
