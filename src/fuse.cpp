@@ -79,11 +79,16 @@ int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
                     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags){
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
     auto dir = std::dynamic_pointer_cast<dir_t>(*entry_ptr);
-    auto entrys = dir->get_entrys();
-    for(const auto& i: entrys){
-        filler(buf, i.first.c_str(), nullptr, 0, (enum fuse_fill_dir_flags)0);
+    if(dir == nullptr){
+        return -ENOTDIR;
     }
-    return 0;
+    int ret = dir->foreach_entrys([&](const string& name, const std::shared_ptr<entry_t>&) {
+        return filler(buf, name.c_str(), nullptr, 0, (enum fuse_fill_dir_flags)0);
+    });
+    if(ret > 0){
+        return 0;
+    }
+    return ret;
 }
 
 int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {

@@ -215,15 +215,23 @@ int dir_t::open() {
     return 0;
 }
 
-const std::map<string, std::shared_ptr<entry_t>>& dir_t::get_entrys(){
+int dir_t::foreach_entrys(const std::function<int(const string&, const std::shared_ptr<entry_t>&)>& visitor) {
     auto_rlock(this);
     if((flags & DIR_PULLED_F) == 0){
         __r.upgrade();
-        pull_entrys_wlocked();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
     }
-    return entrys;
+    for(const auto& [name, entry] : entrys){
+        int cb_ret = visitor(name, entry);
+        if(cb_ret != 0){
+            return cb_ret;
+        }
+    }
+    return 0;
 }
-
 
 int dir_t::getmeta(filemeta& meta) {
     atime = time(nullptr);
