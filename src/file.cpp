@@ -119,7 +119,7 @@ void recover_dirty_data() {
 
     for(const auto& file_path : dirty_files) {
         string path = decodepath(file_path, file_encode_suffix);
-        auto file = std::dynamic_pointer_cast<file_t>(cache_root()->find(path));
+        auto file = std::dynamic_pointer_cast<file_t>(find_entry(path));
         if(file == nullptr) {
             warnlog("File %s not found in cache, skipping\n", file_path.c_str());
             continue;

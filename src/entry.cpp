@@ -91,6 +91,10 @@ int create_dirs_recursive(const string& path) {
     return 0;
 }
 
+std::shared_ptr<entry_t> find_entry(const string& path) {
+    return dir_t::find(root, path);
+}
+
 int entry_t::statfs(const char*, struct statvfs* sf) {
     return HANDLE_EAGAIN(fm_statfs(sf));
 }

@@ -1,0 +1,29 @@
+# 验证 dir_t::find 按层级逐步锁定目录并正确处理路径细节
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+# 后端预置深层文件，触发按需加载目录项
+BACKEND_SEED path="/deep/tree/leaf.txt" data="seed"
+
+MOUNT
+
+# 访问目录节点，确保首次 lookup 可拉取目录项
+GETATTR path="/deep" expect_type=dir
+GETATTR path="/deep/tree" expect_type=dir
+
+# 路径中包含重复斜杠
+GETATTR path="/deep//tree///leaf.txt" expect_type=file expect_size=4
+
+# 多余斜杠下打开并读取文件
+OPEN path="/deep//tree///leaf.txt" handle=reader flags="RDONLY"
+READ handle=reader size=4 expect_data="seed"
+RELEASE handle=reader
+
+# 尾部斜杠仍应视为目录
+GETATTR path="/deep/tree/" expect_type=dir
+
+# 未存在的路径返回 ENOENT
+GETATTR path="/deep/tree/missing" expect_error=ENOENT
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

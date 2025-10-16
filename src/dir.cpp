@@ -14,25 +14,25 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 
-static string childname(const string& path) {
+static std::string_view childname(std::string_view path) {
     size_t pos = path.find_first_of("/");
     if(pos == string::npos) {
         return path;
     }
     if(pos == 0 ) {
-        string path_truncate = path.substr(1, path.length());
+        std::string_view path_truncate = path.substr(1, path.length());
         return childname(path_truncate);
     }
     return path.substr(0, pos);
 }
 
-static string subname(const string& path) {
+static std::string_view subname(std::string_view path) {
     size_t pos = path.find_first_of("/");
     if(pos == string::npos || pos == path.length()-1) {
         return ".";
     }
     if(pos == 0 ) {
-        string path_truncate = path.substr(1, path.length());
+        std::string_view path_truncate = path.substr(1, path.length());
         return subname(path_truncate);
     }
     return path.substr(pos+1, path.length());
@@ -133,30 +133,53 @@ int dir_t::pull_entrys_wlocked() {
     return 0;
 }
 
-std::shared_ptr<entry_t> dir_t::find(std::string path) {
-    atime = time(nullptr);
-    if(path == "." || path == "/"){
-        return shared_from_this();
-    }
-    if(path[0] == '/'){
-        path = path.substr(1);
-    }
-    auto_rlock(this);
-    if((flags & DIR_PULLED_F) == 0){
-        __r.upgrade();
-        pull_entrys_wlocked();
-    }
-    string cname = childname(path);
-    if(!entrys.contains(cname)) {
+std::shared_ptr<entry_t> dir_t::find(std::shared_ptr<dir_t> current, std::string_view path) {
+    if(!current){
         return nullptr;
     }
-    if(cname == path) {
-        return entrys[cname];
+    std::string_view remaining = path;
+    while(true){
+        if(remaining.empty() || remaining == "."){
+            return current;
+        }
+        if(remaining.front() == '/'){
+            remaining.remove_prefix(1);
+            continue;
+        }
+
+        std::string_view cname_view = childname(remaining);
+        if(cname_view.empty()){
+            return current;
+        }
+        std::string cname(cname_view);
+        std::shared_ptr<entry_t> child = nullptr;
+        {
+            auto_rlock(current.get());
+            if((current->flags & DIR_PULLED_F) == 0){
+                __r.upgrade();
+                if(current->pull_entrys_wlocked() < 0){
+                    return nullptr;
+                }
+            }
+            auto iter = current->entrys.find(cname);
+            if(iter == current->entrys.end()){
+                return nullptr;
+            }
+            child = iter->second;
+        }
+
+
+        std::string_view rest = subname(remaining);
+        if(rest.empty() || rest == "."){
+            return child;
+        }
+
+        current = std::dynamic_pointer_cast<dir_t>(child);
+        if(!current){
+            return nullptr;
+        }
+        remaining = rest;
     }
-    if(std::dynamic_pointer_cast<dir_t>(entrys[cname])){
-        return std::dynamic_pointer_cast<dir_t>(entrys[cname])->find(subname(path));
-    }
-    return nullptr;
 }
 
 int dir_t::open() {
