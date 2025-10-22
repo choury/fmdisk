@@ -1,0 +1,22 @@
+# Verify truncating a chunked file clears blocks without crashing getmeta
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# 1. Create a chunked file and write enough data to spill into block storage
+CREATE path="/truncate.bin" mode=0644 handle=h1
+WRITE handle=h1 data="A" repeat=70000
+RELEASE handle=h1
+
+# 2. Truncate back to zero and flush metadata
+OPEN path="/truncate.bin" flags=RDWR handle=h2
+TRUNCATE handle=h2 length=0
+RELEASE handle=h2 sync=true
+
+# 3. Validate the file is empty and has no block entries
+GETATTR path="/truncate.bin" expect_size=0
+BACKEND_EXPECT_META path="/truncate.bin" field="size" value="0"
+BACKEND_EXPECT_META path="/truncate.bin" field="blocks" value="[]"
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

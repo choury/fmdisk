@@ -239,34 +239,35 @@ void block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     filekey file;
     if(len){
         //It must be chunk file, because native file can't be written
-        file = makeChunkBlockKey(b->no);
 retry:
+        file = makeChunkBlockKey(b->no);
         int ret = HANDLE_EAGAIN(fm_upload(fileat, file, buff, len, false));
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
         free(buff);
         if(ret != 0){
-            throw "fm_upload IO Error";
+            errorlog("fm_upload IO Error %s: %s", file.path.c_str(), strerror(ret));
+            return;
         }
     }else{
         free(buff);
         file = filekey{"x", 0};
     }
     __r.upgrade();
+    auto stripfile = basename(file);
     if (version != b->version || (b->flags & BLOCK_STALE)) {
-        infolog("version: %zd vs %zd, flags: %x\n", version, b->version.load(), b->flags);
+        infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
         trim(file);
         return;
     }
-    auto stripfile = basename(file);
     // 上传成功，清除dirty标记
     if(save_block_to_db(b->fi, b->no, stripfile, false) == 0) {
         trim(b->getkey());
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
     } else {
-        infolog("save failed: %ju, %d\n", b->fi.inode, b->no);
+        errorlog("save %s failed: %ju, %d\n", stripfile.path.c_str(), b->fi.inode, b->no);
         trim(file);
     }
 }

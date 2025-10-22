@@ -513,7 +513,7 @@ int file_t::truncate_wlocked(off_t offset){
     size_t newc = GetBlkNo(offset, blksize);
     size_t oldc = GetBlkNo(length, blksize);
     if(newc > oldc){
-        if(newc >= MAXFILE){
+        if(newc >= MAXFILE && (opt.flags & FM_RENAME_NOTSUPPRTED) == 0){
             errno = EFBIG;
             return -1;
         }
@@ -755,13 +755,17 @@ int file_t::getmeta(filemeta& meta) {
         meta.blocks = 1; //at least for meta.json
         const auto fblocks = getfblocks();
         // last block may be not full, skip it first
-        for(size_t i = 0; i < fblocks.size() - 1; i++){
+        for(size_t i = 0; i + 1 < fblocks.size(); i++){
             if(fblocks[i].path == "x" || fblocks[i].path.empty()){
                 continue;
             }
             meta.blocks += blksize / 512;
         }
-        meta.blocks += (length - blksize * (fblocks.size() - 1)) / 512 + 1;
+        if(!fblocks.empty()){
+            const size_t consumed_bytes = blksize * (fblocks.size() - 1);
+            const size_t remaining_bytes = length > consumed_bytes ? length - consumed_bytes : 0;
+            meta.blocks += remaining_bytes / 512 + 1;
+        }
         block_size = meta.blocks;
     }
     meta.ctime = ctime;
@@ -787,7 +791,8 @@ bool file_t::sync_wlocked(bool forcedirty) {
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     if(upload_meta(key, meta, fblocks)){
-        throw "upload_meta IO Error";
+        errorlog("upload_meta IO Error: %s\n", key.path.c_str());
+        return true;
     }
     private_key = meta.key.private_key;
     if(!dirty){
