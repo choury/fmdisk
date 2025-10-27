@@ -1050,6 +1050,7 @@ int file_t::collect_storage_classes(TrdPool* pool, std::vector<std::future<std::
             filemeta meta = initfilemeta(fblock);
             int ret = HANDLE_EAGAIN(fm_getattr(fblock, meta));
             if(ret < 0) {
+                errorlog("collect_storage_classes failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
                 return std::make_pair(ret, info);
             }
             add_meta_to_storage_info(info, meta);
