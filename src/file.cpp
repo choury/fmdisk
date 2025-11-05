@@ -89,7 +89,15 @@ static bool cleanup_cache_by_size() {
         return false;
     }
     //如果删完了还是不够,就清理打开文件的block
-    for(auto& [inode, file] : opened_inodes) {
+    std::vector<std::shared_ptr<file_t>> open_files;
+    open_files.reserve(opened_inodes.size());
+    for (auto& [inode, file] : opened_inodes) {
+        open_files.push_back(file);
+    }
+    std::sort(open_files.begin(), open_files.end(), [](const std::shared_ptr<file_t>& lhs, const std::shared_ptr<file_t>& rhs) {
+        return lhs->getatime() > rhs->getatime();
+    });
+    for(const auto& file : open_files) {
         size_t freed = file->release_clean_blocks();
         current_size -= freed;
         if (current_size <= opt.cache_size) {
@@ -696,7 +704,11 @@ std::vector<filekey> file_t::getfblocks(){
 
 filekey file_t::getmetakey(){
     auto_rlock(this);
-    return filekey{pathjoin(getkey().path, METANAME), private_key};
+    if(flags & FILE_ENCODE_F) {
+        return filekey{pathjoin(getkey().path, METANAME), private_key};
+    } else {
+        return getkey();
+    }
 }
 
 std::vector<filekey> file_t::getkeys() {
@@ -729,7 +741,7 @@ std::vector<filekey> file_t::getkeys() {
 int file_t::getmeta(filemeta& meta) {
     atime = time(nullptr);
     auto_rlock(this);
-    assert(fm_private_key_tostring(fk.load()->private_key)[0] != '\0');
+    //assert(fm_private_key_tostring(fk.load()->private_key)[0] != '\0');
     if((flags & ENTRY_INITED_F) == 0){
         __r.upgrade();
         int ret = pull_wlocked();
@@ -791,7 +803,7 @@ bool file_t::sync_wlocked(bool forcedirty) {
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     if(upload_meta(key, meta, fblocks)){
-        errorlog("upload_meta IO Error: %s\n", key.path.c_str());
+        errorlog("upload_meta IO Error: %s, err=%s\n", key.path.c_str(), strerror(errno));
         return true;
     }
     private_key = meta.key.private_key;

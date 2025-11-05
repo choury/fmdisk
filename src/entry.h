@@ -59,6 +59,9 @@ public:
     [[nodiscard]] size_t size() const {
         return length;
     }
+    [[nodiscard]] time_t getatime() const {
+        return atime.load();
+    }
     virtual int open() = 0;
     virtual int sync(int dataonly) = 0;
     virtual int release(bool waitsync) = 0;
