@@ -261,7 +261,7 @@ std::shared_ptr<entry_t> dir_t::insert_child_wlocked(const string& name, std::sh
     return entrys[name] = entry;
 }
 
-int dir_t::remove_wlocked() {
+int dir_t::remove_wlocked(bool skip_entry) {
     if((flags & DIR_PULLED_F) == 0){
         int ret = pull_entrys_wlocked();
         if(ret < 0) {
@@ -272,9 +272,11 @@ int dir_t::remove_wlocked() {
         return -ENOTEMPTY;
     }
     auto key = getkey();
-    int ret = HANDLE_EAGAIN(fm_delete(key));
-    if(ret && errno != ENOENT){
-        return ret;
+    if(!skip_entry) {
+        int ret = HANDLE_EAGAIN(fm_delete(key));
+        if(ret && errno != ENOENT){
+            return ret;
+        }
     }
 
     delete_entry_from_db(key.path);
@@ -395,7 +397,7 @@ int dir_t::unlink(const string& name) {
     if(std::dynamic_pointer_cast<dir_t>(entry)){
         return -EISDIR;
     }
-    int ret = entry->remove_wlocked();
+    int ret = entry->remove_wlocked(false);
     if(ret < 0) {
         return ret;
     }
@@ -418,7 +420,7 @@ int dir_t::rmdir(const string& name) {
     if(std::dynamic_pointer_cast<file_t>(entry)){
         return -ENOTDIR;
     }
-    int ret = entry->remove_wlocked();
+    int ret = entry->remove_wlocked(false);
     if (ret < 0) {
         return ret;
     }
@@ -431,6 +433,11 @@ int dir_t::rmdir(const string& name) {
 
 int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const string& newname, unsigned int mv_flags) {
     atime = time(nullptr);
+#ifdef RENAME_EXCHANGE
+    if(mv_flags & RENAME_EXCHANGE) {
+        return -EINVAL;  // Not supported in this implementation
+    }
+#endif
     auto_wlocker __1(this);
     assert(flags & DIR_PULLED_F);
     if(!entrys.contains(oldname)){
@@ -446,36 +453,55 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
     if(newparent->children() >= MAXFILE){
         return -ENOSPC;
     }
-
- #ifdef RENAME_NOREPLACE
-    if(newparent->entrys.contains(newname) && (mv_flags & RENAME_NOREPLACE)){
-        return -EEXIST;
-    }
-#endif
-
-#ifdef RENAME_EXCHANGE
-    if(mv_flags & RENAME_EXCHANGE) {
-        return -EINVAL;  // Not supported in this implementation
-    }
-#endif
-
     auto entry = entrys[oldname];
     auto_wlocker __3(entry);
+    std::shared_ptr<entry_t> existing;
+    defer([&existing] {
+        if(existing) existing->unwlock();
+    });
+
+    if(newparent->entrys.contains(newname)) {
+#ifdef RENAME_NOREPLACE
+        if(mv_flags & RENAME_NOREPLACE){
+            return -EEXIST;
+        }
+#endif
+        existing = newparent->entrys[newname];
+        existing->wlock();
+        // dir -> empty dir, allow replace
+        // dir -> non-empty dir, return ENOTEMPTY
+        // dir -> no-dir, return ENOTDIR
+        // no-dir -> dir, return EISDIR
+        // no-dir -> no-dir, allow replace
+        if(S_ISDIR(entry->getmode())) {
+            if(!S_ISDIR(existing->getmode())) {
+                return -ENOTDIR;
+            }
+            auto dir_existing = std::dynamic_pointer_cast<dir_t>(existing);
+            dir_existing->pull_entrys_wlocked();
+            if(dir_existing->children()){
+                return -ENOTEMPTY;
+            }
+        } else if(S_ISDIR(existing->getmode())) {
+            return -EISDIR;
+        }
+    }
+
     std::shared_ptr<void> new_private_key;
     int ret = 0;
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
         if(S_ISREG(entry->getmode())) {
-            auto file = std::dynamic_pointer_cast<file_t>(entry);
-            if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
-                filekey newdir = {encodepath(newname, file_encode_suffix), 0};
-                ret = HANDLE_EAGAIN(fm_mkdir(newparent->getkey(), newdir));
-                new_private_key = newdir.private_key;
-            } else {
-                filekey newdir = {encodepath(newname, file_encode_suffix), 0};
-                fm_getattrat(newparent->getkey(), newdir);
-                new_private_key = newdir.private_key;
+            filekey newdir = {encodepath(newname, file_encode_suffix), 0};
+            fm_getattrat(newparent->getkey(), newdir);
+            if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0 && newdir.private_key == nullptr) {
+                HANDLE_EAGAIN(fm_mkdir(newparent->getkey(), newdir));
             }
+            if(newdir.private_key == nullptr) {
+                return -EINVAL;
+            }
+            new_private_key = newdir.private_key;
+            auto file = std::dynamic_pointer_cast<file_t>(entry);
             if(fm_private_key_tostring(file->private_key)[0] == '\0') {
                 // 这个文件还没来得及上传到远程
                 assert(file->flags & FILE_DIRTY_F);
@@ -550,12 +576,16 @@ skip_remote:
 
     flags |= DIR_DIRTY_F;
     mtime = time(nullptr);
-    newparent->unlink(newname);
+    //这个地方不能直接unlink,因为如果之前文件也存在，copy会覆盖它，调用unlink可能删除的是新文件(比如以文件名作为key的s3后端)
+    if(existing) {
+        existing->remove_wlocked(true);
+        newparent->entrys.erase(newname);
+    }
     entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, new_private_key));
     //再此之前不能修改fk.path, 因为insert需要从files表读取原始文件信息
     //但是又需要保存新文件的private_key，不想再加一个参数了，就直接把private_key 先改了
     newparent->insert_child_wlocked(newname, entry);
-    newparent->mtime = time(nullptr);
+    newparent->mtime = newparent->atime = time(nullptr);
     newparent->flags |= DIR_DIRTY_F;
 
     std::string oldpath = entry->getkey().path;
@@ -668,7 +698,7 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
         if(i.first == "." || i.first == ".."){
             continue;
         }
-        i.second->dump_to_db(path, i.first);
+        i.second->dump_to_db(pathjoin(path, name), i.first);
     }
 }
 

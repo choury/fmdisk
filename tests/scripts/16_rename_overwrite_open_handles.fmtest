@@ -1,0 +1,22 @@
+# rename-supported backend overwrites while handles remain open
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/documents/target.txt" data="QQQQQQQQ"
+MOUNT rename_not_supported=true
+OPEN path="/documents/target.txt" handle=old_reader
+READ handle=old_reader size=8 expect_data="QQQQQQQQ"
+CREATE path="/documents/source.txt" mode=0644 handle=source_writer
+WRITE handle=source_writer data="ABCDEFGH"
+RENAME old="/documents/source.txt" new="/documents/target.txt"
+WRITE handle=source_writer data="_tail" offset=8
+READ handle=old_reader size=8 expect_data="QQQQQQQQ"
+OPEN path="/documents/target.txt" handle=new_reader
+READ handle=new_reader size=13 expect_data="ABCDEFGH_tail"
+RELEASE handle=source_writer sync=true
+RELEASE handle=old_reader
+RELEASE handle=new_reader
+GETATTR path="/documents/source.txt" expect_error=ENOENT
+UNMOUNT
+BACKEND_EXPECT_META path="/documents/target.txt" field="size" value="13"
+BACKEND_EXPECT_META path="/documents/target.txt" field="encoding" value="xor"
+BACKEND_CLEAR_CACHE

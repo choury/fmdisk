@@ -389,19 +389,31 @@ int fm_copy(const filekey& file, const filekey& newat, filekey& newfile) {
     }
 
     RemoteEntry& src = id_map[entry_id];
-    uint64_t new_id = next_id++;
-    RemoteEntry cloned;
-    cloned.id = new_id;
-    cloned.is_dir = src.is_dir;
-    cloned.mode = src.mode;
-    cloned.content = src.content;
-    cloned.children = src.children;
-    cloned.ctime = src.ctime;
-    cloned.mtime = src.mtime;
-    id_map.emplace(new_id, std::move(cloned));
-    parent->children[basename(newfile.path)] = new_id;
+    auto bname = basename(newfile.path);
+    if(parent->children.contains(bname)) {
+        RemoteEntry& exist = id_map[parent->children[bname]];
+        exist.is_dir = src.is_dir;
+        exist.mode = src.mode;
+        exist.content = src.content;
+        exist.children = src.children;
+        exist.ctime = src.ctime;
+        exist.mtime = src.mtime;
+        newfile.private_key = make_private_key(exist.id);
+    }else{
+        uint64_t new_id = next_id++;
+        RemoteEntry cloned;
+        cloned.id = new_id;
+        cloned.is_dir = src.is_dir;
+        cloned.mode = src.mode;
+        cloned.content = src.content;
+        cloned.children = src.children;
+        cloned.ctime = src.ctime;
+        cloned.mtime = src.mtime;
+        id_map.emplace(new_id, std::move(cloned));
+        parent->children[basename(newfile.path)] = new_id;
+        newfile.private_key = make_private_key(new_id);
+    }
     parent->mtime = time(nullptr);
-    newfile.private_key = make_private_key(new_id);
     return 0;
 }
 

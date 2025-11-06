@@ -2,7 +2,6 @@
 BACKEND_CLEAR_CACHE
 BACKEND_RESET
 MOUNT rename_not_supported=true
-OPENDIR path="/"
 MKDIR path="/documents" mode=0755
 CREATE path="/documents/report.txt" mode=0644 handle=writer
 WRITE handle=writer data="ABCDEFGH" repeat=131072

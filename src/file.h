@@ -34,7 +34,7 @@ class file_t: public entry_t {
     time_t last_meta_sync_time;  // 上次创建upload_meta_async_task的时间
     static void upload_meta_async_task(std::weak_ptr<file_t> file);  // 异步上传meta的静态函数
     virtual int drop_cache_wlocked(bool mem_only, time_t before) override;
-    virtual int remove_wlocked() override;
+    virtual int remove_wlocked(bool skip_entry) override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
 public:
     file_t(std::shared_ptr<dir_t> parent, const filemeta& meta);

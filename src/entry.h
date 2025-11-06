@@ -39,7 +39,7 @@ protected:
     virtual string getrealname() = 0;
     virtual int pull_wlocked() = 0;
     virtual int drop_cache_wlocked(bool mem_only, time_t before) = 0;
-    virtual int remove_wlocked() = 0;
+    virtual int remove_wlocked(bool skip_entry) = 0;
     static void pull(std::weak_ptr<entry_t> entry);
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
         return -EINVAL;

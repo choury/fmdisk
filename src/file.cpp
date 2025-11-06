@@ -630,12 +630,12 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     return ret;
 }
 
-int file_t::remove_wlocked() {
+int file_t::remove_wlocked(bool skip_entry) {
     auto key = getkey();
     int ret = 0;
     if((opt.flags & FM_DELETE_NEED_PURGE) && (flags & FILE_ENCODE_F)) {
-        ret = HANDLE_EAGAIN(fm_batchdelete(getkeys()));
-    }else{
+        ret = HANDLE_EAGAIN(fm_batchdelete(skip_entry? getfblocks() : getkeys()));
+    }else if(!skip_entry){
         ret = HANDLE_EAGAIN(fm_delete(key));
     }
     if (ret < 0 && errno != ENOENT) {
@@ -786,6 +786,10 @@ int file_t::getmeta(filemeta& meta) {
 }
 
 bool file_t::sync_wlocked(bool forcedirty) {
+    if(flags & ENTRY_DELETED_F) {
+        flags &= ~FILE_DIRTY_F;
+        return false;
+    }
     bool dirty = false;
     if(forcedirty) {
         dirty = true;

@@ -1,0 +1,38 @@
+# rename-supported backend overwrites existing targets (non-chunk and chunk lazy flush)
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/plain/target.txt" data="old-data"
+BACKEND_SEED path="/plain/source.txt" data="new-data"
+MOUNT
+
+# Scenario 1: remote-seeded files stay non-chunk; stale handle sees old data after overwrite
+OPEN path="/plain/target.txt" handle=plain_old
+READ handle=plain_old size=8 expect_data="old-data"
+RENAME old="/plain/source.txt" new="/plain/target.txt"
+READ handle=plain_old size=8 expect_data="old-data"
+OPEN path="/plain/target.txt" handle=plain_new
+READ handle=plain_new size=8 expect_data="new-data"
+RELEASE handle=plain_new
+GETATTR path="/plain/source.txt" expect_error=ENOENT
+RELEASE handle=plain_old
+BACKEND_EXPECT path="/plain/target.txt" data="new-data"
+
+# Scenario 2: chunked source overwrites non-chunk target, release without sync
+OPEN path="/plain/target.txt" handle=async_old
+READ handle=async_old size=8 expect_data="new-data"
+RELEASE handle=async_old
+
+CREATE path="/plain/source.txt" mode=0644 handle=chunk_writer
+WRITE handle=chunk_writer data="REPLACED!"
+RENAME old="/plain/source.txt" new="/plain/target.txt"
+RELEASE handle=chunk_writer
+BACKEND_SLEEP ms=1500
+OPEN path="/plain/target.txt" handle=chunk_reader
+READ handle=chunk_reader size=9 expect_data="REPLACED!"
+RELEASE handle=chunk_reader
+GETATTR path="/plain/source.txt" expect_error=ENOENT
+
+UNMOUNT
+BACKEND_EXPECT_META path="/plain/target.txt" field="size" value="9"
+BACKEND_EXPECT_META path="/plain/target.txt" field="encoding" value="xor"
+BACKEND_CLEAR_CACHE

@@ -1,0 +1,22 @@
+# rename-not-supported backend must overwrite existing targets without deleting the copied data
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT rename_not_supported=true
+MKDIR path="/documents" mode=0755
+CREATE path="/documents/target.txt" mode=0644 handle=target_writer
+WRITE handle=target_writer data="QQQQQQQQ" repeat=131072
+RELEASE handle=target_writer sync=true
+CREATE path="/documents/source.txt" mode=0644 handle=source_writer
+WRITE handle=source_writer data="ABCDEFGH" repeat=131072
+RENAME old="/documents/source.txt" new="/documents/target.txt"
+OPEN path="/documents/target.txt" handle=reader
+READ handle=reader size=8 expect_data="ABCDEFGH"
+RELEASE handle=source_writer sync=true
+RELEASE handle=reader sync=true
+GETATTR path="/documents/source.txt" expect_error=ENOENT
+BACKEND_SLEEP ms=1000
+UNMOUNT
+BACKEND_EXPECT_META path="/documents/target.txt" field="encoding" value="xor"
+BACKEND_EXPECT_META path="/documents/target.txt" field="size" value="1048576"
+BACKEND_EXPECT_BLOCK path="/documents/target.txt" block=0 offset=0 data_hex="282c37212234263c"
+BACKEND_CLEAR_CACHE

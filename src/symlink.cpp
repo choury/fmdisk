@@ -143,11 +143,13 @@ int symlink_t::drop_cache_wlocked(bool mem_only, time_t before) {
     return delete_file_from_db(getkey().path);
 }
 
-int symlink_t::remove_wlocked() {
+int symlink_t::remove_wlocked(bool skip_entry) {
     auto key = getkey();
-    int ret = HANDLE_EAGAIN(fm_delete(key));
-    if(ret && errno != ENOENT){
-        return ret;
+    if(!skip_entry) {
+        int ret = HANDLE_EAGAIN(fm_delete(key));
+        if(ret && errno != ENOENT){
+            return ret;
+        }
     }
 
     flags |= ENTRY_DELETED_F;
