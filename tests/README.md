@@ -119,6 +119,14 @@ ctest
 - **BACKEND_SLEEP**: 脚本休眠。
   - `ms` (int, 必须): 休眠的毫秒数。
 
+- **BACKEND_CLONE**: 在模拟后端克隆一个对象（文件或目录）。它会自动创建所有不存在的目标父目录。
+  - `src` (string, 必须): 源对象的完整路径。
+  - `dst` (string, 必须): 目标对象的完整路径。
+
+- **BACKEND_EXEC_SQL**: 直接在本地缓存的 `cache.db` 数据库上执行一条 SQL 语句。主要用于测试崩溃恢复场景。
+  - `sql` (string, 必须): 要执行的 SQL 查询语句。
+  - `expect` (string, 可选): 期望的查询输出。多个列使用 `|` 连接，多行之间用 `\n` 分隔。SQL `NULL` 值会被转换成字面量字符串 `NULL`。
+
 ### 二、文件与目录操作
 
 - **MKDIR**: 创建目录。
@@ -127,13 +135,6 @@ ctest
 
 - **RMDIR**: 删除目录。
   - `path` (string, 必须): 目录路径。
-
-- **OPENDIR**: 打开目录。
-  - `path` (string, 必须): 目录路径。
-  - `handle` (string, 必须): 用于后续操作的句柄名。
-
-- **RELEASEDIR**: 释放目录句柄。
-  - `handle` (string, 必须): `OPENDIR` 时获取的句柄名。
 
 - **CREATE**: 创建文件。
   - `path` (string, 必须): 文件路径。

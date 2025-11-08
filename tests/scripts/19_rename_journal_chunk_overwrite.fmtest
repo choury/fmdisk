@@ -1,0 +1,41 @@
+# Rename recovery: chunk copy finished, delete pending, overwriting an existing file
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/chunk_copy_dst.bin" data="old-target"
+
+# Stage chunked source while caching the pre-existing destination file
+MOUNT no_cache=false rename_not_supported=true
+MKDIR path="/src_dir" mode=0755
+OPEN path="/chunk_copy_dst.bin" flags=RDONLY handle=seed_reader
+READ handle=seed_reader size=10 expect_data="old-target"
+RELEASE handle=seed_reader
+CREATE path="/src_dir/chunk_copy_src.bin" mode=0644 handle=chunk_src
+WRITE handle=chunk_src data="Z" repeat=70000
+FLUSH handle=chunk_src
+RELEASE handle=chunk_src sync=true
+
+# Journal indicates rename started but not finished
+BACKEND_EXEC_SQL sql="INSERT INTO journals(op,state,src_path,dst_path,dst_private_key) VALUES ('rename',0,'/src_dir/chunk_copy_src.bin','/chunk_copy_dst.bin',NULL)"
+UNMOUNT
+
+BACKEND_EXPECT_META path="/src_dir/chunk_copy_src.bin" field="size" value="70000"
+BACKEND_EXPECT_BLOCK path="/src_dir/chunk_copy_src.bin" block=0 offset=0 data_hex="33342e3f3d283b2e"
+
+# Simulate remote copy finished while src delete + local metadata updates have not run
+BACKEND_CLONE src="/src_dir/Y2h1bmtfY29weV9zcmMuYmlu.def/meta.json" dst="/Y2h1bmtfY29weV9kc3QuYmlu.def/meta.json"
+BACKEND_EXPECT_META path="/chunk_copy_dst.bin" field="size" value="70000"
+BACKEND_EXPECT_BLOCK path="/chunk_copy_dst.bin" block=0 offset=0 data_hex="33342e3f3d283b2e"
+BACKEND_EXPECT_META path="/src_dir/chunk_copy_src.bin" field="size" value="70000"
+
+# Recovery should drop the overwritten destination entry and finish the chunk rename
+MOUNT no_cache=false rename_not_supported=true
+OPEN path="/chunk_copy_dst.bin" flags=RDONLY handle=chunk_reader
+READ handle=chunk_reader size=8 expect_data="ZZZZZZZZ"
+RELEASE handle=chunk_reader
+GETATTR path="/src_dir/chunk_copy_src.bin" expect_error=ENOENT
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+BACKEND_EXPECT_META path="/chunk_copy_dst.bin" field="size" value="70000"
+BACKEND_EXPECT_BLOCK path="/chunk_copy_dst.bin" block=0 offset=0 data_hex="33342e3f3d283b2e"
+
+BACKEND_CLEAR_CACHE

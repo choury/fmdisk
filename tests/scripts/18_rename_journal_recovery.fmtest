@@ -1,0 +1,87 @@
+# Combined recovery coverage:
+#   - Native file uses remote rename path
+#   - Symlink exercises rename_not_supported copy+delete replay
+#   - Directory drives the cancel branch (dst missing)
+#   - Chunked file replay with rename_not_supported copy stage pending
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+## Native file (rename supported) ##
+BACKEND_SEED path="/plain_file_A.txt" data="seed-content"
+MOUNT no_cache=false
+GETATTR path="/plain_file_A.txt" expect_type=file expect_size=12
+RENAME old="/plain_file_A.txt" new="/plain_file_B.txt"
+UNMOUNT
+
+BACKEND_EXEC_SQL sql="INSERT INTO journals(op,state,src_path,dst_path,dst_private_key) SELECT 'rename',1,'/plain_file_A.txt','/plain_file_B.txt',private_key FROM files WHERE path='/plain_file_B.txt'"
+BACKEND_EXEC_SQL sql="UPDATE entrys SET path='plain_file_A.txt' WHERE parent='/' AND path='plain_file_B.txt'"
+BACKEND_EXEC_SQL sql="UPDATE files SET path='/plain_file_A.txt' WHERE path='/plain_file_B.txt'"
+
+MOUNT no_cache=false
+OPEN path="/plain_file_B.txt" flags=RDONLY handle=reader_plain
+READ handle=reader_plain size=12 expect_data="seed-content"
+RELEASE handle=reader_plain
+GETATTR path="/plain_file_A.txt" expect_error=ENOENT
+BACKEND_PATH_EXISTS path="/plain_file_A.txt" expected=false
+BACKEND_PATH_EXISTS path="/plain_file_B.txt" expected=true
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+## Symlink (rename_not_supported path) ##
+MOUNT no_cache=false rename_not_supported=true
+SYMLINK target="/copy/target" link="/link_ns_old"
+RENAME old="/link_ns_old" new="/link_ns_new"
+UNMOUNT
+
+BACKEND_EXEC_SQL sql="INSERT INTO journals(op,state,src_path,dst_path,dst_private_key) SELECT 'rename',1,'/link_ns_old','/link_ns_new',private_key FROM files WHERE path='/bGlua19uc19uZXc=.lnk'"
+BACKEND_EXEC_SQL sql="UPDATE entrys SET path='bGlua19uc19vbGQ=.lnk' WHERE parent='/' AND path='bGlua19uc19uZXc=.lnk'"
+BACKEND_EXEC_SQL sql="UPDATE files SET path='/bGlua19uc19vbGQ=.lnk' WHERE path='/bGlua19uc19uZXc=.lnk'"
+
+MOUNT no_cache=false rename_not_supported=true
+READLINK path="/link_ns_new" size=64 expect="/copy/target"
+GETATTR path="/link_ns_old" expect_error=ENOENT
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+## Directory (cancel path) ##
+MOUNT no_cache=false
+MKDIR path="/dir_cancel_src" mode=0755
+UNMOUNT
+
+BACKEND_EXEC_SQL sql="INSERT INTO journals(op,state,src_path,dst_path,dst_private_key) VALUES ('rename',0,'/dir_cancel_src','/dir_cancel_dst',NULL)"
+
+MOUNT no_cache=false
+GETATTR path="/dir_cancel_src" expect_type=dir
+GETATTR path="/dir_cancel_dst" expect_error=ENOENT
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+
+BACKEND_CLEAR_CACHE
+
+
+## Plain file rename_not_supported (copy finished, delete pending) ##
+BACKEND_RESET
+MOUNT no_cache=false rename_not_supported=true
+BACKEND_EXEC_SQL sql="INSERT INTO journals(op,state,src_path,dst_path,dst_private_key) VALUES ('rename',0,'/plain_copy_fileA.txt','/plain_copy_fileB.txt',NULL)"
+UNMOUNT
+
+BACKEND_SEED path="/plain_copy_fileA.txt" data="stage-data"
+BACKEND_CLONE src="/plain_copy_fileA.txt" dst="/plain_copy_fileB.txt"
+
+MOUNT no_cache=false rename_not_supported=true
+OPEN path="/plain_copy_fileB.txt" flags=RDONLY handle=stage_reader
+READ handle=stage_reader size=10 expect_data="stage-data"
+RELEASE handle=stage_reader
+GETATTR path="/plain_copy_fileA.txt" expect_error=ENOENT
+BACKEND_PATH_EXISTS path="/plain_copy_fileA.txt" expected=false
+BACKEND_PATH_EXISTS path="/plain_copy_fileB.txt" expected=true
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+
+BACKEND_CLEAR_CACHE

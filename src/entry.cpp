@@ -21,11 +21,12 @@ int cache_prepare() {
     dpool = new TrdPool(DOWNLOADTHREADS);
     struct filemeta meta = initfilemeta(filekey{"/", 0});
     if(HANDLE_EAGAIN(fm_getattr(filekey{"/", 0}, meta))){
-        throw "getattr of root failed";
+        throw std::runtime_error("getattr of root failed");
     }
     root = std::make_shared<dir_t>(nullptr, meta);
     gc = std::thread(start_gc);
     if(opt.no_cache) {
+        printf("--- EXIT cache_prepare (no_cache) ---\n");
         return 0;
     }
     upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
@@ -33,13 +34,14 @@ int cache_prepare() {
     start_delay_thread();
     if((opt.flags & FM_RENAME_NOTSUPPRTED) && (opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
         filekey objs = {".objs"};
-        if(HANDLE_EAGAIN(fm_mkdir({"/"}, objs))) {
-            throw "create .objs dir failed";
+        int ret = HANDLE_EAGAIN(fm_mkdir({"/"}, objs));
+        if(ret < 0 && errno != EEXIST) {
+            throw std::runtime_error("create .objs dir failed");
         }
     }
     int ret = sqlinit();
     if (ret != 0) {
-        throw "sqlinit failed";
+        throw std::runtime_error("sqlinit failed");
     }
     root->open();
     root->release(false);

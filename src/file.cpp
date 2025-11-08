@@ -453,6 +453,32 @@ int file_t::pull_wlocked() {
     return 0;
 }
 
+int file_t::fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
+    if(meta.flags & FILE_ENCODE_F) {
+        file.path = encodepath(file.path, file_encode_suffix);
+        int ret = HANDLE_EAGAIN(fm_getattrat(parent, file));
+        if (ret < 0) {
+            return ret;
+        }
+        file.path = pathjoin(parent.path, file.path);
+        filekey metakey = {METANAME, 0};
+        ret = HANDLE_EAGAIN(fm_getattrat(file, metakey));
+        if (ret < 0) {
+            return ret;
+        }
+        metakey.path = pathjoin(file.path, METANAME);
+        std::vector<filekey> fblocks;
+        return download_meta(metakey, meta, fblocks);
+    } else {
+        int ret = HANDLE_EAGAIN(fm_getattrat(parent, file));
+        if (ret < 0) {
+            return ret;
+        }
+        file.path = pathjoin(parent.path, file.path);
+        return HANDLE_EAGAIN(fm_getattr(file, meta));
+    }
+}
+
 int file_t::read(void* buff, off_t offset, size_t size) {
     atime = time(nullptr);
     auto_rlock(this);
@@ -725,7 +751,7 @@ std::vector<filekey> file_t::getkeys() {
         }
     }
     flist.emplace_back(getmetakey());
-    if(fm_private_key_tostring(fk.load()->private_key)[0] == '\0'){
+    if(fk.load()->private_key == nullptr){
         return flist;
     }
     string path;

@@ -16,6 +16,7 @@ public:
     symlink_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~symlink_t() override;
     virtual int getmeta(filemeta& meta) override;
+    static int fetchmeta(const filekey& parent, filekey& file, filemeta& meta);
 
     virtual int open() override {
         return -ELOOP;

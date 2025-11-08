@@ -67,7 +67,7 @@ RemoteEntry* find_entry_unlocked(const std::string& path) {
 RemoteEntry* ensure_directory_unlocked(RemoteEntry* parent, const std::string& path) {
     RemoteEntry* current_entry = parent;
     for (const auto& part : std::filesystem::path(path)) {
-        if (part == "/" || part.empty()) continue;
+        if (part == "/" || part == "." || part.empty()) continue;
 
         auto it = current_entry->children.find(part);
         if (it != current_entry->children.end()) {
@@ -502,4 +502,30 @@ void backend_set_mount_option(const struct fmoption* opt_) {
 bool backend_path_exists(const std::string& path) {
     std::lock_guard<std::mutex> guard(remote_lock);
     return find_entry_unlocked(path) != nullptr;
+}
+
+void backend_clone(const std::string& src, const std::string& dst) {
+    RemoteEntry* src_entry = find_entry_unlocked(src);
+    if (src_entry == nullptr) {
+        throw std::runtime_error("BACKEND_CLONE: source path '" + src + "' does not exist");
+    }
+
+    // 'newat' is always the root directory.
+    RemoteEntry* root_entry = find_entry_unlocked("/");
+    if (root_entry == nullptr) { // Should be impossible
+        throw std::runtime_error("BACKEND_CLONE: root directory does not exist");
+    }
+
+    std::string dst_rel_path = dst;
+    if (dst_rel_path.rfind('/', 0) == 0) { // starts_with in C++20
+        dst_rel_path = dst_rel_path.substr(1);
+    }
+
+    filekey src_key{src, make_private_key(src_entry->id)};
+    filekey root_key{"/", make_private_key(root_entry->id)};
+    filekey dst_key{dst_rel_path, nullptr}; // Use relative path for newfile
+
+    if (fm_copy(src_key, root_key, dst_key) != 0) {
+        throw std::runtime_error("BACKEND_CLONE: fm_copy failed with errno " + std::to_string(errno));
+    }
 }

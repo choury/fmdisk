@@ -33,4 +33,22 @@ int delete_blocks_by_key(const std::vector<filekey>& filekeys);
 int get_blocks_for_inode(ino_t inode, std::vector<block_record>& blocks);
 int get_all_block_inodes(std::vector<ino_t>& inodes);
 int get_dirty_files(std::vector<std::string>& dirty_files);
+
+enum journal_state {
+    JOURNAL_STATE_START = 0,
+    JOURNAL_STATE_REMOTE_FINISHED = 1,
+};
+
+struct journal_entry {
+    std::string op;
+    int state;
+    std::string src_path;
+    std::string dst_path;
+    std::shared_ptr<void> dst_private_key;
+};
+
+int save_journal_entry(const journal_entry& entry);
+int delete_journal_entry(const std::string& op, const std::string& src_path);
+int list_journal_entries(std::vector<journal_entry>& entries);
+
 #endif

@@ -44,6 +44,11 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
 #endif
     // 恢复dirty数据并重新上传
     if(!opt.no_cache) {
+        int journal_ret = recover_journals();
+        if(journal_ret != 0) {
+            errorlog("recover journals failed: %d\n", journal_ret);
+            exit(EXIT_FAILURE);
+        }
         recover_dirty_data();
     }
     return cache_root().get();
@@ -171,6 +176,9 @@ int fm_fuse_rmdir(const char *path){
 }
 
 int fm_fuse_rename(const char *oldname, const char *newname, unsigned int flags){
+    if(opt.no_cache) {
+        return -EROFS; // rename 需要db来保证一致性，禁用本地缓存时禁止rename
+    }
     auto parent = std::dynamic_pointer_cast<dir_t>(find_entry(dirname(oldname)));
     if(parent == nullptr){
         return -ENOENT;

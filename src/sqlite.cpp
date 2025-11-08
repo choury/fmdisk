@@ -2,6 +2,7 @@
 #include "sqlite.h"
 #include "fmdisk.h"
 #include "log.h"
+#include "defer.h"
 
 #include <assert.h>
 #include <string.h>
@@ -83,6 +84,20 @@ int sqlinit(){
                 "ON blocks (private_key)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create index for blocks failed: %s\n", err_msg);
+                if(err_msg) sqlite3_free(err_msg);
+                failed = true;
+                break;
+            }
+            if(sqlite3_exec(cachedb,
+                "CREATE TABLE IF NOT EXISTS journals("
+                "op TEXT NOT NULL,"
+                "state INTEGER NOT NULL,"
+                "src_path TEXT NOT NULL,"
+                "dst_path TEXT NOT NULL,"
+                "dst_private_key TEXT,"
+                "primary key (op, src_path))", nullptr, nullptr, &err_msg))
+            {
+                errorlog("create table journals failed: %s\n", err_msg);
                 if(err_msg) sqlite3_free(err_msg);
                 failed = true;
                 break;
@@ -189,7 +204,7 @@ static int files_callback(void *data, int columns, char **field, char **colum){
         if(strcmp(colum[i], "meta") == 0){
             json_object *json_get = json_tokener_parse(field[i]);
             if(json_get ==  nullptr){
-                throw "Json parse error";
+                throw std::runtime_error("Json parse error");
             }
             unmarshal_meta(json_get, param->first, param->second);
             json_object_put(json_get);
@@ -524,4 +539,97 @@ int get_dirty_files(std::vector<std::string>& dirty_files) {
         return -1;
     }
     return dirty_files.size();
+}
+
+static int prepare_sqlite_stmt(sqlite3_stmt** stmt, const char* sql) {
+    if(sqlite3_prepare_v2(cachedb, sql, -1, stmt, nullptr) != SQLITE_OK) {
+        errorlog("SQL [%s]: %s\n", sql, sqlite3_errmsg(cachedb));
+        return -1;
+    }
+    return 0;
+}
+
+int save_journal_entry(const journal_entry& entry) {
+    if(cachedb == nullptr) {
+        return -1;
+    }
+    const char* sql = "REPLACE INTO journals "
+        "(op, state, src_path, dst_path, dst_private_key) "
+        "VALUES (?, ?, ?, ?, ?)";
+    sqlite3_stmt* stmt = nullptr;
+    if(prepare_sqlite_stmt(&stmt, sql) != 0) {
+        return -1;
+    }
+    defer(sqlite3_finalize, stmt);
+
+    sqlite3_bind_text(stmt, 1, entry.op.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, entry.state);
+    sqlite3_bind_text(stmt, 3, entry.src_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, entry.dst_path.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, fm_private_key_tostring(entry.dst_private_key), -1, SQLITE_TRANSIENT);
+    int ret = sqlite3_step(stmt);
+    if(ret != SQLITE_DONE) {
+        errorlog("SQL [%s]: %s\n", sql, sqlite3_errmsg(cachedb));
+        return -1;
+    }
+    return 0;
+}
+
+int delete_journal_entry(const std::string& op, const std::string& src_path) {
+    if(cachedb == nullptr) {
+        return -1;
+    }
+    const char* sql = "DELETE FROM journals WHERE op = ? AND src_path = ?";
+    sqlite3_stmt* stmt = nullptr;
+    if(prepare_sqlite_stmt(&stmt, sql) != 0) {
+        return -1;
+    }
+    defer(sqlite3_finalize, stmt);
+
+    sqlite3_bind_text(stmt, 1, op.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, src_path.c_str(), -1, SQLITE_TRANSIENT);
+
+    int ret = sqlite3_step(stmt);
+    if(ret != SQLITE_DONE) {
+        errorlog("SQL [%s]: %s\n", sql, sqlite3_errmsg(cachedb));
+        return -1;
+    }
+    return 0;
+}
+
+int list_journal_entries(std::vector<journal_entry>& entries) {
+    entries.clear();
+    if(cachedb == nullptr) {
+        return -1;
+    }
+    const char* sql = "SELECT op, state, src_path, dst_path, dst_private_key FROM journals";
+    sqlite3_stmt* stmt = nullptr;
+    if(prepare_sqlite_stmt(&stmt, sql) != 0) {
+        return -1;
+    }
+    defer(sqlite3_finalize, stmt);
+
+    while(true) {
+        int ret = sqlite3_step(stmt);
+        if(ret == SQLITE_ROW) {
+            journal_entry entry{};
+            const unsigned char* text = sqlite3_column_text(stmt, 0);
+            entry.op = text ? reinterpret_cast<const char*>(text) : "";
+            entry.state = sqlite3_column_int(stmt, 1);
+            text = sqlite3_column_text(stmt, 2);
+            entry.src_path = text ? reinterpret_cast<const char*>(text) : "";
+            text = sqlite3_column_text(stmt, 3);
+            entry.dst_path = text ? reinterpret_cast<const char*>(text) : "";
+            text = sqlite3_column_text(stmt, 4);
+            entry.dst_private_key = fm_get_private_key((const char*)text);
+            entries.push_back(std::move(entry));
+            continue;
+        }
+        if(ret == SQLITE_DONE) {
+            break;
+        }
+        errorlog("SQL [%s]: %s\n", sql, sqlite3_errmsg(cachedb));
+        return -1;
+    }
+    return 0;
 }

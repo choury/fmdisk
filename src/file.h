@@ -44,6 +44,7 @@ public:
     filekey getmetakey();
     std::vector<filekey> getkeys();
     virtual int getmeta(filemeta& meta) override;
+    static int fetchmeta(const filekey& parent, filekey& file, filemeta& meta);
 
     virtual int open() override;
     virtual int release(bool waitsync) override;
@@ -66,6 +67,7 @@ public:
     size_t release_clean_blocks();
 
     friend class dir_t;
+    friend int recover_journals();
 };
 
 void writeback_thread(bool* done);

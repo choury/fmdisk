@@ -563,7 +563,7 @@ int download_meta(const filekey& file, filemeta& meta, std::vector<filekey>& fbl
     std::string json_str = std::string(bs.data(), bs.size());
     json_object *json_get = json_tokener_parse(json_str.c_str());
     if(json_get ==  nullptr){
-        throw "Json parse error";
+        throw std::runtime_error("Json parse error");
     }
     meta = initfilemeta(file);
     unmarshal_meta(json_get, meta, fblocks);

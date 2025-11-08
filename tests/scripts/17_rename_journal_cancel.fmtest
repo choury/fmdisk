@@ -1,0 +1,27 @@
+# Verify that a stray START journal entry is cleaned up on mount
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+
+# Seed a cached file
+MOUNT no_cache=false
+CREATE path="/pending.log" mode=0644 handle=writer
+WRITE handle=writer data="journal-start"
+RELEASE handle=writer sync=true
+UNMOUNT
+
+# Simulate a crash that left a START journal row behind
+BACKEND_EXEC_SQL sql="INSERT OR REPLACE INTO journals(op,state,src_path,dst_path,dst_private_key) VALUES ('rename',0,'/pending.log','/pending.log.next',NULL)"
+
+# Remount: recovery should delete the bogus journal and keep the source file
+MOUNT no_cache=false
+GETATTR path="/pending.log" expect_type=file expect_size=13
+OPEN path="/pending.log" flags=RDONLY handle=pending_reader
+READ handle=pending_reader size=13 expect_data="journal-start"
+RELEASE handle=pending_reader
+GETATTR path="/pending.log.next" expect_error=ENOENT
+BACKEND_PATH_EXISTS path="/cGVuZGluZy5sb2c=.def" expected=true
+BACKEND_PATH_EXISTS path="/cGVuZGluZy5sb2cubmV4dA==.def" expected=false
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+
+BACKEND_CLEAR_CACHE

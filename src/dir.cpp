@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 
+static constexpr const char* JOURNAL_OP_RENAME = "rename";
+
 static std::string_view childname(std::string_view path) {
     size_t pos = path.find_first_of("/");
     if(pos == string::npos) {
@@ -431,6 +433,63 @@ int dir_t::rmdir(const string& name) {
     return 0;
 }
 
+//这个函数里的entry对象理论上都需要加锁，但当前两个调用路径上,正常路径已经都加锁了,另外一个是恢复流程，是串行执行的
+void dir_t::finalize_local_move(std::shared_ptr<entry_t> entry,
+                                std::shared_ptr<dir_t> newparent,
+                                const journal_entry& jr) {
+    save_journal_entry(jr);
+    // 如果是文件，需要移动持久化缓存文件
+    if(S_ISREG(entry->getmode()) && !opt.no_cache) {
+        string old_cache_path = pathjoin(opt.cache_dir, "cache", jr.src_path);
+        string new_cache_path = pathjoin(opt.cache_dir, "cache", jr.dst_path);
+
+        // 确保新缓存目录存在
+        string new_cache_dir = dirname(new_cache_path);
+        if(create_dirs_recursive(new_cache_dir) != 0) {
+            errorlog("failed to create cache dir %s: %s\n", new_cache_dir.c_str(), strerror(errno));
+        }
+
+        // 移动缓存文件
+        if(rename(old_cache_path.c_str(), new_cache_path.c_str()) == 0) {
+            setxattr(new_cache_path.c_str(), FM_REMOTE_PATH_ATTR, jr.dst_path.c_str(), jr.dst_path.size(), 0);
+        }else if(errno != ENOENT) {
+            errorlog("failed to rename cache file %s to %s: %s\n",
+                    old_cache_path.c_str(), new_cache_path.c_str(), strerror(errno));
+        }
+    }
+
+    std::string oldname = basename(jr.src_path);
+    std::string newname = basename(jr.dst_path);
+
+    if(newparent->entrys.contains(newname)) {
+        //这个地方不能直接unlink,因为如果之前文件也存在，copy会覆盖它，调用unlink可能删除的是新文件(比如以文件名作为key的s3后端)
+        std::shared_ptr<entry_t> existing = newparent->entrys[newname];
+        existing->remove_wlocked(true);
+        newparent->entrys.erase(newname);
+    }
+
+    flags |= DIR_DIRTY_F;
+    mtime = time(nullptr);
+    entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, jr.dst_private_key));
+    //再此之前不能修改fk.path, 因为insert需要从files表读取原始文件信息
+    //但是又需要保存新文件的private_key，不想再加一个参数了，就直接把private_key 先改了
+    newparent->insert_child_wlocked(newname, entry);
+    newparent->mtime = newparent->atime = time(nullptr);
+    newparent->flags |= DIR_DIRTY_F;
+
+    std::string oldpath = entry->getkey().path;
+    delete_entry_from_db(oldpath);
+    if(S_ISDIR(entry->getmode())) {
+        delete_entry_prefix_from_db(oldpath);
+    } else {
+        delete_file_from_db(oldpath);
+    }
+    delete_journal_entry(JOURNAL_OP_RENAME, jr.src_path);
+    entrys.erase(oldname);
+    entry->fk.store(std::make_shared<filekey>(newname, jr.dst_private_key));
+    entry->parent = newparent;
+}
+
 int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const string& newname, unsigned int mv_flags) {
     atime = time(nullptr);
 #ifdef RENAME_EXCHANGE
@@ -487,22 +546,36 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
         }
     }
 
+    journal_entry journal{};
+    journal.op = JOURNAL_OP_RENAME;
+    journal.state = JOURNAL_STATE_START;
+    journal.src_path = entry->getcwd();
+    journal.dst_path = pathjoin(newparent->getcwd(), newname);
+
+    if(save_journal_entry(journal) != 0) {
+        errorlog("failed to insert rename journal for %s -> %s\n",
+            journal.src_path.c_str(), journal.dst_path.c_str());
+        return -EIO;
+    }
+
     std::shared_ptr<void> new_private_key;
     int ret = 0;
     if(opt.flags & FM_RENAME_NOTSUPPRTED) {
         //copy and delete
         if(S_ISREG(entry->getmode())) {
-            filekey newdir = {encodepath(newname, file_encode_suffix), 0};
-            fm_getattrat(newparent->getkey(), newdir);
-            if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0 && newdir.private_key == nullptr) {
-                HANDLE_EAGAIN(fm_mkdir(newparent->getkey(), newdir));
-            }
-            if(newdir.private_key == nullptr) {
-                return -EINVAL;
-            }
-            new_private_key = newdir.private_key;
             auto file = std::dynamic_pointer_cast<file_t>(entry);
-            if(fm_private_key_tostring(file->private_key)[0] == '\0') {
+            if(file->flags & ENTRY_CHUNCED_F) {
+                filekey newdir = {encodepath(newname, file_encode_suffix), 0};
+                fm_getattrat(newparent->getkey(), newdir);
+                if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0 && newdir.private_key == nullptr) {
+                    HANDLE_EAGAIN(fm_mkdir(newparent->getkey(), newdir));
+                }
+                if(newdir.private_key == nullptr) {
+                    return -EINVAL;
+                }
+                new_private_key = newdir.private_key;
+            }
+            if(file->private_key == nullptr) {
                 // 这个文件还没来得及上传到远程
                 assert(file->flags & FILE_DIRTY_F);
                 assert(file->flags & ENTRY_CHUNCED_F);
@@ -553,51 +626,9 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
     }
 
 skip_remote:
-    // 如果是文件，需要移动持久化缓存文件
-    if(S_ISREG(entry->getmode()) && !opt.no_cache) {
-        string new_remote_path = pathjoin(newparent->getcwd(), newname);
-        string old_cache_path = pathjoin(opt.cache_dir, "cache", this->getcwd(), oldname);
-        string new_cache_path = pathjoin(opt.cache_dir, "cache", new_remote_path);
-
-        // 确保新缓存目录存在
-        string new_cache_dir = dirname(new_cache_path);
-        if(create_dirs_recursive(new_cache_dir) != 0) {
-            errorlog("failed to create cache dir %s: %s\n", new_cache_dir.c_str(), strerror(errno));
-        }
-
-        // 移动缓存文件
-        if(rename(old_cache_path.c_str(), new_cache_path.c_str()) == 0) {
-            setxattr(new_cache_path.c_str(), FM_REMOTE_PATH_ATTR, new_remote_path.c_str(), new_remote_path.size(), 0);
-        }else if(errno != ENOENT) {
-            errorlog("failed to rename cache file %s to %s: %s\n",
-                    old_cache_path.c_str(), new_cache_path.c_str(), strerror(errno));
-        }
-    }
-
-    flags |= DIR_DIRTY_F;
-    mtime = time(nullptr);
-    //这个地方不能直接unlink,因为如果之前文件也存在，copy会覆盖它，调用unlink可能删除的是新文件(比如以文件名作为key的s3后端)
-    if(existing) {
-        existing->remove_wlocked(true);
-        newparent->entrys.erase(newname);
-    }
-    entry->fk.store(std::make_shared<filekey>(entry->fk.load()->path, new_private_key));
-    //再此之前不能修改fk.path, 因为insert需要从files表读取原始文件信息
-    //但是又需要保存新文件的private_key，不想再加一个参数了，就直接把private_key 先改了
-    newparent->insert_child_wlocked(newname, entry);
-    newparent->mtime = newparent->atime = time(nullptr);
-    newparent->flags |= DIR_DIRTY_F;
-
-    std::string oldpath = entry->getkey().path;
-    delete_entry_from_db(oldpath);
-    if(S_ISDIR(entry->getmode())) {
-        delete_entry_prefix_from_db(oldpath);
-    } else {
-        delete_file_from_db(oldpath);
-    }
-    entrys.erase(oldname);
-    entry->fk.store(std::make_shared<filekey>(newname, new_private_key));
-    entry->parent = newparent;
+    journal.state = JOURNAL_STATE_REMOTE_FINISHED;
+    journal.dst_private_key = new_private_key;
+    finalize_local_move(entry, newparent, journal);
     return 0;
 }
 
@@ -787,4 +818,115 @@ int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vec
         return 0;
     }
     return -EIO;
+}
+
+static int fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
+    if(S_ISREG(meta.mode)) {
+        return file_t::fetchmeta(parent, file, meta);
+    }else if(S_ISDIR(meta.mode)) {
+        fm_getattrat(parent, file);
+        file.path = pathjoin(parent.path, file.path);
+        return fm_getattr(file, meta);
+    }else if(S_ISLNK(meta.mode)) {
+        return symlink_t::fetchmeta(parent, file, meta);
+    }
+    errno = EINVAL;
+    return -errno;
+}
+
+static bool is_meta_equal(const filemeta& m1, const filemeta& m2) {
+    if(!m1.etag.empty() && !m2.etag.empty()) {
+        return m1.etag == m2.etag;
+    }
+    return m1.size == m2.size &&
+           m1.mode == m2.mode &&
+           m1.ctime == m2.ctime &&
+           m1.mtime == m2.mtime;
+}
+
+int recover_journals() {
+    std::vector<journal_entry> entries;
+    if(list_journal_entries(entries) != 0) {
+        errorlog("failed to list journal entries\n");
+        return -EIO;
+    }
+    for(auto& jr : entries) {
+        if(jr.op != JOURNAL_OP_RENAME) {
+            continue;
+        }
+        std::string oldname = basename(jr.src_path);
+        std::string newname = basename(jr.dst_path);
+        std::shared_ptr<dir_t> sparent = std::dynamic_pointer_cast<dir_t>(find_entry(dirname(jr.src_path)));
+        if(!sparent) {
+            errorlog("failed to find src parent dir for %s\n", jr.src_path.c_str());
+            return -EIO;
+        }
+        std::shared_ptr<dir_t> dparent = std::dynamic_pointer_cast<dir_t>(find_entry(dirname(jr.dst_path)));
+        if(!dparent) {
+            errorlog("failed to find dst parent dir for %s\n", jr.dst_path.c_str());
+            return -EIO;
+        }
+        std::shared_ptr<entry_t> entry = dir_t::find(sparent, oldname);
+        if(!entry) {
+            errorlog("failed to entry for %s\n", jr.src_path.c_str());
+            return -EIO;
+        }
+        filemeta meta;
+        entry->getmeta(meta);
+        if(jr.state == JOURNAL_STATE_START) {
+            //TODO: 检查远程文件：
+            //如果目标文件不存在，直接取消rename(删除journal)
+            filekey newfile{newname, 0};
+            filemeta newmeta{};
+            newmeta.mode = meta.mode;
+            newmeta.flags = meta.flags;
+            if(fetchmeta(dparent->getkey(), newfile, newmeta) < 0){
+                if(errno != ENOENT) {
+                    errorlog("failed to fetch meta for %s: %s\n", jr.dst_path.c_str(), strerror(errno));
+                    return -EIO;
+                }
+                infolog("dst file %s not found, cancel rename\n", jr.dst_path.c_str());
+                delete_journal_entry(jr.op, jr.src_path);
+                continue;
+            }
+            //如果两文件都存在，判断是否相同，相同则删除源文件并修改状态为REMOTE_FINISHED然后继续，否则报错
+            filekey oldfile{oldname, 0};
+            filemeta oldmeta{};
+            oldmeta.mode = meta.mode;
+            oldmeta.flags = meta.flags;
+            if(fetchmeta(sparent->getkey(), oldfile, oldmeta) == 0){
+                if(!is_meta_equal(oldmeta, newmeta)) {
+                    errorlog("src file %s and dst file %s are different, cannot resume rename\n",
+                             jr.src_path.c_str(), jr.dst_path.c_str());
+                    return -EIO;
+                }
+                if(!is_meta_equal(meta, oldmeta)) {
+                    errorlog("inconsistent meta for %s, cannot resume rename\n", jr.src_path.c_str());
+                    return -EIO;
+                }
+                //删除源文件
+                if(HANDLE_EAGAIN(fm_batchdelete({oldmeta.key, oldfile})) < 0) {
+                    errorlog("failed to delete src file %s: %s\n", jr.src_path.c_str(), strerror(errno));
+                    return -EIO;
+                }
+                std::shared_ptr<file_t> file_entry = std::dynamic_pointer_cast<file_t>(entry);
+                if(file_entry) {
+                    file_entry->private_key = newmeta.key.private_key;
+                }
+            } else if(errno != ENOENT) {
+                errorlog("failed to fetch meta for %s: %s\n", jr.src_path.c_str(), strerror(errno));
+                return -EIO;
+            }
+            //如果源文件不存在，目标文件存在，说明remote操作已完成，不需要额外动作，状态修改为REMOTE_FINISHED然后继续
+            jr.state = JOURNAL_STATE_REMOTE_FINISHED;
+            jr.dst_private_key = newfile.private_key;
+        }
+        if(jr.state == JOURNAL_STATE_REMOTE_FINISHED) {
+            sparent->finalize_local_move(entry, dparent, jr);
+        } else {
+            errorlog("unknown journal state %d for %s\n", jr.state, jr.src_path.c_str());
+            return -EIO;
+        }
+    }
+    return 0;
 }

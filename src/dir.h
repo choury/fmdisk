@@ -8,6 +8,7 @@ using std::string;
 
 class file_t;
 class symlink_t;
+struct journal_entry;
 class dir_t: public entry_t {
     std::map<string, std::shared_ptr<entry_t>> entrys;
     int pull_wlocked() override;
@@ -52,10 +53,12 @@ public:
     int unlink(const string& name);
     int rmdir(const string& name);
     int moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const string& newname, unsigned int flags);
+    void finalize_local_move(std::shared_ptr<entry_t> entry, std::shared_ptr<dir_t> newparent, const journal_entry& jr);
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;
 };
 
 
+int recover_journals();
 
 #endif

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <json-c/json.h>
+#include <sqlite3.h>
 
 const std::string secret = "integration-secret";
 std::string cache_dir;
@@ -365,6 +366,69 @@ void ensure_mounted(const ExecutionContext& ctx, const Command& cmd) {
     }
 }
 
+void exec_backend_sql(ExecutionContext& ctx, const Command& cmd) {
+    std::string sql = require_arg(cmd, "sql");
+    auto expect_opt = optional_arg(cmd, "expect");
+
+    if (cache_dir.empty()) {
+        fail(ctx, cmd, "cache directory not set, MOUNT must be called first");
+    }
+    std::filesystem::path cache_path(cache_dir);
+    std::filesystem::path db_path = cache_path / "cache.db";
+    if (!std::filesystem::exists(db_path)) {
+        if (expect_opt.has_value()) {
+            fail(ctx, cmd, "cache.db does not exist in cache directory, but an expectation was provided.");
+        }
+        return;
+    }
+
+    sqlite3* db = nullptr;
+    if (sqlite3_open(db_path.c_str(), &db) != SQLITE_OK) {
+        std::string msg = "failed to open cache.db";
+        if(db) {
+            msg += ": " + std::string(sqlite3_errmsg(db));
+            sqlite3_close(db);
+        }
+        fail(ctx, cmd, msg);
+    }
+
+    char* err_msg = nullptr;
+    std::string query_result;
+
+    auto callback = [](void* data, int argc, char** argv, char** azColName) -> int {
+        std::string* result_str = static_cast<std::string*>(data);
+        if (!result_str->empty()) {
+            result_str->append("\n");
+        }
+        for (int i = 0; i < argc; i++) {
+            if (i > 0) {
+                result_str->append("|");
+            }
+            result_str->append(argv[i] ? argv[i] : "NULL");
+        }
+        return 0;
+    };
+
+    int rc = sqlite3_exec(db, sql.c_str(), callback, &query_result, &err_msg);
+
+    if (rc != SQLITE_OK) {
+        std::string error = "SQL error: " + std::string(err_msg);
+        sqlite3_free(err_msg);
+        sqlite3_close(db);
+        fail(ctx, cmd, error);
+    }
+
+    sqlite3_close(db);
+
+    if (expect_opt.has_value()) {
+        if (query_result != *expect_opt) {
+            std::ostringstream oss;
+            oss << "SQL expect mismatch: wanted '" << *expect_opt << "', got '" << query_result << "'";
+            fail(ctx, cmd, oss.str());
+        }
+    }
+}
+
 void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name == "BACKEND_RESET") {
         backend_reset_state();
@@ -564,6 +628,16 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         }
         return;
     }
+    if(cmd.name == "BACKEND_EXEC_SQL") {
+        exec_backend_sql(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "BACKEND_CLONE") {
+        std::string src = require_arg(cmd, "src");
+        std::string dst = require_arg(cmd, "dst");
+        backend_clone(src, dst);
+        return;
+    }
 
     fail(ctx, cmd, "unknown backend command");
 }
@@ -669,38 +743,6 @@ void exec_unmount(ExecutionContext& ctx, const Command& cmd) {
     ctx.mount.userdata = nullptr;
     ctx.mounted = false;
     ctx.handles.clear();
-}
-
-void exec_opendir(ExecutionContext& ctx, const Command& cmd) {
-    ensure_mounted(ctx, cmd);
-    std::string path = require_arg(cmd, "path");
-    fuse_file_info info {};
-    int ret = fm_fuse_opendir(path.c_str(), &info);
-    if(ret < 0) {
-        auto expected_errno = parse_expected_errno(cmd, "expect_error");
-        if(!expected_errno.has_value() || ret != -expected_errno.value()) {
-            std::ostringstream oss;
-            oss << "opendir failed with " << ret;
-            fail(ctx, cmd, oss.str());
-        }
-        return;
-    }
-    if(auto handle_opt = optional_arg(cmd, "handle"); handle_opt.has_value()) {
-        store_handle(ctx, cmd, "handle", path, HandleKind::Dir, info);
-    } else {
-        fm_fuse_releasedir(path.c_str(), &info);
-    }
-}
-
-void exec_releasedir(ExecutionContext& ctx, const Command& cmd) {
-    ensure_mounted(ctx, cmd);
-    std::string handle_name = require_arg(cmd, "handle");
-    HandleState& state = require_dir_handle(ctx, cmd, "handle");
-    int ret = fm_fuse_releasedir(nullptr, &state.info);
-    if(ret < 0) {
-        fail(ctx, cmd, "releasedir failed with " + std::to_string(ret));
-    }
-    ctx.handles.erase(handle_name);
 }
 
 void validate_errno(int ret, const std::optional<int>& expected_errno, ExecutionContext& ctx, const Command& cmd, const char* step) {
@@ -1139,14 +1181,6 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "STATFS") {
         exec_statfs(ctx, cmd);
-        return;
-    }
-    if(cmd.name == "OPENDIR") {
-        exec_opendir(ctx, cmd);
-        return;
-    }
-    if(cmd.name == "RELEASEDIR") {
-        exec_releasedir(ctx, cmd);
         return;
     }
     if(cmd.name == "MKDIR") {

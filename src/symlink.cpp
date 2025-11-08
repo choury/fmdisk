@@ -85,6 +85,18 @@ int symlink_t::pull_wlocked() {
     return 0;
 }
 
+int symlink_t::fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
+    assert(meta.flags & ENTRY_CHUNCED_F);
+    file.path = encodepath(file.path, symlink_encode_suffix);
+    int ret = HANDLE_EAGAIN(fm_getattrat(parent, file));
+    if(ret < 0){
+        return ret;
+    }
+    file.path = pathjoin(parent.path, file.path);
+    std::vector<filekey> fblocks;
+    return download_meta(file, meta, fblocks);
+}
+
 int symlink_t::utime(const struct timespec tv[2]) {
     atime = time(nullptr);
     //no atime in filemeta
