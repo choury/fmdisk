@@ -79,8 +79,9 @@ int sqlinit(){
                 failed = true;
                 break;
             }
+            //这个地方不能用唯一键，因为未上传的文件都是相同的private_key
             if(sqlite3_exec(cachedb,
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_key "
+                "CREATE INDEX IF NOT EXISTS idx_key "
                 "ON blocks (private_key)", nullptr, nullptr, &err_msg))
             {
                 errorlog("create index for blocks failed: %s\n", err_msg);
