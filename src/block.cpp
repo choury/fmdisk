@@ -351,6 +351,10 @@ size_t block_t::release() {
     if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
         return 0;
     }
+    if(fk.path == "x") {
+        return 0;
+    }
+    atime = time(nullptr);
     fallocate(fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
     delete_block_from_db(fi.inode, no);
     debuglog("release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);

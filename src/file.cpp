@@ -95,7 +95,7 @@ static bool cleanup_cache_by_size() {
         open_files.push_back(file);
     }
     std::sort(open_files.begin(), open_files.end(), [](const std::shared_ptr<file_t>& lhs, const std::shared_ptr<file_t>& rhs) {
-        return lhs->getatime() > rhs->getatime();
+        return lhs->getatime() < rhs->getatime();
     });
     for(const auto& file : open_files) {
         size_t freed = file->release_clean_blocks();
