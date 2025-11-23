@@ -265,9 +265,13 @@ CURLcode request(Http *r){
         curl_easy_setopt(r->curl_handle, CURLOPT_MIMEPOST, mime);
         break;
     }
-    case post_related:
-        r->headers = curl_slist_append(r->headers, "Content-Type: multipart/related; boundary="BUNDARY);
+    case post_multipart: {
+        char content_type[256];
+        snprintf(content_type, sizeof(content_type), "Content-Type: multipart/%s; boundary=%s",
+                 r->multipart_subtype, BUNDARY);
+        r->headers = curl_slist_append(r->headers, content_type);
         break;
+    }
     case post_json:
         r->headers = curl_slist_append(r->headers, "Content-Type: application/json");
         break;
@@ -308,6 +312,7 @@ Http *Httpinit(const char *url){
     hh->method = get;
     hh->posttype = none;
     hh->timeout = 60;
+    hh->multipart_subtype = NULL;
     return hh;
 }
 

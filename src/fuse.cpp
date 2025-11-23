@@ -502,7 +502,7 @@ int __attribute__((weak)) fm_rename(const filekey& oldat, const filekey& file, c
     return -errno;
 }
 
-int __attribute__((weak)) fm_utime(const filekey& file, const struct timespec  tv[2]) {
+int __attribute__((weak)) fm_utime(const filekey& file, const time_t tv[2]) {
     errno = EACCES;
     return -errno;
 }
