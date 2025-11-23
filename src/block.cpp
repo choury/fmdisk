@@ -280,7 +280,7 @@ int block_t::prefetch(bool wait) {
             return 0; // 已经同步，不需要预取
         }
         __r.unlock();
-        return pull(shared_from_this());
+        return pull(weak_from_this());
     } else {
         if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
             return 1;
@@ -292,7 +292,7 @@ int block_t::prefetch(bool wait) {
         if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
             return 0; // 已经同步，不需要预取
         }
-        dpool->submit_fire_and_forget([b = std::weak_ptr<block_t>(shared_from_this())]{
+        dpool->submit_fire_and_forget([b = weak_from_this()]{
             pull(b);
         });
         return 0;
@@ -311,7 +311,7 @@ void block_t::markdirty(filekey fileat) {
     // 保存到数据库并标记为dirty
     save_block_to_db(fi, no, fk, true);
     pthread_mutex_lock(&dblocks_lock);
-    dblocks.emplace(shared_from_this(), fileat);
+    dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
 }
 
@@ -327,11 +327,11 @@ bool block_t::sync(filekey fileat, bool wait){
     }
     if(wait) {
         __r.unlock();
-        push(shared_from_this(), fileat);
+        push(weak_from_this(), fileat);
         return true;
     }
     pthread_mutex_lock(&dblocks_lock);
-    dblocks.emplace(shared_from_this(), fileat);
+    dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
     return true;
 }

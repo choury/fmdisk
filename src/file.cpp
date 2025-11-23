@@ -627,6 +627,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     const size_t startc = GetBlkNo(offset, blksize);
     const size_t endc = GetBlkNo(offset + size, blksize);
     if(inline_data.empty()) {
+        for(size_t i = endc; i<= endc + (10*1024*1024/blksize) && i<= GetBlkNo(length, blksize); i++){
+            blocks.at(i)->prefetch(false);
+        }
         blocks.at(startc)->prefetch(true);
         blocks.at(endc)->prefetch(true);
     }
