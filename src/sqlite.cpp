@@ -28,6 +28,11 @@ int sqlinit(){
                 failed = true;
                 break;
             }
+            if(sqlite3_busy_timeout(cachedb, 3000) != SQLITE_OK){
+                errorlog("set busy_timeout failed: %s\n", sqlite3_errmsg(cachedb));
+                failed = true;
+                break;
+            }
             char *err_msg = nullptr;
             if(sqlite3_exec(cachedb,
                 "CREATE TABLE IF NOT EXISTS entrys("
