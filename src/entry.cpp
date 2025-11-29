@@ -11,7 +11,6 @@
 
 TrdPool* upool;
 TrdPool* dpool;
-std::thread gc;
 bool writeback_done = false;
 
 std::shared_ptr<dir_t> root = nullptr;
@@ -24,7 +23,7 @@ int cache_prepare() {
         throw std::runtime_error("getattr of root failed");
     }
     root = std::make_shared<dir_t>(nullptr, meta);
-    gc = std::thread(start_gc);
+    start_gc();
     if(opt.no_cache) {
         printf("--- EXIT cache_prepare (no_cache) ---\n");
         return 0;
@@ -59,9 +58,6 @@ void cache_destroy(){
         delete upool;
     }
     delete dpool;
-    if(gc.joinable()){
-        gc.join();
-    }
     if(!opt.no_cache) stop_delay_thread();
     if(!opt.no_cache) sqldeinit();
     root = nullptr;

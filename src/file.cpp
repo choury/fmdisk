@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <dirent.h>
 #include <utility>
+#include <thread>
 
 
 static pthread_mutex_t droped_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -27,6 +28,8 @@ static std::vector<filekey> droped;
 static pthread_mutex_t openfile_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<ino_t, std::shared_ptr<file_t>> opened_inodes;
 static std::atomic<bool> gc_stop(false);
+static std::thread gc_thread;
+static std::thread trim_thread;
 
 // 清理缓存直到满足大小限制
 static bool cleanup_cache_by_size() {
@@ -137,21 +140,29 @@ void recover_dirty_data() {
     }
 }
 
-void start_gc() {
+static void trim_worker() {
     while(!gc_stop) {
-        bool haswork = false;
         pthread_mutex_lock(&droped_lock);
-        //copy dropped and clear
+        // copy dropped and clear
         std::vector<filekey> tmp = std::move(droped);
         droped.clear();
         pthread_mutex_unlock(&droped_lock);
 
-        if(!tmp.empty()){
+        if(tmp.empty()) {
+            for(int i = 0; i < 10 && !gc_stop.load(); ++i) {
+                sleep(1);
+            }
+        }else {
             // 先清理数据库中的block记录
             delete_blocks_by_key(tmp);
             HANDLE_EAGAIN(fm_batchdelete(std::move(tmp)));
-            haswork = true;
         }
+    }
+}
+
+static void gc_worker() {
+    while(!gc_stop) {
+        bool haswork = false;
 
         // 定期检查缓存大小并清理
         if (!opt.no_cache && opt.cache_size >= 0 && cleanup_cache_by_size()) {
@@ -172,8 +183,26 @@ void start_gc() {
     }
 }
 
+void start_gc() {
+    if(gc_thread.joinable()) {
+        gc_thread.join();
+    }
+    if(trim_thread.joinable()) {
+        trim_thread.join();
+    }
+    gc_stop = false;
+    gc_thread = std::thread(gc_worker);
+    trim_thread = std::thread(trim_worker);
+}
+
 void stop_gc() {
     gc_stop = true;
+    if(gc_thread.joinable()) {
+        gc_thread.join();
+    }
+    if(trim_thread.joinable()) {
+        trim_thread.join();
+    }
 }
 
 static int tempfile() {
