@@ -21,6 +21,7 @@
 #include <sys/stat.h>
 #include "sqlite.h"
 #include "utils.h"
+#include "transfer_helper.h"
 
 using namespace std;
 
@@ -60,36 +61,16 @@ static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>
 static filekey* getpath(string path);
 
 // 上传单个block数据，返回block key
-static int upload_block_data(const filekey& dir, filekey& file, const char* data, size_t size, off_t offset, bool encode) {
-    // 检查是否全零
-    if(isAllZero(data, size)){
-        file = filekey{"x", 0};
-        return 0;
-    }
-    int ret = 0;
-    if(encode) {
-        char* buff = (char*)malloc(size);
-        if (!buff) {
-            cerr << "Failed to allocate memory for block" << endl;
-            return -1;
+static int upload_block_data(const filekey& dir, filekey& file, const char* data, size_t size, off_t offset, size_t blksize, bool encode) {
+    size_t block_no = (blksize > 0) ? static_cast<size_t>(offset / blksize) : 0;
+    int ret = upload_block_common(dir, file, block_no, blksize, offset, data, size, encode);
+    if(ret != 0) {
+        if(verbose) {
+            cerr << "Failed to upload block " << file.path << " error: " << ret << endl;
         }
-        defer(free, buff);
-
-        memcpy(buff, data, size);
-        xorcode(buff, offset, size, opt.secret);
-
-        // 上传block，fm_upload会更新result_key的private_key
-        ret = HANDLE_EAGAIN(fm_upload(dir, file, buff, size, false));
-    } else {
-        // 直接上传原始数据
-        ret = HANDLE_EAGAIN(fm_upload(dir, file, data, size, false));
+        return ret;
     }
-    if (ret != 0) {
-        cerr << "Failed to upload block " << file.path << " error: " << ret << endl;
-        return -1;
-    }
-
-    if (verbose) {
+    if(verbose) {
         cout << "Successfully uploaded block " << file.path << " (size: " << size << ")" << endl;
     }
     return 0;
@@ -139,7 +120,7 @@ static filekey uploadBlockFromCache(const filekey& dir, const std::string& remot
 
     // 上传block
     filekey new_block_key = makeChunkBlockKey(block_no);
-    if (upload_block_data(dir, new_block_key, mmap_data + offset, block_size, offset, meta.flags & FILE_ENCODE_F) != 0) {
+    if (upload_block_data(dir, new_block_key, mmap_data + offset, block_size, offset, meta.blksize, meta.flags & FILE_ENCODE_F) != 0) {
         return {{"x"}, 0};
     }
 
@@ -261,7 +242,7 @@ static int sync_dirty_file(const string& path){
         size_t block_size = std::min((size_t)meta.blksize, (size_t)(meta.size - offset));
 
         filekey new_block_key = makeChunkBlockKey(block_rec.block_no);
-        int ret = upload_block_data(block_dir, new_block_key, mmap_data + offset, block_size, offset, meta.flags & FILE_ENCODE_F);
+        int ret = upload_block_data(block_dir, new_block_key, mmap_data + offset, block_size, offset, meta.blksize, meta.flags & FILE_ENCODE_F);
         if (ret != 0) {
             block_sync_failed = true;
             break;

@@ -5,6 +5,7 @@
 #include "sqlite.h"
 #include "defer.h"
 #include "log.h"
+#include "transfer_helper.h"
 
 #include <string.h>
 #include <sys/xattr.h>
@@ -191,21 +192,13 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
         memset(buff, 0, len);
         return len;
     }
-    buffstruct bs((char*)buff, len);
-    defer([&bs] { bs.release(); });
     fileat.private_key = fk.private_key;
-    if(!fk.path.empty()) {
-        fileat.path = pathjoin(fileat.path, fk.path);
-    }
-    int ret = HANDLE_EAGAIN(fm_download(fileat, offset, len, bs));
+    size_t got = 0;
+    int ret = download_block_common(fileat, fk, no, size, offset, len, flags & FILE_ENCODE_F, (char*)buff, got);
     if(ret < 0) {
         return ret;
     }
-    assert(bs.size() <= (size_t)len);
-    if(flags & FILE_ENCODE_F){
-        xorcode(buff, this->offset + offset, bs.size(), opt.secret);
-    }
-    return bs.size();
+    return got;
 }
 
 void block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
