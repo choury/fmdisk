@@ -240,7 +240,7 @@ retry:
         }
         free(buff);
         if(ret != 0){
-            errorlog("fm_upload IO Error %s: %s", file.path.c_str(), strerror(ret));
+            errorlog("fm_upload IO Error %s: %s\n", file.path.c_str(), strerror(-ret));
             return;
         }
     }else{

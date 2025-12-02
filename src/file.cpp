@@ -411,11 +411,16 @@ int file_t::release(bool waitsync){
     }
 
     flags |= ENTRY_REASEWAIT_F;
-    //add_delay_job((taskfunc)clean, this, 0);
-    submit_delay_job([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
-        file_t::clean(file);
-    }, 0);
-    return 0;
+    if(waitsync){
+        __w.unlock();
+        clean(std::weak_ptr<file_t>(shared_file_from_this()));
+        return 0;
+    } else {
+        submit_delay_job([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
+            file_t::clean(file);
+        }, 0);
+        return 0;
+    }
 }
 
 int file_t::pull_wlocked() {

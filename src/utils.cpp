@@ -29,7 +29,7 @@ static int hex2num(char c) {
     if (c>='a' && c<='z') return c - 'a' + 10;//这里+10的原因是:比如16进制的a值为10
     if (c>='A' && c<='Z') return c - 'A' + 10;
 
-    errorlog("unexpected char: %c", c);
+    errorlog("unexpected char: %c\n", c);
     return '0';
 }
 

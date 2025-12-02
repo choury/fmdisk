@@ -1,0 +1,20 @@
+# cover no-cache chunked read path (forces chunked, non-inline data)
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+# First mount with cache to materialize chunked blocks and meta
+MOUNT no_cache=false
+CREATE path="/chunked.bin" mode=0644 handle=writer
+WRITE handle=writer data="Z" repeat=1200000
+FSYNC handle=writer
+RELEASE handle=writer sync=true
+UNMOUNT
+
+BACKEND_CLEAR_CACHE
+# Remount with no_cache to force direct block reads (ENTRY_CHUNCED_F path)
+MOUNT no_cache=true
+GETATTR path="/chunked.bin" expect_type=file expect_size=1200000
+OPEN path="/chunked.bin" handle=reader
+READ handle=reader size=64 offset=1048576 expect_bytes=64
+RELEASE handle=reader
+UNMOUNT
+BACKEND_CLEAR_CACHE

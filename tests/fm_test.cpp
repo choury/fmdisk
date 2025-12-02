@@ -224,10 +224,10 @@ json_object* resolve_json_path(json_object* root, const std::string& path) {
 }
 
 const std::unordered_map<std::string, int> kErrnoMap = {
-    {"EACCES", EACCES}, {"EEXIST", EEXIST}, {"EINTR", EINTR},   {"EINVAL", EINVAL}, {"EIO", EIO},
-    {"EISDIR", EISDIR}, {"EMFILE", EMFILE}, {"ENAMETOOLONG", ENAMETOOLONG}, {"ENOENT", ENOENT},
-    {"ENOSYS", ENOSYS}, {"ENOTDIR", ENOTDIR}, {"ENOTEMPTY", ENOTEMPTY}, {"EROFS", EROFS},
-    {"EXDEV", EXDEV}, {"EBADF", EBADF}
+    {"EACCES", EACCES}, {"EAGAIN", EAGAIN}, {"EBADF", EBADF}, {"EBUSY", EBUSY}, {"EEXIST", EEXIST},
+    {"EINTR", EINTR}, {"EINVAL", EINVAL}, {"EIO", EIO}, {"EISDIR", EISDIR}, {"EMFILE", EMFILE},
+    {"ENAMETOOLONG", ENAMETOOLONG}, {"ENOENT", ENOENT}, {"ENOSYS", ENOSYS}, {"ENOTDIR", ENOTDIR},
+    {"ENOTEMPTY", ENOTEMPTY}, {"EROFS", EROFS}, {"EXDEV", EXDEV}
 };
 
 std::optional<int> parse_expected_errno(const Command& cmd, const std::string& key) {
@@ -1166,6 +1166,28 @@ void exec_chmod(ExecutionContext& ctx, const Command& cmd) {
     validate_errno(ret, expected_errno, ctx, cmd, "chmod");
 }
 
+void exec_setxattr(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::string name = require_arg(cmd, "name");
+    auto value_opt = optional_arg(cmd, "value");
+    std::string value_decoded;
+    const char* value_ptr = nullptr;
+    size_t size = 0;
+    if(value_opt.has_value()) {
+        value_decoded = decode_escapes(value_opt.value());
+        value_ptr = value_decoded.c_str();
+        size = value_decoded.size();
+    }
+    int flags = 0;
+    if(auto flags_opt = optional_arg(cmd, "flags"); flags_opt.has_value()) {
+        flags = static_cast<int>(parse_long(flags_opt.value(), 0));
+    }
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fm_fuse_setxattr(path.c_str(), name.c_str(), value_ptr, size, flags);
+    validate_errno(ret, expected_errno, ctx, cmd, "setxattr");
+}
+
 void exec_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name.rfind("BACKEND_", 0) == 0) {
         run_backend_command(ctx, cmd);
@@ -1249,6 +1271,10 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "CHMOD") {
         exec_chmod(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "SETXATTR") {
+        exec_setxattr(ctx, cmd);
         return;
     }
     fail(ctx, cmd, "unknown command");

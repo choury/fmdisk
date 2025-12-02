@@ -1,0 +1,44 @@
+# cover drop-cache paths for file and directory
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# File drop: busy -> mem-only -> full purge
+CREATE path="/cache.txt" mode=0644 handle=writer
+WRITE handle=writer data="drop-cache-data"
+FLUSH handle=writer
+RELEASE handle=writer
+OPEN path="/cache.txt" handle=busy
+SETXATTR path="/cache.txt" name="user.drop_cache" value="1" expect_error=EBUSY
+RELEASE handle=busy
+BACKEND_SLEEP ms=300
+SETXATTR path="/cache.txt" name="user.drop_cache" value="2"
+BACKEND_SLEEP ms=1000
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/Y2FjaGUudHh0.def') THEN 1 ELSE 0 END" expect="1"
+OPEN path="/cache.txt" handle=reload
+READ handle=reload size=32 expect_data="drop-cache-data"
+RELEASE handle=reload
+BACKEND_SLEEP ms=300
+SETXATTR path="/cache.txt" name="user.drop_cache" value="1"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/Y2FjaGUudHh0.def') THEN 1 ELSE 0 END" expect="0"
+OPEN path="/cache.txt" handle=reopen
+READ handle=reopen size=32 expect_data="drop-cache-data"
+RELEASE handle=reopen
+BACKEND_SLEEP ms=200
+
+# Directory drop: clears child cache and repulls on demand
+MKDIR path="/dc" mode=0755
+CREATE path="/dc/a.txt" mode=0644 handle=ha
+WRITE handle=ha data="dir-drop"
+FLUSH handle=ha
+RELEASE handle=ha
+BACKEND_SLEEP ms=500
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path LIKE '/dc%') THEN 1 ELSE 0 END" expect="1"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM entrys WHERE parent LIKE '/dc%') THEN 1 ELSE 0 END" expect="1"
+SETXATTR path="/dc" name="user.drop_cache" value="1"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path LIKE '/dc%') THEN 1 ELSE 0 END" expect="0"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM entrys WHERE parent LIKE '/dc%') THEN 1 ELSE 0 END" expect="0"
+GETATTR path="/dc/a.txt" expect_type=file expect_size=8
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

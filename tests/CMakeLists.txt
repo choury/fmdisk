@@ -1,7 +1,6 @@
 add_executable(locker_test locker_test.cpp)
 target_link_libraries(locker_test pthread)
 
-
 add_executable(fmtest fm_test.cpp mock_backend.cpp)
 target_link_libraries(fmtest fmdisk pthread)
 set_property(TARGET fmtest PROPERTY CXX_STANDARD 20)
@@ -21,3 +20,8 @@ foreach(FMTEST_SCRIPT ${FMTEST_SCRIPTS})
     )
 endforeach()
 
+# Run locker_test after scripted fmtest scenarios to keep longer run time at the end.
+add_test(
+    NAME locker_test
+    COMMAND $<TARGET_FILE:locker_test>
+)

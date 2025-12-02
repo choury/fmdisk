@@ -161,7 +161,7 @@ int sqlinit(){
         }
         return 0;
     }else{
-        errorlog("stat cache db failed %s: %s", cachefile.c_str(), strerror(errno));
+        errorlog("stat cache db failed %s: %s\n", cachefile.c_str(), strerror(errno));
         return -1;
     }
 }

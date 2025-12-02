@@ -1,0 +1,39 @@
+# cover dir rename conflict branches (ENOTDIR/ENOTEMPTY) and rename_not_supported path
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT rename_not_supported=true
+
+# dir -> existing file should fail with ENOTDIR
+MKDIR path="/srcdir" mode=0755
+CREATE path="/dstfile" mode=0644 handle=df
+RELEASE handle=df
+RENAME old="/srcdir" new="/dstfile" expect_error=ENOTDIR
+
+# non-empty dir under rename_not_supported should return ENOTEMPTY
+MKDIR path="/nonempty" mode=0755
+CREATE path="/nonempty/file.txt" mode=0644 handle=nef
+WRITE handle=nef data="x"
+RELEASE handle=nef
+RENAME old="/nonempty" new="/nonempty_target" expect_error=ENOTEMPTY
+
+# empty dir should succeed via copy/delete path
+MKDIR path="/emptydir" mode=0755
+RENAME old="/emptydir" new="/renamed_empty"
+GETATTR path="/renamed_empty" expect_type=dir
+
+# file -> existing dir should fail with EISDIR (covers 539 branch)
+CREATE path="/file_src.txt" mode=0644 handle=fs
+RELEASE handle=fs
+MKDIR path="/dir_target" mode=0755
+RENAME old="/file_src.txt" new="/dir_target" expect_error=EISDIR
+
+# dir -> non-empty dir should fail with ENOTEMPTY (covers 535/539 pull+children)
+MKDIR path="/moveme" mode=0755
+MKDIR path="/occupied" mode=0755
+CREATE path="/occupied/child.txt" mode=0644 handle=occ
+WRITE handle=occ data="y"
+RELEASE handle=occ
+RENAME old="/moveme" new="/occupied" expect_error=ENOTEMPTY
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
