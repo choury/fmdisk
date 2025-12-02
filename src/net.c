@@ -218,12 +218,15 @@ CURLcode request(Http *r){
     }
 
     if (r->token) {
-        if (strlen(r->token) >= 1000) {
-            return 400;
+        size_t tlen = strlen(r->token);
+        size_t header_len = tlen + strlen("Authorization: Bearer ") + 1;
+        char *bearer = malloc(header_len);
+        if (!bearer) {
+            return CURLE_OUT_OF_MEMORY;
         }
-        char bearer[1024];
-        sprintf(bearer, "Authorization: Bearer %s", r->token);
+        snprintf(bearer, header_len, "Authorization: Bearer %s", r->token);
         r->headers = curl_slist_append(r->headers, bearer);
+        free(bearer);
     }
 
     switch(r->method){
@@ -254,6 +257,7 @@ CURLcode request(Http *r){
     case none:
         break;
     case post_x_www_form_urlencoded:
+        r->headers = curl_slist_append(r->headers, "Content-Type: application/x-www-form-urlencoded");
         break;
     case post_formdata: {
         mime = curl_mime_init(r->curl_handle);
@@ -342,4 +346,3 @@ size_t readfromcontentlist(char* buffer, size_t size, size_t nmemb, void *user_p
     }
     return len;
 }
-
