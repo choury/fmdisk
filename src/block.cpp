@@ -254,6 +254,9 @@ retry:
         trim(file);
         return;
     }
+    if (allzero && b->fi.fd >= 0) {
+        fallocate(b->fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, b->offset, b->size);
+    }
     // 上传成功，清除dirty标记
     if(save_block_to_db(b->fi, b->no, stripfile, false) == 0) {
         trim(b->getkey());
@@ -344,9 +347,6 @@ size_t block_t::release() {
     if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
         return 0;
     }
-    if(fk.path == "x") {
-        return 0;
-    }
     atime = time(nullptr);
     fallocate(fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, offset, size);
     delete_block_from_db(fi.inode, no);
@@ -354,6 +354,7 @@ size_t block_t::release() {
     flags = flags & FILE_ENCODE_F;
     if(fk.path == "x") {
         flags |= BLOCK_SYNC;
+        return 0;
     }
     return size;
 }
