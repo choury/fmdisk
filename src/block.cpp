@@ -278,7 +278,7 @@ int block_t::prefetch(bool wait) {
         __r.unlock();
         return pull(weak_from_this());
     } else {
-        if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
+        if(dpool->tasks_in_queue() > DOWNLOADTHREADS * 2){
             return 1;
         }
         if(tryrlock() != 0) {
@@ -291,7 +291,7 @@ int block_t::prefetch(bool wait) {
         dpool->submit_fire_and_forget([b = weak_from_this()]{
             pull(b);
         });
-        return 0;
+        return 1;
     }
 }
 

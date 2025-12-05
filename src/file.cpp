@@ -534,8 +534,16 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
     if(!opt.no_cache) {
-        for(size_t i = startc; i<= endc + (10*1024*1024/blksize) && i<= GetBlkNo(length, blksize); i++){
-            blocks.at(i)->prefetch(false);
+        int left_size = 10 * 1024 * 1024; //10M
+        int left_block = 20;
+        for(size_t i = startc; i<= GetBlkNo(length, blksize); i++){
+            if(blocks.at(i)->prefetch(false) > 0){
+                left_size -= blksize;
+            }
+            left_block --;
+            if(left_size <= 0 || left_block <= 0) {
+                break;
+            }
         }
         for(size_t i = startc; i<= endc; i++ ){
             int ret = blocks.at(i)->prefetch(true);
