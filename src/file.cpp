@@ -642,6 +642,7 @@ int file_t::truncate(off_t offset){
     if(ret < 0){
         return -errno;
     }
+    version++;
     ctime = mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
@@ -688,6 +689,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             blocks.at(i)->markdirty(getblockdir());
         }
     }
+    version++;
     ctime = mtime = time(nullptr);
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
@@ -702,6 +704,9 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
 }
 
 int file_t::remove_wlocked(bool skip_entry) {
+    if(flags & FILE_UPMETA_F) {
+        return -EBUSY;
+    }
     auto key = getkey();
     int ret = 0;
     if((opt.flags & FM_DELETE_NEED_PURGE) && (flags & FILE_ENCODE_F)) {
@@ -713,6 +718,7 @@ int file_t::remove_wlocked(bool skip_entry) {
         return ret;
     }
 
+    version++;
     for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
         it->second->markstale();
     }
@@ -877,11 +883,21 @@ bool file_t::sync_wlocked(bool forcedirty) {
     }
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
-    if(upload_meta(key, meta, fblocks)){
+    const size_t version_snapshot = version.load();
+    flags |= FILE_UPMETA_F;
+    unwlock();
+    int ret = upload_meta(key, meta, fblocks);
+    wlock();
+    flags &= ~FILE_UPMETA_F;
+    if(ret){
         errorlog("upload_meta IO Error: %s, err=%s\n", key.path.c_str(), strerror(errno));
         return true;
     }
     private_key = meta.key.private_key;
+    if(version_snapshot != version.load()) {
+        infolog("file version: %s version %zu vs %zu, flags: %x\n", key.path.c_str(), version_snapshot, version.load(), flags);
+        return true;
+    }
     if(!dirty){
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
@@ -933,6 +949,7 @@ int file_t::update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> m
 
     // Apply the user-defined modifications
     meta_updater(meta);
+    version++;
     if(flags & ENTRY_CHUNCED_F){
         meta.key = basename(getmetakey());
         int ret = upload_meta(key, meta, fblocks);

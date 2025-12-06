@@ -8,6 +8,7 @@
 #include <vector>
 #include <map>
 #include <functional>
+#include <atomic>
 
 #define FM_REMOTE_PATH_ATTR "user.fm_remote_path"
 #define FM_TEMP_FILE_ATTR "user.fm_temp_file"
@@ -21,6 +22,7 @@ class file_t: public entry_t {
     enum storage_class storage = STORAGE_UNKNOWN;
     std::map<uint32_t, std::shared_ptr<block_t>> blocks;
     size_t block_size = 0; // cache for getmeta
+    std::atomic<size_t> version = 0;
     int truncate_wlocked(off_t offset);
     int update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> meta_updater);
     virtual int pull_wlocked() override;

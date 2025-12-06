@@ -42,11 +42,12 @@ struct filekey {
 #define ENTRY_PULLING_F   (1<<5)
 #define FILE_ENCODE_F     (1<<6)
 #define FILE_DIRTY_F      (1<<7)
+#define FILE_UPMETA_F     (1<<8)
 #define DIR_DIRTY_F       FILE_DIRTY_F //same as FILE_DIRTY_F
-#define DIR_PULLED_F      (1<<8)
-#define BLOCK_SYNC        (1<<9)
-#define BLOCK_DIRTY       (1<<10)
-#define BLOCK_STALE       (1<<11)
+#define DIR_PULLED_F      (1<<9)
+#define BLOCK_SYNC        (1<<10)
+#define BLOCK_DIRTY       (1<<11)
+#define BLOCK_STALE       (1<<12)
 #define META_KEY_ONLY_F   (1<<16)  //used for input meta
 #define META_KEY_CHECKED_F (1<<17)  //used for check meta
 
