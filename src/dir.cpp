@@ -484,7 +484,6 @@ void dir_t::finalize_local_move(std::shared_ptr<entry_t> entry,
     } else {
         delete_file_from_db(oldpath);
     }
-    delete_journal_entry(JOURNAL_OP_RENAME, jr.src_path);
     entrys.erase(oldname);
     entry->fk.store(std::make_shared<filekey>(newname, jr.dst_private_key));
     entry->parent = newparent;
@@ -545,6 +544,9 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
             return -EISDIR;
         }
     }
+    if((entry->flags & FILE_UPMETA_F) || (existing && (existing->flags & FILE_UPMETA_F))) {
+        return -EBUSY;
+    }
 
     journal_entry journal{};
     journal.op = JOURNAL_OP_RENAME;
@@ -557,6 +559,10 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
             journal.src_path.c_str(), journal.dst_path.c_str());
         return -EIO;
     }
+
+    defer([&journal] {
+        delete_journal_entry(JOURNAL_OP_RENAME, journal.src_path);
+    });
 
     std::shared_ptr<void> new_private_key;
     int ret = 0;
@@ -923,6 +929,7 @@ int recover_journals() {
         }
         if(jr.state == JOURNAL_STATE_REMOTE_FINISHED) {
             sparent->finalize_local_move(entry, dparent, jr);
+            delete_journal_entry(JOURNAL_OP_RENAME, jr.src_path);
         } else {
             errorlog("unknown journal state %d for %s\n", jr.state, jr.src_path.c_str());
             return -EIO;

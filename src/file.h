@@ -51,7 +51,7 @@ public:
     virtual int open() override;
     virtual int release(bool waitsync) override;
     //如果仍然是dirty状态，返回true
-    bool sync_wlocked(bool forcedirty = false);
+    bool sync_wlocked(bool forcedirty, bool lockfree);
     virtual int sync(int dataonly) override;
     virtual int utime(const struct timespec tv[2]) override;
     virtual int chmod(mode_t mode) override;

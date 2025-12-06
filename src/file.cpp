@@ -253,7 +253,7 @@ file_t::file_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
     fi{-1, 0, 0},
     blksize(meta.blksize),
     storage(meta.storage),
-    last_meta_sync_time(0)
+    last_meta_sync_time(time(nullptr))
 {
     mode = (meta.mode & ~S_IFMT) | S_IFREG;
     if(flags & ENTRY_CHUNCED_F){
@@ -377,7 +377,7 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
         opened_inodes.erase(file->fi.inode);
         return;
     }
-    if (file->flags & FILE_DIRTY_F && file->sync_wlocked()) {
+    if (file->flags & FILE_DIRTY_F && file->sync_wlocked(false, false)) {
         submit_delay_job([file_]() {
             file_t::clean(file_);
         }, 60);
@@ -625,9 +625,9 @@ int file_t::truncate_wlocked(off_t offset){
     length = offset;
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
-        sync_wlocked(true);
+        sync_wlocked(true, false);
     }
-    assert(fi.fd >= 0);
+    assert(fi.fd >= 0 && length == (size_t)offset);
     return TEMP_FAILURE_RETRY(ftruncate(fi.fd, offset));
 }
 
@@ -670,9 +670,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     const size_t startc = GetBlkNo(offset, blksize);
     const size_t endc = GetBlkNo(offset + size, blksize);
     if(inline_data.empty()) {
-        for(size_t i = endc; i<= endc + (10*1024*1024/blksize) && i<= GetBlkNo(length, blksize); i++){
-            blocks.at(i)->prefetch(false);
-        }
+        blocks.at(endc)->prefetch(false);
         blocks.at(startc)->prefetch(true);
         blocks.at(endc)->prefetch(true);
     }
@@ -693,7 +691,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     ctime = mtime = time(nullptr);
     if((flags & FILE_DIRTY_F) == 0){
         flags |= FILE_DIRTY_F;
-        sync_wlocked(true);
+        sync_wlocked(true, true);
     }else if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
@@ -862,7 +860,7 @@ int file_t::getmeta(filemeta& meta) {
     return 0;
 }
 
-bool file_t::sync_wlocked(bool forcedirty) {
+bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     if(flags & ENTRY_DELETED_F) {
         flags &= ~FILE_DIRTY_F;
         return false;
@@ -884,13 +882,18 @@ bool file_t::sync_wlocked(bool forcedirty) {
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     const size_t version_snapshot = version.load();
-    flags |= FILE_UPMETA_F;
-    unwlock();
+    if(lockfree){
+        flags |= FILE_UPMETA_F;
+        unwlock();
+    }
     int ret = upload_meta(key, meta, fblocks);
-    wlock();
-    flags &= ~FILE_UPMETA_F;
+    int errorno = ret ? errno : 0;
+    if(lockfree){
+        wlock();
+        flags &= ~FILE_UPMETA_F;
+    }
     if(ret){
-        errorlog("upload_meta IO Error: %s, err=%s\n", key.path.c_str(), strerror(errno));
+        errorlog("upload_meta IO Error: %s, err=%s\n", key.path.c_str(), strerror(errorno));
         return true;
     }
     private_key = meta.key.private_key;
@@ -1088,7 +1091,7 @@ void file_t::upload_meta_async_task(std::weak_ptr<file_t> file_) {
     if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
         return;
     }
-    file->sync_wlocked();
+    file->sync_wlocked(false, true);
 }
 
 static void add_meta_to_storage_info(storage_class_info& info, const filemeta& meta) {
