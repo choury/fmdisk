@@ -9,6 +9,7 @@
 
 static FILE* log_file = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static enum fuse_log_level current_log_level = FUSE_LOG_INFO;
 
 static const char* level_strings[] = {
     "EMERG",
@@ -20,6 +21,12 @@ static const char* level_strings[] = {
     "INFO",
     "DEBUG"
 };
+
+void log_set_level(enum fuse_log_level level) {
+    pthread_mutex_lock(&log_mutex);
+    current_log_level = level;
+    pthread_mutex_unlock(&log_mutex);
+}
 
 int log_init(const char* log_path) {
     pthread_mutex_lock(&log_mutex);
@@ -64,6 +71,10 @@ void log_cleanup(void) {
 }
 
 void fuse_log_handler(enum fuse_log_level level, const char *fmt, va_list ap) {
+    if(level > current_log_level) {
+        return;
+    }
+
     // Get current time
     time_t now = time(NULL);
     struct tm *tm_info = localtime(&now);

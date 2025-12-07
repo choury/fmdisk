@@ -2,6 +2,44 @@
 #include "fuse.h"
 #include "log.h"
 #include <stdio.h>
+#include <string.h>
+
+static int option_contains_debug(const char* options) {
+    const char* current = options;
+    while(current && *current) {
+        const char* comma = strchr(current, ',');
+        size_t len = comma ? (size_t)(comma - current) : strlen(current);
+        if(len == strlen("debug") && strncmp(current, "debug", len) == 0) {
+            return 1;
+        }
+        if(!comma) {
+            break;
+        }
+        current = comma + 1;
+    }
+    return 0;
+}
+
+static int debug_enabled(int argc, char *argv[]) {
+    for(int i = 1; i < argc; ++i) {
+        const char* arg = argv[i];
+        if(strcmp(arg, "-d") == 0 || strcmp(arg, "--debug") == 0) {
+            return 1;
+        }
+        if(strcmp(arg, "-o") == 0) {
+            if(i + 1 < argc && option_contains_debug(argv[i + 1])) {
+                return 1;
+            }
+            continue;
+        }
+        if(strncmp(arg, "-o", 2) == 0 && arg[2] != '\0') {
+            if(option_contains_debug(arg + 2)) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
 
 struct fuse_operations fm_oper = {
     .init       = fm_fuse_init,
@@ -37,6 +75,7 @@ struct fuse_operations fm_oper = {
 int fm_prepare();
 
 int fm_main(int argc, char *argv[]) {
+    log_set_level(debug_enabled(argc, argv) ? FUSE_LOG_DEBUG : FUSE_LOG_INFO);
     int ret = fm_prepare();
     if(ret){
         return ret;

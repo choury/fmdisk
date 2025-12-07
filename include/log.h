@@ -10,6 +10,9 @@ extern "C" {
 // Initialize logging system with optional file path
 int log_init(const char* log_path);
 
+// Set minimum log level; messages with higher (less severe) levels are ignored
+void log_set_level(enum fuse_log_level level);
+
 // Cleanup logging system
 void log_cleanup(void);
 

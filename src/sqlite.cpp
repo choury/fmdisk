@@ -108,30 +108,6 @@ int sqlinit(){
                 failed = true;
                 break;
             }
-            if(sqlite3_exec(cachedb, "ALTER TABLE blocks ADD COLUMN path TEXT;", nullptr, nullptr, &err_msg) == SQLITE_OK){
-                //成功表示旧版本没有path列，升级时添加
-                infolog("upgrade blocks table add path column\n");
-            }else{
-                if(strcmp(err_msg, "duplicate column name: path") != 0){
-                    errorlog("upgrade blocks table add path column failed: %s\n", err_msg);
-                    failed = true;
-                }
-                if(err_msg) sqlite3_free(err_msg);
-                if(failed) break;
-                //已经存在，忽略
-            }
-            if(sqlite3_exec(cachedb, "ALTER TABLE blocks ADD COLUMN btime INTEGER DEFAULT 0;", nullptr, nullptr, &err_msg) == SQLITE_OK){
-                //成功表示旧版本没有btime列，升级时添加
-                infolog("upgrade blocks table add btime column\n");
-            }else{
-                if(strcmp(err_msg, "duplicate column name: btime") != 0){
-                    errorlog("upgrade blocks table add btime column failed: %s\n", err_msg);
-                    failed = true;
-                }
-                if(err_msg) sqlite3_free(err_msg);
-                if(failed) break;
-                //已经存在，忽略
-            }
         }while(0);
         if(failed){
             sqlite3_close(cachedb);
@@ -149,8 +125,8 @@ int sqlinit(){
             errorlog("set synchronous failed: %s\n", err_msg);
             if(err_msg) sqlite3_free(err_msg);
         }
-        //set cache_size 128M
-        if(sqlite3_exec(cachedb, "PRAGMA cache_size=-131072", nullptr, nullptr, &err_msg)){
+        //set cache_size 64M
+        if(sqlite3_exec(cachedb, "PRAGMA cache_size=-65536", nullptr, nullptr, &err_msg)){
             errorlog("set cache_size failed: %s\n", err_msg);
             if(err_msg) sqlite3_free(err_msg);
         }
