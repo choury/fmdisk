@@ -217,7 +217,7 @@ int dir_t::open() {
     return 0;
 }
 
-int dir_t::foreach_entrys(const std::function<int(const string&, const std::shared_ptr<entry_t>&)>& visitor) {
+int dir_t::foreach_entrys(const std::function<int(const string&, std::shared_ptr<filemeta>)>& visitor) {
     auto_rlock(this);
     if((flags & DIR_PULLED_F) == 0){
         __r.upgrade();
@@ -227,7 +227,17 @@ int dir_t::foreach_entrys(const std::function<int(const string&, const std::shar
         }
     }
     for(const auto& [name, entry] : entrys){
-        int cb_ret = visitor(name, entry);
+        int cb_ret = 0;
+        if(entry->flags & ENTRY_INITED_F) {
+            filemeta meta;
+            if(entry->getmeta(meta) == 0){
+                cb_ret = visitor(name, std::make_shared<filemeta>(std::move(meta)));
+            } else {
+                cb_ret = visitor(name, nullptr);
+            }
+        }else{
+            cb_ret = visitor(name, nullptr);
+        }
         if(cb_ret != 0){
             return cb_ret;
         }

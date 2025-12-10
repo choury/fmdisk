@@ -26,7 +26,7 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     //we should make fuse framwork to lookup . and .., so disable FUSE_CAP_EXPORT_SUPPORT
     //fuse_set_feature_flag(conn, FUSE_CAP_EXPORT_SUPPORT);
     fuse_set_feature_flag(conn, FUSE_CAP_PARALLEL_DIROPS);
-    //fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
+    fuse_set_feature_flag(conn, FUSE_CAP_WRITEBACK_CACHE);
     fuse_unset_feature_flag(conn, FUSE_CAP_ATOMIC_O_TRUNC);
 #else
     conn->want |= conn->capable & (FUSE_CAP_WRITEBACK_CACHE | FUSE_CAP_PARALLEL_DIROPS);
@@ -38,6 +38,9 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     }
     cfg->nullpath_ok = 1;
     cfg->no_rofd_flush = 1;
+    cfg->attr_timeout = 3;
+    cfg->entry_timeout = 10;
+    cfg->negative_timeout = 30;
 #if FUSE_VERSION > 314
     //这个理论上需要3.14.1，但是FUSE_HOTFIX_VERSION还没有引入，所以只能判断 > 3.14
     cfg->parallel_direct_writes = 1;
@@ -80,6 +83,21 @@ int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
     return fm_fuse_open(path, fi);
 }
 
+void metatostat(const filemeta& meta, struct stat* st) {
+    memset(st, 0, sizeof(struct stat));
+    assert((meta.flags & META_KEY_ONLY_F) == 0);
+    st->st_mode = meta.mode;
+    st->st_size = meta.size;
+    st->st_blksize = meta.blksize;
+    st->st_nlink = 1;
+    st->st_blocks = meta.blocks;
+    st->st_ctime = meta.ctime;
+    st->st_mtime = meta.mtime;
+    st->st_atime = meta.mtime;
+    st->st_uid = getuid();
+    st->st_gid = getgid();
+}
+
 int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
                     off_t offset, struct fuse_file_info *fi, enum fuse_readdir_flags flags){
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
@@ -87,8 +105,14 @@ int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
     if(dir == nullptr){
         return -ENOTDIR;
     }
-    int ret = dir->foreach_entrys([&](const string& name, const std::shared_ptr<entry_t>&) {
-        return filler(buf, name.c_str(), nullptr, 0, (enum fuse_fill_dir_flags)0);
+    int ret = dir->foreach_entrys([&](const string& name, std::shared_ptr<filemeta> meta) {
+        if(meta && (flags & FUSE_READDIR_PLUS)){
+            struct stat st;
+            metatostat(*meta, &st);
+            return filler(buf, name.c_str(), &st, 0, FUSE_FILL_DIR_PLUS);
+        }else{
+            return filler(buf, name.c_str(), nullptr, 0, (enum fuse_fill_dir_flags)0);
+        }
     });
     if(ret > 0){
         return 0;
@@ -129,18 +153,7 @@ int fm_fuse_getattr(const char *path, struct stat *st, struct fuse_file_info *fi
     if(ret < 0) {
         return ret;
     }
-    memset(st, 0, sizeof(struct stat));
-    assert((meta.flags & META_KEY_ONLY_F) == 0);
-    st->st_mode = meta.mode;
-    st->st_size = meta.size;
-    st->st_blksize = meta.blksize;
-    st->st_nlink = 1;
-    st->st_blocks = meta.blocks;
-    st->st_ctime = meta.ctime;
-    st->st_mtime = meta.mtime;
-    st->st_atime = meta.mtime;
-    st->st_uid = getuid();
-    st->st_gid = getgid();
+    metatostat(meta, st);
     return 0;
 }
 
