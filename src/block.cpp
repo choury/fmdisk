@@ -398,6 +398,10 @@ void block_t::markdirty(filekey fileat, uint32_t start, uint32_t end) {
         true,
         ranges
     });
+
+    if(flags & BLOCK_DIRTY) {
+        return;
+    }
     flags |=  BLOCK_DIRTY;
     __w.unlock();
     pthread_mutex_lock(&dblocks_lock);
