@@ -16,9 +16,10 @@ class block_t: public locker, public std::enable_shared_from_this<block_t> {
     std::atomic<time_t> atime;
     std::atomic<size_t> version = 0;
     std::vector<Range> ranges;
+    locker_cond pull_cond;
     int staled();
     static int pull(std::weak_ptr<block_t> b);
-    static void push(std::weak_ptr<block_t> b, filekey fileat);
+    static int push(std::weak_ptr<block_t> b, filekey fileat);
     friend void writeback_thread(bool* done);
     [[nodiscard]] std::string getpath() const;
     [[nodiscard]] filekey getkey() const;

@@ -144,6 +144,50 @@ public:
     }
 };
 
+class locker_cond {
+    pthread_mutex_t internal_mutex = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t internal_cond = PTHREAD_COND_INITIALIZER;
+
+public:
+    ~locker_cond() {
+        pthread_cond_destroy(&internal_cond);
+        pthread_mutex_destroy(&internal_mutex);
+    }
+
+    // 持有锁时的等待
+    // 逻辑：释放读锁 -> 等待 -> 被唤醒 -> 重新获取读锁
+    void wait_read(std::shared_ptr<locker> lock) {
+        pthread_mutex_lock(&internal_mutex);
+        lock->unrlock();
+
+        pthread_cond_wait(&internal_cond, &internal_mutex);
+        pthread_mutex_unlock(&internal_mutex);
+        lock->rlock();
+    }
+
+    void wait_write(std::shared_ptr<locker> lock) {
+        pthread_mutex_lock(&internal_mutex);
+        lock->unwlock();
+        pthread_cond_wait(&internal_cond, &internal_mutex);
+        pthread_mutex_unlock(&internal_mutex);
+        lock->wlock();
+    }
+
+    // 唤醒一个等待者
+    void notify_one() {
+        pthread_mutex_lock(&internal_mutex);
+        pthread_cond_signal(&internal_cond);
+        pthread_mutex_unlock(&internal_mutex);
+    }
+
+    // 唤醒所有等待者
+    void notify_all() {
+        pthread_mutex_lock(&internal_mutex);
+        pthread_cond_broadcast(&internal_cond);
+        pthread_mutex_unlock(&internal_mutex);
+    }
+};
+
 class auto_locker{
     bool locked = false;
     pthread_mutex_t* l;

@@ -188,20 +188,31 @@ filekey block_t::getkey() const {
 int block_t::pull(std::weak_ptr<block_t> wb) {
     auto b = wb.lock();
     if(b == nullptr) {
-        return 0;
+        return -ENOENT;
     }
-    auto_wlock(b);
+    b->wlock();
+    while(b->flags & BLOCK_PULLING){
+        b->pull_cond.wait_write(b);
+    }
     if((b->flags & BLOCK_STALE) || b->full_cached()){
+        b->unwlock();
         return 0;
     }
-    buffstruct bs((char*)malloc(b->size), b->size);
-    //for chunk file, read from begin
+
     off_t startp = b->fk.path.size() ? 0 : b->offset;
-    int ret = HANDLE_EAGAIN(fm_download(b->getkey(), startp, b->size, bs));
+    size_t size = b->size;
+    filekey file = b->getkey();
+    b->flags |= BLOCK_PULLING;
+    b->unwlock();
+    buffstruct bs((char*)malloc(size), size);
+    //for chunk file, read from begin
+    int ret = HANDLE_EAGAIN(fm_download(file, startp, size, bs));
+    auto_wlock(b);
+    b->flags &= ~BLOCK_PULLING;
+    b->pull_cond.notify_all();
     if(ret){
         return ret;
     }
-    assert(bs.size() <= (size_t)b->size);
     // 直接写入缓存文件
     if(b->flags & FILE_ENCODE_F){
         xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
@@ -252,21 +263,24 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
     return got;
 }
 
-void block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
+int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     auto b = wb.lock();
     if(b == nullptr) {
-        return;
+        return -ENOENT;
     }
     auto_rlock(b);
     size_t version = b->version;
-    if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE) || !b->full_cached()){
-        return;
+    if((b->flags & BLOCK_DIRTY) == 0 ){
+        return 0;
+    }
+    if((b->flags & (BLOCK_STALE | BLOCK_PULLING)) || !b->full_cached()){
+        return -EAGAIN;
     }
     char *buff = (char*)malloc(b->size);
     int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
     if(ret < 0){
         free(buff);
-        return;
+        return ret;
     }
     size_t len = ret;
 
@@ -292,7 +306,7 @@ retry:
         free(buff);
         if(ret != 0){
             errorlog("fm_upload IO Error %s: %s\n", file.path.c_str(), strerror(-ret));
-            return;
+            return ret;
         }
     }else{
         free(buff);
@@ -303,7 +317,7 @@ retry:
     if (version != b->version || (b->flags & BLOCK_STALE)) {
         infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
         trim(file);
-        return;
+        return -EAGAIN;
     }
     if (allzero && b->fi.fd >= 0) {
         fallocate(b->fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, b->offset, b->size);
@@ -321,9 +335,11 @@ retry:
         trim(b->getkey());
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
+        return 0;
     } else {
         errorlog("save %s failed: %ju, %d\n", stripfile.path.c_str(), b->fi.inode, b->no);
         trim(file);
+        return -EIO;
     }
 }
 
@@ -398,6 +414,7 @@ bool block_t::full_cached() {
     return false;
 }
 
+//return if is dirty after sync
 bool block_t::sync(filekey fileat, bool wait){
     auto_rlock(this);
     if ((flags & BLOCK_DIRTY) == 0 || (flags & BLOCK_STALE)) {
@@ -405,9 +422,10 @@ bool block_t::sync(filekey fileat, bool wait){
     }
     __r.unlock();
     if(wait) {
-        if(!full_cached()) pull(weak_from_this());
-        push(weak_from_this(), fileat);
-        return true;
+        if(pull(weak_from_this()) < 0) return true;
+        if(push(weak_from_this(), fileat) < 0) return true;
+        assert((flags & BLOCK_DIRTY) == 0);
+        return false;
     }
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(weak_from_this(), fileat);
@@ -427,7 +445,7 @@ int block_t::staled(){
 
 size_t block_t::release() {
     auto_wlock(this);
-    if(ranges.empty() || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
+    if(ranges.empty() || (flags & (BLOCK_DIRTY  | BLOCK_PULLING | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
         return 0;
     }
     atime = time(nullptr);
