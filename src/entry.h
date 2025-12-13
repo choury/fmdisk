@@ -98,7 +98,6 @@ int cache_prepare();
 std::shared_ptr<dir_t> cache_root();
 std::shared_ptr<entry_t> find_entry(const string& path);
 void cache_destroy();
-int create_dirs_recursive(const string& path);
 void clean_entry_cache();
 
 #endif

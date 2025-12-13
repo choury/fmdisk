@@ -15,6 +15,7 @@ typedef void *(*taskfunc)(void *);
 struct thrdpool;
 
 struct thrdpool* creatpool(size_t threadnum);        //创建线程池，参数是线程数
+bool setpoolblock(struct thrdpool* pool, bool block);
 void destroypool(struct thrdpool* pool);
 
 

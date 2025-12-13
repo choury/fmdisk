@@ -250,7 +250,15 @@ static int sync_dirty_file(const string& path){
 
         // 更新fblocks和数据库
         fblocks[block_rec.block_no] = basename(new_block_key);
-        save_block_to_db({-1, st.stx_ino, btime}, block_rec.block_no, new_block_key, false);
+        save_block_to_db(block_record{
+            st.stx_ino,
+            block_rec.block_no,
+            btime,
+            basename(new_block_key).path,
+            fm_private_key_tostring(basename(new_block_key).private_key),
+            false,
+            {Range{0, (uint32_t)block_size}}
+        });
     }
 
     if (block_sync_failed) {

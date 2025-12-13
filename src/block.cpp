@@ -62,10 +62,17 @@ void writeback_thread(bool* done){
                 continue;
             }
             if(b->staled() >= staled_threshold){
-                upool->submit_fire_and_forget([block = i->first, fileat = i->second]{
-                     block_t::push(block, fileat);
-                });
-                i = dblocks.erase(i);
+                if(!b->full_cached()) {
+                    upool->submit_fire_and_forget([block = i->first]{
+                        block_t::pull(block);
+                    });
+                    i++;
+                } else {
+                    upool->submit_fire_and_forget([block = i->first, fileat = i->second]{
+                        block_t::push(block, fileat);
+                    });
+                    i = dblocks.erase(i);
+                }
             }else{
                 i++;
             }
@@ -74,6 +81,31 @@ void writeback_thread(bool* done){
     }
 }
 
+static void merge_range(std::vector<Range>& ranges, uint32_t start, uint32_t end) {
+    if(ranges.size() == 1 && ranges.front().start == 0 && ranges.front().end == 0) {
+        ranges.clear();
+    }
+    // ranges 已保持有序且不重叠（(start, end] 语义）
+    std::vector<Range> merged;
+    merged.reserve(ranges.size() + 1);
+    bool inserted = false;
+    for(const auto& r : ranges) {
+        if(end < r.start && !inserted) {
+            merged.push_back({start, end});
+            inserted = true;
+        }
+        if(inserted || end < r.start || start > r.end) {
+            merged.push_back(r);
+        } else {
+            start = std::min(start, r.start);
+            end = std::max(end, r.end);
+        }
+    }
+    if(!inserted) {
+        merged.push_back({start, end});
+    }
+    ranges.swap(merged);
+}
 
 block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t size, unsigned int flags):
     fi(fi),
@@ -91,7 +123,7 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
         this->fk.path = "x";
     }
     if(this->fk.path == "x") {
-        this->flags |= BLOCK_SYNC;
+        this->ranges = std::vector<Range>{{0, (uint32_t)size}};
     }
     // 检查数据库中的sync状态，如果已同步则设置BLOCK_SYNC标志
     struct block_record record;
@@ -107,7 +139,12 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
         return;
     }
 
-    this->flags |= BLOCK_SYNC;
+    if(this->ranges.size() == 1 && this->ranges.front().start == 0 && this->ranges.front().end == 0) {
+        //这个是老数据，表示全缓存
+        this->ranges = std::vector<Range>{{0, (uint32_t)size}};
+    } else {
+        this->ranges = std::move(record.ranges);
+    }
     if (record.dirty) {
         this->flags |= BLOCK_DIRTY;
     }
@@ -154,7 +191,7 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
         return 0;
     }
     auto_wlock(b);
-    if(b->flags & (BLOCK_SYNC | BLOCK_STALE)){
+    if((b->flags & BLOCK_STALE) || b->full_cached()){
         return 0;
     }
     buffstruct bs((char*)malloc(b->size), b->size);
@@ -169,12 +206,26 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
     if(b->flags & FILE_ENCODE_F){
         xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
     }
+
+    for(const auto& r : b->ranges) {
+        pread(b->fi.fd, (char*)bs.mutable_data() + r.start, r.end - r.start, b->offset + r.start);
+    }
+
     ret = TEMP_FAILURE_RETRY(pwrite(b->fi.fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
         assert((size_t)ret == bs.size());
-        b->flags |= BLOCK_SYNC;
-        save_block_to_db(b->fi, b->no, b->fk, false);
+        b->ranges = std::vector<Range>{{0, (uint32_t)bs.size()}};
+        //save_block_to_db(b->fi, b->no, b->fk, false);
+        save_block_to_db(block_record{
+            b->fi.inode,
+            b->no,
+            b->fi.btime,
+            b->fk.path,
+            fm_private_key_tostring(b->fk.private_key),
+            (b->flags & BLOCK_DIRTY) != 0,
+            b->ranges
+         });
     }
     return ret;
 }
@@ -208,7 +259,7 @@ void block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     }
     auto_rlock(b);
     size_t version = b->version;
-    if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
+    if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE) || !b->full_cached()){
         return;
     }
     char *buff = (char*)malloc(b->size);
@@ -258,7 +309,15 @@ retry:
         fallocate(b->fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, b->offset, b->size);
     }
     // 上传成功，清除dirty标记
-    if(save_block_to_db(b->fi, b->no, stripfile, false) == 0) {
+    if(save_block_to_db(block_record{
+        b->fi.inode,
+        b->no,
+        b->fi.btime,
+        stripfile.path,
+        fm_private_key_tostring(stripfile.private_key),
+        false,
+        b->ranges
+     }) == 0) {
         trim(b->getkey());
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
@@ -268,12 +327,18 @@ retry:
     }
 }
 
-int block_t::prefetch(bool wait) {
+int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
     atime = time(nullptr);
     if(wait) {
         auto_rlock(this);
-        if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
-            return 0; // 已经同步，不需要预取
+        // check range
+        for (const auto& r : ranges) {
+            if (start >= r.start && end <= r.end) {
+                return 0;
+            }
+        }
+        if((flags & BLOCK_STALE)){
+            return 0; // 已经被释放，不预取
         }
         __r.unlock();
         return pull(weak_from_this());
@@ -285,7 +350,7 @@ int block_t::prefetch(bool wait) {
             return 1; // 已经有写锁，说明正在被修改，不需要预取
         }
         defer([this] { unrlock(); });
-        if(flags & (BLOCK_SYNC | BLOCK_STALE)) {
+        if((flags & BLOCK_STALE) || full_cached()) {
             return 0; // 已经同步，不需要预取
         }
         dpool->submit_fire_and_forget([b = weak_from_this()]{
@@ -295,17 +360,25 @@ int block_t::prefetch(bool wait) {
     }
 }
 
-void block_t::markdirty(filekey fileat) {
+void block_t::markdirty(filekey fileat, uint32_t start, uint32_t end) {
     version++;
     atime = time(nullptr);
-    auto_rlock(this);
-    if(flags & (BLOCK_DIRTY | BLOCK_STALE)) {
+    auto_wlock(this);
+    if(flags & BLOCK_STALE) {
         return;
     }
-    __r.upgrade();
-    flags |=  BLOCK_DIRTY | BLOCK_SYNC;
-    // 保存到数据库并标记为dirty
-    save_block_to_db(fi, no, fk, true);
+    merge_range(ranges, start, end);
+    // 保存ranges到数据库并标记为dirty
+    save_block_to_db(block_record{
+        fi.inode,
+        no,
+        fi.btime,
+        fk.path,
+        fm_private_key_tostring(fk.private_key),
+        true,
+        ranges
+    });
+    flags |=  BLOCK_DIRTY;
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
@@ -316,6 +389,14 @@ void block_t::markstale() {
     flags |= BLOCK_STALE;
 }
 
+bool block_t::full_cached() {
+    auto_rlock(this);
+    if(ranges.size() == 1 && ranges.front().start == 0 && ranges.front().end == (uint32_t)size) {
+        return true;
+    }
+    return false;
+}
+
 bool block_t::sync(filekey fileat, bool wait){
     auto_rlock(this);
     if ((flags & BLOCK_DIRTY) == 0 || (flags & BLOCK_STALE)) {
@@ -323,6 +404,7 @@ bool block_t::sync(filekey fileat, bool wait){
     }
     if(wait) {
         __r.unlock();
+        if(!full_cached()) pull(weak_from_this());
         push(weak_from_this(), fileat);
         return true;
     }
@@ -344,7 +426,7 @@ int block_t::staled(){
 
 size_t block_t::release() {
     auto_wlock(this);
-    if((flags & BLOCK_SYNC) == 0 || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
+    if(ranges.empty() || (flags & (BLOCK_DIRTY | BLOCK_STALE)) || fi.fd < 0 || staled() < 60) {
         return 0;
     }
     atime = time(nullptr);
@@ -353,8 +435,10 @@ size_t block_t::release() {
     debuglog("release block %s/%lu[%zd-%zd]\n", getpath().c_str(), no, offset, offset+size);
     flags = flags & FILE_ENCODE_F;
     if(fk.path == "x") {
-        flags |= BLOCK_SYNC;
+        ranges = std::vector<Range>{{0, (uint32_t)size}};
         return 0;
+    } else {
+        ranges.clear();
+        return size;
     }
-    return size;
 }

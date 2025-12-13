@@ -1,0 +1,64 @@
+# Truncate should trim ranges and keep patched data without pulling entire block
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# Seed remote with a full 1 MiB block of 'C'
+CREATE path="/truncate_range.bin" mode=0644 handle=seed
+WRITE handle=seed data="C" repeat=1048576
+RELEASE handle=seed sync=true
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+# Remount, patch, then truncate down to 128 KiB
+MOUNT no_cache=false
+OPEN path="/truncate_range.bin" flags=RDWR handle=edit
+WRITE handle=edit data="truncate_patch" offset=4096
+WRITE handle=edit data="tail_data" offset=900000
+TRUNCATE handle=edit length=131072
+
+# Ranges should be recorded in DB for the block after truncate
+BACKEND_EXEC_SQL sql="select hex(ranges) from blocks where block_no=0" expect="0000000000001000"
+RELEASE handle=edit sync=true
+
+# Verify size and content within the truncated range
+GETATTR path="/truncate_range.bin" expect_size=131072
+OPEN path="/truncate_range.bin" flags=RDONLY handle=verify
+READ handle=verify size=14 offset=4096 expect_data="truncate_patch"
+READ handle=verify size=5 offset=130000 expect_data="CCCCC"
+RELEASE handle=verify
+UNMOUNT
+BACKEND_EXPECT_META path="/truncate_range.bin" field="size" value="131072"
+BACKEND_CLEAR_CACHE
+
+# Growth should preserve existing data, zero-fill new space, and keep writes in new region
+BACKEND_RESET
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+CREATE path="/grow_range.bin" mode=0644 handle=seed_grow
+WRITE handle=seed_grow data="G" repeat=262144                # 256 KiB seed
+RELEASE handle=seed_grow sync=true
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+MOUNT no_cache=false
+OPEN path="/grow_range.bin" flags=RDWR handle=edit_grow
+TRUNCATE handle=edit_grow length=786432                      # grow to 768 KiB
+WRITE handle=edit_grow data="grow_patch" offset=65536
+WRITE handle=edit_grow data="tail_grow" offset=700000
+RELEASE handle=edit_grow sync=true
+BACKEND_EXPECT_BLOCK path="/grow_range.bin" block=0 offset=65536 data_hex="020606192b150606021c"
+BACKEND_EXPECT_BLOCK path="/grow_range.bin" block=0 offset=700000 data_hex="111500022b02151d16"
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+MOUNT no_cache=false
+GETATTR path="/grow_range.bin" expect_size=786432
+OPEN path="/grow_range.bin" flags=RDONLY handle=verify_grow
+READ handle=verify_grow size=10 offset=65536 expect_data="grow_patch"
+READ handle=verify_grow size=9 offset=700000 expect_data="tail_grow"
+BACKEND_EXPECT_BLOCK path="/grow_range.bin" block=0 offset=600000 data_hex="6174696f6e"
+RELEASE handle=verify_grow
+BACKEND_EXPECT_META path="/grow_range.bin" field="size" value="786432"
+UNMOUNT
+BACKEND_CLEAR_CACHE

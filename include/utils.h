@@ -45,7 +45,7 @@ struct filekey {
 #define FILE_UPMETA_F     (1<<8)
 #define DIR_DIRTY_F       FILE_DIRTY_F //same as FILE_DIRTY_F
 #define DIR_PULLED_F      (1<<9)
-#define BLOCK_SYNC        (1<<10)
+//#define BLOCK_SYNC        (1<<10)
 #define BLOCK_DIRTY       (1<<11)
 #define BLOCK_STALE       (1<<12)
 #define META_KEY_ONLY_F   (1<<16)  //used for input meta
@@ -124,6 +124,8 @@ template <typename... T>
 std::string pathjoin(const std::string& dir, const std::string& name, const T&... others){
     return pathjoin(dir, pathjoin(name, others...));
 }
+
+int create_dirs_recursive(const std::string& path);
 
 bool startwith(const std::string& s1, const std::string& s2);
 bool endwith(const std::string& s1, const std::string& s2);

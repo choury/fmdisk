@@ -67,28 +67,6 @@ void clean_entry_cache() {
     cache_root()->drop_cache(true, time(nullptr) - opt.entry_cache_second);
 }
 
-int create_dirs_recursive(const string& path) {
-    if (path.empty() || path == "/") {
-        return 0;
-    }
-
-    struct stat st;
-    if (stat(path.c_str(), &st) == 0) {
-        return S_ISDIR(st.st_mode) ? 0 : -1;
-    }
-
-    string parent = dirname(path);
-    if (create_dirs_recursive(parent) != 0) {
-        return -1;
-    }
-
-    if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
-        return -1;
-    }
-
-    return 0;
-}
-
 std::shared_ptr<entry_t> find_entry(const string& path) {
     return dir_t::find(root, path);
 }

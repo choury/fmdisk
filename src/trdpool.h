@@ -51,6 +51,7 @@ public:
 
     ~TrdPool() {
         if (pool_) {
+            setpoolblock(pool_, false);
             destroypool(pool_);
         }
     }
@@ -102,6 +103,10 @@ public:
 
     size_t tasks_in_queue() const {
         return pool_ ? taskinqueu(pool_) : 0;
+    }
+
+    bool setblock(bool block) {
+        return setpoolblock(pool_, block);
     }
 
     void wait_all() {

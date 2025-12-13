@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -102,6 +103,28 @@ std::string bytes2human(size_t bytes) {
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "%.2f%s", size, units[unit_index]);
     return std::string(buffer);
+}
+
+int create_dirs_recursive(const string& path) {
+    if (path.empty() || path == "/") {
+        return 0;
+    }
+
+    struct stat st;
+    if (stat(path.c_str(), &st) == 0) {
+        return S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+
+    string parent = dirname(path);
+    if (create_dirs_recursive(parent) != 0) {
+        return -1;
+    }
+
+    if (mkdir(path.c_str(), 0755) != 0 && errno != EEXIST) {
+        return -1;
+    }
+
+    return 0;
 }
 
 static const char *base64_endigs_normal ="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -700,4 +723,3 @@ filekey dirname(const filekey& file) {
 filekey decodepath(const filekey& file, const string& suffix) {
     return filekey{decodepath(file.path, suffix), file.private_key};
 }
-

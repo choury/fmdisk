@@ -3,7 +3,9 @@
 #include "mock_backend.h"
 #include "../src/fuse.h"
 #include "../src/file.h"
+#include "../src/trdpool.h"
 #include "utils.h"
+#include "log.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -638,6 +640,16 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         backend_clone(src, dst);
         return;
     }
+    if(cmd.name == "BACKEND_POOLBLOCK") {
+        std::string pool = require_arg(cmd, "pool");
+        bool block = parse_bool(require_arg(cmd, "block"));
+        if(pool == "download") {
+            dpool->setblock(block);
+        } else if(pool == "upload"){
+            upool->setblock(block);
+        }
+        return;
+    }
 
     fail(ctx, cmd, "unknown backend command");
 }
@@ -698,6 +710,7 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     if(ctx.mounted) {
         fail(ctx, cmd, "mount already active");
     }
+    log_set_level(FUSE_LOG_DEBUG);
     bool no_cache = false;
     bool rename_not_supported = false;
     if(auto opt_no_cache = optional_arg(cmd, "no_cache"); opt_no_cache.has_value()) {

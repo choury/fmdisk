@@ -1,0 +1,52 @@
+# Ensure partial writes to uncached blocks keep existing data via range tracking
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# Seed a chunked file with known content (1 MiB of 'A')
+CREATE path="/range_write.bin" mode=0644 handle=seed
+WRITE handle=seed data="A" repeat=1048576
+RELEASE handle=seed sync=true
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+# Remount, patch two offsets without prefetching the full block, then pull to merge ranges
+MOUNT no_cache=false
+OPEN path="/range_write.bin" flags=RDWR handle=edit
+WRITE handle=edit data="left_patch" offset=4096
+WRITE handle=edit data="right_patch" offset=65536
+READ handle=edit size=4 offset=0 expect_data="AAAA"
+RELEASE handle=edit sync=true
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+# Verify patches persist after reload and untouched regions stay intact
+MOUNT no_cache=false
+GETATTR path="/range_write.bin" expect_size=1048576
+OPEN path="/range_write.bin" flags=RDONLY handle=verify
+READ handle=verify size=10 offset=4096 expect_data="left_patch"
+READ handle=verify size=11 offset=65536 expect_data="right_patch"
+READ handle=verify size=5 offset=5000 expect_data="AAAAA"
+RELEASE handle=verify
+UNMOUNT
+BACKEND_CLEAR_CACHE
+
+# Full-block overwrite should mark range as fully cached without a pull
+BACKEND_RESET
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+CREATE path="/full_cache.bin" mode=0644 handle=full_seed
+WRITE handle=full_seed data="S" repeat=524288           # seed half-block so remote exists, ranges not full
+RELEASE handle=full_seed sync=true
+UNMOUNT
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+BACKEND_POOLBLOCK pool=download block=true               # prevent any pull when rewriting
+OPEN path="/full_cache.bin" flags=RDWR handle=full
+WRITE handle=full data="B" repeat=1048576                # cover entire block
+RELEASE handle=full sync=true
+# Expect a single full-range entry (start=0,end=block_len) encoded as hex blob
+BACKEND_EXEC_SQL sql="select hex(ranges) from blocks where block_no=0" expect="0000000000001000"
+BACKEND_POOLBLOCK pool=download block=false
+UNMOUNT
+BACKEND_CLEAR_CACHE

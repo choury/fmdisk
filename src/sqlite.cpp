@@ -77,6 +77,7 @@ int sqlinit(){
                 "path text,"
                 "private_key text,"
                 "dirty integer DEFAULT 0,"
+                "ranges blob,"
                 "primary key (inode, block_no))", nullptr, nullptr, &err_msg))
             {
                 errorlog("create table blocks failed: %s\n", err_msg);
@@ -84,6 +85,20 @@ int sqlinit(){
                 failed = true;
                 break;
             }
+            //upgrate add ranges if not exists
+            if(sqlite3_exec(cachedb,
+                "ALTER TABLE blocks "
+                "ADD COLUMN ranges BLOB DEFAULT NULL", nullptr, nullptr, &err_msg))
+            {
+                if(strstr(err_msg, "duplicate column name") == nullptr) {
+                    errorlog("alter table blocks failed: %s\n", err_msg);
+                    if(err_msg) sqlite3_free(err_msg);
+                    failed = true;
+                    break;
+                }
+                if(err_msg) sqlite3_free(err_msg);
+            }
+
             //这个地方不能用唯一键，因为未上传的文件都是相同的private_key
             if(sqlite3_exec(cachedb,
                 "CREATE INDEX IF NOT EXISTS idx_key "
@@ -328,23 +343,38 @@ int delete_entry_from_db(const string& path){
     return 0;
 }
 
-int save_block_to_db(const fileInfo& fi, size_t block_no, const filekey& file, bool dirty){
-    if(cachedb == nullptr || fi.inode == 0){
+int save_block_to_db(const block_record& record) {
+    if(cachedb == nullptr || record.inode == 0){
         return 0;
     }
-    string sql = "replace into blocks (inode, block_no, btime, path, private_key, dirty) values("
-        + std::to_string(fi.inode) + ", "
-        + std::to_string(block_no) + ","
-        + std::to_string(fi.btime) + ", '"
-        + escapQuote(basename(file.path)) + "', '"
-        + escapPrivatekey(file.private_key) + "', "
-        + (dirty ? '1' : '0') + ")";
-    char* err_msg = nullptr;
-    if(sqlite3_exec(cachedb, sql.c_str(), nullptr, nullptr, &err_msg)){
-        errorlog("SQL [%s]: %s\n", sql.c_str(), err_msg);
-        if(err_msg) sqlite3_free(err_msg);
+
+    string sql = "replace into blocks (inode, block_no, btime, path, private_key, dirty, ranges) values("
+        + std::to_string(record.inode) + ", "
+        + std::to_string(record.block_no) + ", "
+        + std::to_string(record.btime) + ", '"
+        + escapQuote(record.path) + "', '"
+        + escapQuote(record.private_key) + "', "
+        + (record.dirty ? '1' : '0') + ", ?)";
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(cachedb, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        errorlog("SQL [%s]: %s\n", sql.c_str(), sqlite3_errmsg(cachedb));
         return -1;
     }
+
+    if (!record.ranges.empty()) {
+        sqlite3_bind_blob(stmt, 1, record.ranges.data(), record.ranges.size() * sizeof(Range), SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        errorlog("SQL [%s]: %s\n", sql.c_str(), sqlite3_errmsg(cachedb));
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    sqlite3_finalize(stmt);
     return 0;
 }
 
@@ -353,7 +383,7 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
     if(cachedb == nullptr || inode == 0){
         return false;
     }
-    string sql = "select inode, block_no, btime, path, private_key, dirty from blocks where inode = " + std::to_string(inode)
+    string sql = "select inode, block_no, btime, path, private_key, dirty, ranges from blocks where inode = " + std::to_string(inode)
                  + " and block_no = " + std::to_string(block_no);
     //use sqlite3_prepare_v2 to prepare the SQL statement
     sqlite3_stmt* stmt;
@@ -369,6 +399,21 @@ bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& recor
         record.path = (const char*)sqlite3_column_text(stmt, 3) ?: "";
         record.private_key = (const char*)sqlite3_column_text(stmt, 4);
         record.dirty = (sqlite3_column_int(stmt, 5) == 1);
+        int column_type = sqlite3_column_type(stmt, 6);
+        int blob_size = sqlite3_column_bytes(stmt, 6);
+        if(column_type == SQLITE_NULL) {
+            record.ranges = std::vector<Range>{{0, 0}};
+        } else if(blob_size == 0) {
+            record.ranges.clear();
+        } else if(blob_size % sizeof(Range) != 0) {
+            errorlog("SQL [%s]: invalid ranges blob size %d\n", sql.c_str(), blob_size);
+            record.ranges.clear();
+        } else {
+            const void* blob = sqlite3_column_blob(stmt, 6);
+            size_t range_count = blob_size / sizeof(Range);
+            record.ranges.resize(range_count);
+            memcpy(record.ranges.data(), blob, blob_size);
+        }
         sqlite3_finalize(stmt);
         return true;
     }

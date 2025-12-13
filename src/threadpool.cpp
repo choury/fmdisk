@@ -35,6 +35,7 @@ struct thrdpool{
     queue<task_t *>  tasks;
     unordered_map<task_id, val_t*> valmap;   //结果集合
     std::atomic<bool>       done;
+    std::atomic<bool>       block;
 };
 
 
@@ -43,6 +44,9 @@ void* dotask(thrdpool* pool) {                                //执行任务
         sem_wait(&pool->wait);
         if (pool->done) {
             return nullptr;
+        }
+        while(pool->block.load()) {
+            sleep(1);
         }
         pthread_mutex_lock(&pool->lock);
         task_t* task = pool->tasks.front();
@@ -81,6 +85,7 @@ thrdpool* creatpool(size_t threadnum) {
     pool->doing = 0;
     pool->curid = 1;
     pool->id = (pthread_t *)malloc(threadnum * sizeof(pthread_t));
+    pool->block = false;
 
     sem_init(&pool->wait, 0 , 0);
     pthread_attr_t attr;
@@ -128,6 +133,10 @@ void destroypool(struct thrdpool* pool) {
     pthread_mutex_destroy(&pool->lock);
     free(pool->id);
     delete pool;
+}
+
+bool setpoolblock(struct thrdpool* pool, bool block){
+    return pool->block.exchange(block);
 }
 
 

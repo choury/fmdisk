@@ -2,6 +2,8 @@
 #define SQLITE_H__
 #include "utils.h"
 
+#include <vector>
+
 int sqlinit();
 void sqldeinit();
 
@@ -15,6 +17,12 @@ int delete_entry_from_db(const std::string& path);
 int delete_entry_prefix_from_db(const std::string& path);
 
 // fsck相关的数据库获取函数
+
+struct Range {
+    uint32_t start;
+    uint32_t end;
+};
+
 struct block_record {
     ino_t inode;
     size_t block_no;
@@ -22,9 +30,10 @@ struct block_record {
     std::string path;
     std::string private_key;
     bool dirty;
+    std::vector<Range> ranges;
 };
 
-int save_block_to_db(const fileInfo& fi, size_t block_no, const filekey& file, bool dirty);
+int save_block_to_db(const block_record& record);
 bool load_block_from_db(ino_t inode, size_t block_no, struct block_record& record);
 int delete_blocks_from_db(ino_t inode);
 int delete_block_from_db(ino_t inode, size_t block_no);

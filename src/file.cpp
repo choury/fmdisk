@@ -6,6 +6,7 @@
 #include "threadpool.h"
 #include "defer.h"
 #include "sqlite.h"
+#include "utils.h"
 #include "log.h"
 
 #include <string.h>
@@ -405,6 +406,7 @@ int file_t::release(bool waitsync){
         return 0;
     }
     if(waitsync && (flags & FILE_DIRTY_F)) {
+        //如果不等待的话，这个流程会在clean -> sync_wlocked 触发
         for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
             it->second->sync(getblockdir(), true);
         }
@@ -537,7 +539,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
         int left_size = 10 * 1024 * 1024; //10M
         int left_block = 20;
         for(size_t i = startc; i<= GetBlkNo(length, blksize); i++){
-            if(blocks.at(i)->prefetch(false) > 0){
+            if(blocks.at(i)->prefetch(0, blksize, false) > 0){
                 left_size -= blksize;
             }
             left_block --;
@@ -546,7 +548,9 @@ int file_t::read(void* buff, off_t offset, size_t size) {
             }
         }
         for(size_t i = startc; i<= endc; i++ ){
-            int ret = blocks.at(i)->prefetch(true);
+            uint32_t startp = std::max(i * (size_t)blksize, (size_t)offset);
+            uint32_t endp = std::min((i + 1) * (size_t)blksize, (size_t)offset + size);
+            int ret = blocks.at(i)->prefetch(startp - i * blksize, endp - i * blksize, true);
             if (ret < 0) {
                 return ret;
             }
@@ -593,14 +597,17 @@ int file_t::truncate_wlocked(off_t offset){
             errno = EFBIG;
             return -1;
         }
+        if(blocks.contains(oldc)) {
+            blocks.at(oldc)->markdirty(getblockdir(), length - oldc * blksize, blksize);
+        }
         for(size_t i = oldc + 1; i<= newc; i++){
-            blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"x", 0}, i, blksize * i, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"x", 0}, i, blksize * i, blksize, (flags & FILE_ENCODE_F)));
         }
     }else if(oldc >= newc && inline_data.empty()){
         // 如果offset正好在newc块的结束位置，不需要修改该块
         if((size_t)offset != (newc + 1) * blksize) {
-            blocks.at(newc)->prefetch(true);
-            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir());
+            blocks.at(newc)->prefetch(0, blksize, true);
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir(), 0, blksize);
         }
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
@@ -613,9 +620,9 @@ int file_t::truncate_wlocked(off_t offset){
                 return ret;
             }
             assert(!blocks.contains(0));
-            blocks.emplace(0, std::make_shared<block_t>(fi, filekey{"x", 0}, 0, 0, blksize, BLOCK_SYNC | (flags & FILE_ENCODE_F)));
+            blocks.emplace(0, std::make_shared<block_t>(fi, filekey{"x", 0}, 0, 0, blksize, (flags & FILE_ENCODE_F)));
             inline_data.clear();
-            if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty(getblockdir());
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty(getblockdir(), 0, blksize);
         } else if(offset == 0) {
             inline_data.resize(1);
         } else if(offset > (off_t)inline_data.size()) {
@@ -667,13 +674,6 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         }
     }
     assert(inline_data.empty() || (inline_data.size() && length < INLINE_DLEN));
-    const size_t startc = GetBlkNo(offset, blksize);
-    const size_t endc = GetBlkNo(offset + size, blksize);
-    if(inline_data.empty()) {
-        blocks.at(endc)->prefetch(false);
-        blocks.at(startc)->prefetch(true);
-        blocks.at(endc)->prefetch(true);
-    }
     assert(fi.fd >= 0);
     int ret = pwrite(fi.fd, buff, size, offset);
     if(ret < 0){
@@ -683,8 +683,13 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         assert(inline_data.size() == length);
         memcpy(inline_data.data() + offset, buff, size);
     }else if((flags & ENTRY_DELETED_F) == 0) {
+        auto blockdir = getblockdir();
+        const size_t startc = GetBlkNo(offset, blksize);
+        const size_t endc = GetBlkNo(offset + size, blksize);
         for(size_t i = startc; i <= endc; i++){
-            blocks.at(i)->markdirty(getblockdir());
+            size_t startp = std::max(i * (size_t)blksize, (size_t)offset);
+            size_t endp =  std::min((i + 1) * (size_t)blksize, (size_t)offset + size);
+            blocks.at(i)->markdirty(blockdir, startp - i * blksize, endp - i * blksize);
         }
     }
     version++;
