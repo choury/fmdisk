@@ -606,7 +606,10 @@ int file_t::truncate_wlocked(off_t offset){
     }else if(oldc >= newc && inline_data.empty()){
         // 如果offset正好在newc块的结束位置，不需要修改该块
         if((size_t)offset != (newc + 1) * blksize) {
-            blocks.at(newc)->prefetch(0, blksize, true);
+            int ret = blocks.at(newc)->prefetch(0, blksize, true);
+            if(ret < 0) {
+                return ret;
+            }
             if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir(), 0, blksize);
         }
         for(size_t i = newc + 1; i<= oldc; i++){

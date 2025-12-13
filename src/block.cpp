@@ -63,8 +63,8 @@ void writeback_thread(bool* done){
             }
             if(b->staled() >= staled_threshold){
                 if(!b->full_cached()) {
-                    upool->submit_fire_and_forget([block = i->first]{
-                        block_t::pull(block);
+                    dpool->submit_fire_and_forget([block = i->first]{
+                        block_t::pull(block, false);
                     });
                     i++;
                 } else {
@@ -185,18 +185,22 @@ filekey block_t::getkey() const {
     }
 }
 
-int block_t::pull(std::weak_ptr<block_t> wb) {
+int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     auto b = wb.lock();
     if(b == nullptr) {
         return -ENOENT;
     }
     b->wlock();
-    while(b->flags & BLOCK_PULLING){
-        b->pull_cond.wait_write(b);
-    }
     if((b->flags & BLOCK_STALE) || b->full_cached()){
         b->unwlock();
         return 0;
+    }
+    if((b->flags & BLOCK_PULLING) && !wait) {
+        b->unwlock();
+        return -EBUSY;
+    }
+    while(b->flags & BLOCK_PULLING){
+        b->pull_cond.wait_write(b);
     }
 
     off_t startp = b->fk.path.size() ? 0 : b->offset;
@@ -357,7 +361,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
             return 0; // 已经被释放，不预取
         }
         __r.unlock();
-        return pull(weak_from_this());
+        return pull(weak_from_this(), true);
     } else {
         if(dpool->tasks_in_queue() > DOWNLOADTHREADS * 2){
             return 1;
@@ -370,7 +374,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
             return 0; // 已经同步，不需要预取
         }
         dpool->submit_fire_and_forget([b = weak_from_this()]{
-            pull(b);
+            pull(b, false);
         });
         return 1;
     }
@@ -422,7 +426,7 @@ bool block_t::sync(filekey fileat, bool wait){
     }
     __r.unlock();
     if(wait) {
-        if(pull(weak_from_this()) < 0) return true;
+        if(pull(weak_from_this(), true) < 0) return true;
         if(push(weak_from_this(), fileat) < 0) return true;
         assert((flags & BLOCK_DIRTY) == 0);
         return false;
