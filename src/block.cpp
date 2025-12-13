@@ -215,7 +215,7 @@ int block_t::pull(std::weak_ptr<block_t> wb) {
     if(ret >= 0){
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
         assert((size_t)ret == bs.size());
-        b->ranges = std::vector<Range>{{0, (uint32_t)bs.size()}};
+        b->ranges = std::vector<Range>{{0, (uint32_t)b->size}};
         //save_block_to_db(b->fi, b->no, b->fk, false);
         save_block_to_db(block_record{
             b->fi.inode,
@@ -379,6 +379,7 @@ void block_t::markdirty(filekey fileat, uint32_t start, uint32_t end) {
         ranges
     });
     flags |=  BLOCK_DIRTY;
+    __w.unlock();
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
@@ -402,8 +403,8 @@ bool block_t::sync(filekey fileat, bool wait){
     if ((flags & BLOCK_DIRTY) == 0 || (flags & BLOCK_STALE)) {
         return false;
     }
+    __r.unlock();
     if(wait) {
-        __r.unlock();
         if(!full_cached()) pull(weak_from_this());
         push(weak_from_this(), fileat);
         return true;
