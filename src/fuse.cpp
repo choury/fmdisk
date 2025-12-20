@@ -41,6 +41,8 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
     cfg->attr_timeout = 3;
     cfg->entry_timeout = 10;
     cfg->negative_timeout = 30;
+    cfg->use_ino = 0;
+    cfg->readdir_ino = 0;
 #if FUSE_VERSION > 314
     //这个理论上需要3.14.1，但是FUSE_HOTFIX_VERSION还没有引入，所以只能判断 > 3.14
     cfg->parallel_direct_writes = 1;
@@ -86,6 +88,7 @@ int fm_fuse_opendir(const char *path, struct fuse_file_info *fi){
 void metatostat(const filemeta& meta, struct stat* st) {
     memset(st, 0, sizeof(struct stat));
     assert((meta.flags & META_KEY_ONLY_F) == 0);
+    st->st_ino = 1;
     st->st_mode = meta.mode;
     st->st_size = meta.size;
     st->st_blksize = meta.blksize;

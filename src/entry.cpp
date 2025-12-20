@@ -137,7 +137,7 @@ int entry_t::set_storage_class(enum storage_class storage) {
         return -ENODATA; // 不支持
     }
     std::vector<std::future<int>> futures;
-    TrdPool pool(DOWNLOADTHREADS * 10);
+    TrdPool pool(UPLOADTHREADS * 2);
     int ret = set_storage_class(storage, &pool, futures);
     if(ret < 0) {
         return ret;
