@@ -23,7 +23,7 @@ int upload_block_common(const filekey& block_parent,
     }
 
     std::vector<char> payload(data, data + len);
-    if(encode && opt.secret && opt.secret[0] != '\0') {
+    if(encode) {
         xorcode(payload.data(), offset, len, opt.secret);
     }
 
@@ -126,10 +126,11 @@ int download_block_common(filekey base,
         return ret;
     }
     out_size = bs.size();
-    if(encode && out_size > 0 && opt.secret && opt.secret[0] != '\0') {
-        xorcode(bs.mutable_data(), block_no * blksize + offset, out_size, opt.secret);
+    if(out_size == 0) {
+        return 0;
     }
-    if(out && out_size > 0) {
+    if(encode && out) {
+        xorcode(bs.mutable_data(), block_no * blksize + offset, out_size, opt.secret);
         memcpy(out, bs.data(), out_size);
     }
     return 0;

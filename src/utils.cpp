@@ -194,6 +194,9 @@ size_t Base64Decode(const char *src, size_t len, char* dst){
 }
 
 void xorcode(void* buf, size_t offset, size_t len, const char* key) {
+    if (!key || !*key) {
+        return;
+    }
     unsigned char* buff = (unsigned char*)buf;
     size_t klen = strlen(key);
     size_t k_idx = offset % klen;
