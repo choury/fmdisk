@@ -362,8 +362,17 @@ static int command_put(const std::string& local, const std::string& remote_raw) 
         ret = -ENOENT;
     }
     if(ret == 0 && file_dir.private_key) {
-        std::cerr << "put: existing file" << "\n";
-        return -EEXIST;
+        filekey metakey{METANAME, nullptr};
+        int meta_ret = HANDLE_EAGAIN(fm_getattrat(file_dir, metakey));
+        if(meta_ret != 0 && errno == ENOENT) {
+            // Reuse existing file_dir when metadata is missing.
+        } else if(meta_ret == 0) {
+            std::cerr << "put: existing file" << "\n";
+            return -EEXIST;
+        } else {
+            std::cerr << "put: lookup failed: " << strerror(errno) << "\n";
+            return meta_ret;
+        }
     } else if(ret != 0 && errno != ENOENT) {
         std::cerr << "put: lookup failed: " << strerror(errno) << "\n";
         return ret;

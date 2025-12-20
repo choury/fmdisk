@@ -25,6 +25,7 @@ typedef struct Httprequest {
     void *readprame;
     curl_write_callback writefunc;               //读取服务器返回的数据
     void *writeprame;
+    const char *postfields;                     //可选: 直接提供POST数据
     const char* token;
     CURL *curl_handle;
     int should_destory;

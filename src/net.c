@@ -116,7 +116,7 @@ static int my_trace(CURL *handle, curl_infotype type,
 
 //获得一个可用的CURL结构
 static CURL* getcurl(){
-    struct config config = {
+    static struct config config = {
         .trace_ascii = 1,  /* enable ascii tracing */
     };
     CURL *curl;
@@ -201,20 +201,35 @@ CURLcode request(Http *r){
     }
     if (r->range) {
         curl_easy_setopt(r->curl_handle, CURLOPT_RANGE, r->range);
+    } else {
+        curl_easy_setopt(r->curl_handle, CURLOPT_RANGE, NULL);
     }
 
     if (r->useragent) {
         curl_easy_setopt(r->curl_handle, CURLOPT_USERAGENT, r->useragent);
+    } else {
+        curl_easy_setopt(r->curl_handle, CURLOPT_USERAGENT, NULL);
     }
 
     if (r->writefunc) {
         curl_easy_setopt(r->curl_handle, CURLOPT_WRITEFUNCTION, r->writefunc);
         curl_easy_setopt(r->curl_handle, CURLOPT_WRITEDATA, r->writeprame);
+    } else {
+        curl_easy_setopt(r->curl_handle, CURLOPT_WRITEFUNCTION, NULL);
+        curl_easy_setopt(r->curl_handle, CURLOPT_WRITEDATA, NULL);
     }
 
     if (r->readfunc) {
         curl_easy_setopt(r->curl_handle, CURLOPT_READFUNCTION, r->readfunc);
         curl_easy_setopt(r->curl_handle, CURLOPT_READDATA, r->readprame);
+    } else {
+        curl_easy_setopt(r->curl_handle, CURLOPT_READFUNCTION, NULL);
+        curl_easy_setopt(r->curl_handle, CURLOPT_READDATA, NULL);
+    }
+    if (r->postfields) {
+        curl_easy_setopt(r->curl_handle, CURLOPT_POSTFIELDS, r->postfields);
+    } else {
+        curl_easy_setopt(r->curl_handle, CURLOPT_POSTFIELDS, NULL);
     }
 
     if (r->token) {
