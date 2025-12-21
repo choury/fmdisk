@@ -201,6 +201,13 @@ public:
         assert(ret == 0);
         locked = true;
     }
+    void unlock(){
+        if(!locked){
+            return;
+        }
+        pthread_mutex_unlock(l);
+        locked = false;
+    }
     ~auto_locker(){
         if(!locked){
             return;

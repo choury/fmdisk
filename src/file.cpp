@@ -386,6 +386,7 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
     opened_inodes.erase(file->fi.inode);
+    __l.unlock();
     file->reset_wlocked();
 }
 
