@@ -272,31 +272,35 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     if(b == nullptr) {
         return -ENOENT;
     }
-    auto_rlock(b);
-    size_t version = b->version;
-    if((b->flags & BLOCK_DIRTY) == 0 ){
-        return 0;
-    }
-    if((b->flags & (BLOCK_STALE | BLOCK_PULLING)) || !b->full_cached()){
-        return -EAGAIN;
-    }
+    size_t version = 0;
     char *buff = (char*)malloc(b->size);
-    int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
-    if(ret < 0){
-        free(buff);
-        return ret;
-    }
-    size_t len = ret;
+    defer(free, buff);
+    size_t len = 0;
+    {
+        auto_rlock(b);
+        version = b->version;
+        if((b->flags & BLOCK_DIRTY) == 0 ){
+            return 0;
+        }
+        if((b->flags & (BLOCK_STALE | BLOCK_PULLING)) || !b->full_cached()){
+            return -EAGAIN;
+        }
+        int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
+        if(ret < 0){
+            return ret;
+        }
+        len = ret;
 
 #if 0
-    bool allzero = std::all_of(buff, buff + len, [](char c) { return c == 0; });
+        bool allzero = std::all_of(buff, buff + len, [](char c) { return c == 0; });
 #else
-    bool allzero = isAllZero(buff, len);
+        bool allzero = isAllZero(buff, len);
 #endif
-    if (allzero) {
-        len = 0;
-    } else if(b->flags & FILE_ENCODE_F){
-        xorcode(buff, b->offset, len, opt.secret);
+        if (allzero) {
+            len = 0;
+        } else if(b->flags & FILE_ENCODE_F){
+            xorcode(buff, b->offset, len, opt.secret);
+        }
     }
     filekey file;
     if(len){
@@ -307,23 +311,21 @@ retry:
         if(ret != 0 && errno == EEXIST){
             goto retry;
         }
-        free(buff);
         if(ret != 0){
             errorlog("fm_upload IO Error %s: %s\n", file.path.c_str(), strerror(-ret));
             return ret;
         }
     }else{
-        free(buff);
         file = filekey{"x", 0};
     }
-    __r.upgrade();
     auto stripfile = basename(file);
+    auto_wlock(b);
     if (version != b->version || (b->flags & BLOCK_STALE)) {
         infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
         trim(file);
         return -EAGAIN;
     }
-    if (allzero && b->fi.fd >= 0) {
+    if (len == 0 && b->fi.fd >= 0) {
         fallocate(b->fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, b->offset, b->size);
     }
     // 上传成功，清除dirty标记
