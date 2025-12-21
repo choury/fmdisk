@@ -58,45 +58,47 @@ static bool cleanup_cache_by_size() {
     // 删除最旧的文件直到满足大小限制
     off_t current_size = total_size;
 
-    auto_lock(&openfile_lock);
-    for (const auto& file : cache_files) {
-        if (current_size <= opt.cache_size) {
+    std::vector<std::shared_ptr<file_t>> open_files;
+    {
+        auto_lock(&openfile_lock);
+        for (const auto& file : cache_files) {
+            if (current_size <= opt.cache_size) {
+                return false;
+            }
+            if(opened_inodes.contains(file.st.stx_ino)) {
+                continue; // 跳过正在使用的文件
+            }
+
+            // 检查文件是否有dirty标记（从数据库加载）
+            if(!file.remote_path.empty()) {
+                filemeta meta{};
+                std::vector<filekey> fblocks;
+                load_file_from_db(encodepath(file.remote_path, file_encode_suffix), meta, fblocks);
+                if(meta.blksize == 0) {
+                    load_file_from_db(file.remote_path, meta, fblocks);
+                }
+
+                if(meta.flags & FILE_DIRTY_F) {
+                    continue; // 跳过有dirty标记的文件
+                }
+            }
+
+            infolog("drop cache: %s, inode=%d\n", file.path.c_str(), file.st.stx_ino);
+            // 删除对应的blocks表记录
+            delete_blocks_from_db(file.st.stx_ino);
+
+            // 删除缓存文件
+            unlink(file.path.c_str());
+            current_size -= file.st.stx_blocks * 512;
+        }
+        if(opt.cache_size == 0) {
             return false;
         }
-        if(opened_inodes.contains(file.st.stx_ino)) {
-            continue; // 跳过正在使用的文件
+        //如果删完了还是不够,就清理打开文件的block
+        open_files.reserve(opened_inodes.size());
+        for (auto& [inode, file] : opened_inodes) {
+            open_files.push_back(file);
         }
-
-        // 检查文件是否有dirty标记（从数据库加载）
-        if(!file.remote_path.empty()) {
-            filemeta meta{};
-            std::vector<filekey> fblocks;
-            load_file_from_db(encodepath(file.remote_path, file_encode_suffix), meta, fblocks);
-            if(meta.blksize == 0) {
-                load_file_from_db(file.remote_path, meta, fblocks);
-            }
-
-            if(meta.flags & FILE_DIRTY_F) {
-                continue; // 跳过有dirty标记的文件
-            }
-        }
-
-        infolog("drop cache: %s, inode=%d\n", file.path.c_str(), file.st.stx_ino);
-        // 删除对应的blocks表记录
-        delete_blocks_from_db(file.st.stx_ino);
-
-        // 删除缓存文件
-        unlink(file.path.c_str());
-        current_size -= file.st.stx_blocks * 512;
-    }
-    if(opt.cache_size == 0) {
-        return false;
-    }
-    //如果删完了还是不够,就清理打开文件的block
-    std::vector<std::shared_ptr<file_t>> open_files;
-    open_files.reserve(opened_inodes.size());
-    for (auto& [inode, file] : opened_inodes) {
-        open_files.push_back(file);
     }
     std::sort(open_files.begin(), open_files.end(), [](const std::shared_ptr<file_t>& lhs, const std::shared_ptr<file_t>& rhs) {
         return lhs->getatime() < rhs->getatime();
@@ -317,7 +319,6 @@ void file_t::reset_wlocked() {
 
 int file_t::open(){
     atime = time(nullptr);
-    auto_lock(&openfile_lock); //for putting inode into opened_inodes
     auto_wlock(this);
     if((flags & ENTRY_INITED_F) == 0){
         int ret = pull_wlocked();
@@ -348,6 +349,7 @@ int file_t::open(){
     fi.inode = st.stx_ino;
     fi.btime = st.stx_btime.tv_sec * 1000000000LL + st.stx_btime.tv_nsec;
     infolog("open file: %s, inode=%ju\n", getcwd().c_str(), fi.inode);
+    auto_lock(&openfile_lock);
     opened_inodes.emplace(fi.inode, shared_file_from_this());
     if(flags & ENTRY_CHUNCED_F) {
         auto fblocks = getfblocks();
@@ -368,13 +370,13 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
     if(file == nullptr) {
         return;
     }
-    auto_lock(&openfile_lock); //for removing inode from opened_inodes
     auto_wlock(file);
     if(file->opened > 0){
         file->flags &= ~ENTRY_REASEWAIT_F;
         return;
     }
     if(file->flags & ENTRY_DELETED_F){
+        auto_lock(&openfile_lock);
         opened_inodes.erase(file->fi.inode);
         return;
     }
@@ -385,8 +387,8 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
         return;
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
+    auto_lock(&openfile_lock);
     opened_inodes.erase(file->fi.inode);
-    __l.unlock();
     file->reset_wlocked();
 }
 
