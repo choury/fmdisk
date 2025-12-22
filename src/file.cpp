@@ -700,10 +700,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     }
     version++;
     ctime = mtime = time(nullptr);
-    if((flags & FILE_DIRTY_F) == 0){
-        flags |= FILE_DIRTY_F;
-        sync_wlocked(true, true);
-    }else if(mtime - last_meta_sync_time >= 600) {
+    if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
              upload_meta_async_task(file);
@@ -885,6 +882,9 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
         }
     }
     assert(!dirty || (flags & FILE_DIRTY_F));
+    if(!forcedirty && dirty) {
+        return true;
+    }
     const filekey& key = getkey();
     filemeta meta;
     if(getmeta(meta) < 0) {
