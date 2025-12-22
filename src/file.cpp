@@ -636,10 +636,6 @@ int file_t::truncate_wlocked(off_t offset){
         }
     }
     length = offset;
-    if((flags & FILE_DIRTY_F) == 0){
-        flags |= FILE_DIRTY_F;
-        sync_wlocked(true, false);
-    }
     assert(fi.fd >= 0 && length == (size_t)offset);
     return TEMP_FAILURE_RETRY(ftruncate(fi.fd, offset));
 }
@@ -647,7 +643,7 @@ int file_t::truncate_wlocked(off_t offset){
 int file_t::truncate(off_t offset){
     atime = time(nullptr);
     auto_wlock(this);
-    assert(opened);
+    //assert(opened);
     if((flags & ENTRY_CHUNCED_F) == 0){
         return -EPERM;
     }
@@ -657,12 +653,8 @@ int file_t::truncate(off_t offset){
     }
     version++;
     ctime = mtime = time(nullptr);
-    if(mtime - last_meta_sync_time >= 600) {
-        last_meta_sync_time = mtime;
-        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
-            upload_meta_async_task(file);
-        });
-    }
+    flags |= FILE_DIRTY_F;
+    sync_wlocked(false, true);
     return 0;
 }
 
@@ -699,11 +691,12 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         }
     }
     version++;
+    flags |= FILE_DIRTY_F;
     ctime = mtime = time(nullptr);
     if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
-             upload_meta_async_task(file);
+            upload_meta_async_task(file);
         });
     }
     return ret;
@@ -882,9 +875,6 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
         }
     }
     assert(!dirty || (flags & FILE_DIRTY_F));
-    if(!forcedirty && dirty) {
-        return true;
-    }
     const filekey& key = getkey();
     filemeta meta;
     if(getmeta(meta) < 0) {
@@ -892,6 +882,10 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     }
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
+    if(!forcedirty && dirty) {
+        save_file_to_db(key.path, meta, fblocks);
+        return true;
+    }
     const size_t version_snapshot = version.load();
     if(lockfree){
         flags |= FILE_UPMETA_F;
@@ -1102,7 +1096,7 @@ void file_t::upload_meta_async_task(std::weak_ptr<file_t> file_) {
     if((file->flags & ENTRY_DELETED_F) || (file->flags & FILE_DIRTY_F) == 0) {
         return;
     }
-    file->sync_wlocked(false, true);
+    file->sync_wlocked(true, true);
 }
 
 static void add_meta_to_storage_info(storage_class_info& info, const filemeta& meta) {
