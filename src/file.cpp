@@ -172,7 +172,7 @@ static void gc_worker() {
             haswork = true;
         }
 
-        if(opt.entry_cache_second >= 0) {
+        if(opt.entry_cache_second > 0) {
             clean_entry_cache();
         }
 

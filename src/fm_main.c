@@ -76,9 +76,14 @@ int fm_prepare();
 
 int fm_main(int argc, char *argv[]) {
     log_set_level(debug_enabled(argc, argv) ? FUSE_LOG_DEBUG : FUSE_LOG_INFO);
+    memset(&opt, 0, sizeof(opt));
     int ret = fm_prepare();
     if(ret){
         return ret;
+    }
+    if(opt.block_len == 0) {
+        fprintf(stderr, "block_len can not be 0\n");
+        return -1;
     }
     log_init(opt.log_path);
     return fuse_main(argc, argv, &fm_oper, NULL);

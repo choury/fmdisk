@@ -4,6 +4,7 @@
 #include "file.h"
 #include "trdpool.h"
 #include "sqlite.h"
+#include "log.h"
 
 #include <string.h>
 #include <thread>
@@ -23,9 +24,8 @@ int cache_prepare() {
         throw std::runtime_error("getattr of root failed");
     }
     root = std::make_shared<dir_t>(nullptr, meta);
-    start_gc();
     if(opt.no_cache) {
-        printf("--- EXIT cache_prepare (no_cache) ---\n");
+        infolog("--- EXIT cache_prepare (no_cache) ---\n");
         return 0;
     }
     upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
@@ -52,7 +52,6 @@ std::shared_ptr<dir_t> cache_root() {
 }
 
 void cache_destroy(){
-    stop_gc();
     if(!opt.no_cache) {
         writeback_done = true;
         delete upool;
@@ -65,6 +64,7 @@ void cache_destroy(){
 
 void clean_entry_cache() {
     cache_root()->drop_cache(true, time(nullptr) - opt.entry_cache_second);
+    infolog("cleaned entry cache for %d seconds\n", opt.entry_cache_second);
 }
 
 std::shared_ptr<entry_t> find_entry(const string& path) {

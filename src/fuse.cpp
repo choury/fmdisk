@@ -56,11 +56,13 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
         }
         recover_dirty_data();
     }
+    start_gc();
     return cache_root().get();
 }
 
 void fm_fuse_destroy(void*){
     fs = nullptr;
+    stop_gc();
     cache_destroy();
     log_cleanup();
     if(opt.clean) {
