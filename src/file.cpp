@@ -883,6 +883,7 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     if(!forcedirty && dirty) {
+        version++;
         save_file_to_db(key.path, meta, fblocks);
         return true;
     }
@@ -910,6 +911,7 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
     }
+    version++;
     save_file_to_db(key.path, meta, fblocks);
     return dirty;
 }
@@ -975,6 +977,7 @@ int file_t::update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> m
             return ret;
         }
     }
+    version++;
     save_file_to_db(key.path, meta, fblocks);
     return 0;
 }

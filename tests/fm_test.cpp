@@ -371,6 +371,10 @@ void ensure_mounted(const ExecutionContext& ctx, const Command& cmd) {
 void exec_backend_sql(ExecutionContext& ctx, const Command& cmd) {
     std::string sql = require_arg(cmd, "sql");
     auto expect_opt = optional_arg(cmd, "expect");
+    bool dump = false;
+    if(auto dump_opt = optional_arg(cmd, "dump"); dump_opt.has_value()) {
+        dump = parse_bool(dump_opt.value());
+    }
 
     if (cache_dir.empty()) {
         fail(ctx, cmd, "cache directory not set, MOUNT must be called first");
@@ -427,6 +431,13 @@ void exec_backend_sql(ExecutionContext& ctx, const Command& cmd) {
             std::ostringstream oss;
             oss << "SQL expect mismatch: wanted '" << *expect_opt << "', got '" << query_result << "'";
             fail(ctx, cmd, oss.str());
+        }
+    }
+    if(dump) {
+        if(query_result.empty()) {
+            std::cout << "(empty)" << std::endl;
+        } else {
+            std::cout << query_result << std::endl;
         }
     }
 }
