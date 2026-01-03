@@ -653,8 +653,16 @@ int file_t::truncate(off_t offset){
     }
     version++;
     ctime = mtime = time(nullptr);
-    flags |= FILE_DIRTY_F;
-    sync_wlocked(false, true);
+    if((flags & FILE_DIRTY_F) == 0){
+        last_meta_sync_time = mtime;
+        flags |= FILE_DIRTY_F;
+        sync_wlocked(true, false);
+    }else if(mtime - last_meta_sync_time >= 600) {
+        last_meta_sync_time = mtime;
+        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
+            upload_meta_async_task(file);
+        });
+    }
     return 0;
 }
 
@@ -691,9 +699,12 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
         }
     }
     version++;
-    flags |= FILE_DIRTY_F;
     ctime = mtime = time(nullptr);
-    if(mtime - last_meta_sync_time >= 600) {
+    if((flags & FILE_DIRTY_F) == 0){
+        last_meta_sync_time = mtime;
+        flags |= FILE_DIRTY_F;
+        sync_wlocked(true, false);
+    }else if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
             upload_meta_async_task(file);
@@ -882,7 +893,7 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     }
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
-    if(!forcedirty && dirty) {
+    if((!forcedirty && dirty) ||(forcedirty && !lockfree)){
         version++;
         save_file_to_db(key.path, meta, fblocks);
         return true;
