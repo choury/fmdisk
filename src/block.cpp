@@ -43,41 +43,96 @@ pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
 void writeback_thread(bool* done){
     while(!*done){
         usleep(100000);
+        std::vector<std::pair<std::shared_ptr<block_t>, filekey>> snapshot;
         pthread_mutex_lock(&dblocks_lock);
         if(dblocks.empty()){
             pthread_mutex_unlock(&dblocks_lock);
             continue;
         }
-        int staled_threshold = 30; // seconds
-        if(upool->tasks_in_queue() == 0 && dblocks.size() >= UPLOADTHREADS){
-            staled_threshold = 5;
-        }
-        for(auto i = dblocks.begin(); i!= dblocks.end();){
-            if(upool->tasks_in_queue() >= UPLOADTHREADS){
-                break;
-            }
-            auto b = i->first.lock();
+        snapshot.reserve(dblocks.size());
+        for(auto it = dblocks.begin(); it != dblocks.end();){
+            auto b = it->first.lock();
             if(b == nullptr){
-                i = dblocks.erase(i);
+                it = dblocks.erase(it);
                 continue;
             }
-            if(b->staled() >= staled_threshold){
-                if(!b->full_cached()) {
-                    dpool->submit_fire_and_forget([block = i->first]{
-                        block_t::pull(block, false);
-                    });
-                    i++;
-                } else {
-                    upool->submit_fire_and_forget([block = i->first, fileat = i->second]{
-                        block_t::push(block, fileat);
-                    });
-                    i = dblocks.erase(i);
-                }
-            }else{
-                i++;
-            }
+            snapshot.emplace_back(b, it->second);
+            ++it;
         }
         pthread_mutex_unlock(&dblocks_lock);
+
+        int staled_threshold = 30; // seconds
+        if(upool->tasks_in_queue() == 0 && snapshot.size() >= UPLOADTHREADS){
+            staled_threshold = 5;
+        }
+
+        struct candidate_t {
+            std::shared_ptr<block_t> block;
+            filekey fileat;
+            int staled;
+        };
+        std::vector<candidate_t> candidates;
+        candidates.reserve(snapshot.size());
+        for(const auto& item : snapshot){
+            int staled = item.first->staled();
+            if(staled < staled_threshold){
+                continue;
+            }
+            candidates.push_back(candidate_t{item.first, item.second, staled});
+        }
+        if(candidates.empty()){
+            continue;
+        }
+        std::sort(candidates.begin(), candidates.end(),
+                  [](const candidate_t& a, const candidate_t& b) {
+                      return a.staled > b.staled;
+                  });
+
+        size_t max_upload_queue = UPLOADTHREADS;
+        size_t max_download_queue = DOWNLOADTHREADS;
+        size_t upload_queue = upool->tasks_in_queue();
+        size_t download_queue = dpool->tasks_in_queue();
+        size_t upload_avail = (upload_queue >= max_upload_queue) ? 0 : (max_upload_queue - upload_queue);
+        size_t download_avail = (download_queue >= max_download_queue) ? 0 : (max_download_queue - download_queue);
+        if(upload_avail == 0 && download_avail == 0){
+            continue;
+        }
+
+        std::vector<std::weak_ptr<block_t>> pushed_blocks;
+        for(const auto& item : candidates){
+            if(upload_avail == 0 && download_avail == 0){
+                break;
+            }
+            if(!item.block->full_cached()) {
+                if(download_avail == 0){
+                    continue;
+                }
+                dpool->submit_fire_and_forget([block = std::weak_ptr<block_t>(item.block)]{
+                    block_t::pull(block, false);
+                });
+                download_avail--;
+            } else {
+                if(upload_avail == 0){
+                    continue;
+                }
+                upool->submit_fire_and_forget([block = std::weak_ptr<block_t>(item.block), fileat = item.fileat]{
+                    block_t::push(block, fileat);
+                });
+                pushed_blocks.push_back(item.block);
+                upload_avail--;
+            }
+        }
+
+        if(!pushed_blocks.empty()){
+            pthread_mutex_lock(&dblocks_lock);
+            for(const auto& block : pushed_blocks){
+                auto it = dblocks.find(block);
+                if(it != dblocks.end()){
+                    dblocks.erase(it);
+                }
+            }
+            pthread_mutex_unlock(&dblocks_lock);
+        }
     }
 }
 
