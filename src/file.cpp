@@ -1351,7 +1351,7 @@ int file_t::get_etag(std::string& etag) {
 
 size_t file_t::release_clean_blocks() {
     auto_wlock(this);
-    if((flags & ENTRY_INITED_F) == 0 || (flags & (ENTRY_DELETED_F | ENTRY_REASEWAIT_F)) || fi.fd < 0) {
+    if((flags & ENTRY_INITED_F) == 0 || (flags & ENTRY_DELETED_F) || fi.fd < 0) {
         return 0;
     }
     size_t released = 0;

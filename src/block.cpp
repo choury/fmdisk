@@ -420,7 +420,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
         __r.unlock();
         return pull(weak_from_this(), true);
     } else {
-        if(dpool->tasks_in_queue() > DOWNLOADTHREADS * 2){
+        if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
             return 1;
         }
         if(tryrlock() != 0) {
