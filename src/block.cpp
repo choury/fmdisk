@@ -37,6 +37,44 @@ static std::string getRemotePathFromFd(int fd) {
 
 std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
+static sem_t dirty_blocks_sem;
+static std::atomic<long long> dirty_blocks_limit{-1};
+static pthread_once_t dirty_blocks_once = PTHREAD_ONCE_INIT;
+
+static void init_dirty_blocks_limit() {
+    if(opt.no_cache || opt.cache_size <= 0 || opt.block_len == 0) {
+        dirty_blocks_limit = -1;
+        return;
+    }
+    long long limit = opt.cache_size / opt.block_len;
+    if(limit < UPLOADTHREADS) {
+        limit = UPLOADTHREADS;
+    }
+    if(sem_init(&dirty_blocks_sem, 0, static_cast<unsigned int>(limit)) != 0) {
+        warnlog("init dirty blocks semaphore failed: %s\n", strerror(errno));
+        dirty_blocks_limit = -1;
+        return;
+    }
+    dirty_blocks_limit = limit;
+}
+
+static void acquire_dirty_block_slot() {
+    pthread_once(&dirty_blocks_once, init_dirty_blocks_limit);
+    if(dirty_blocks_limit.load() <= 0) {
+        return;
+    }
+    int ret = 0;
+    do {
+        ret = sem_wait(&dirty_blocks_sem);
+    } while(ret == -1 && errno == EINTR);
+}
+
+static void release_dirty_block_slot() {
+    if(dirty_blocks_limit.load() <= 0) {
+        return;
+    }
+    sem_post(&dirty_blocks_sem);
+}
 
 //static_assert(BLOCKLEN > INLINE_DLEN, "blocklen should not bigger than inline date length");
 
@@ -202,6 +240,7 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
     }
     if (record.dirty) {
         this->flags |= BLOCK_DIRTY;
+        acquire_dirty_block_slot();
     }
     if(record.private_key != fk_private) {
         if(!record.private_key.empty() && !record.path.empty()){
@@ -213,6 +252,7 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
         } else {
             //数据库中blocks表保存的信息不完整，重新上传
             this->flags |= BLOCK_DIRTY;
+            acquire_dirty_block_slot();
         }
     }
 }
@@ -221,6 +261,9 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
 // 1. file被销毁了，一般是 drop_mem_cache, BLOCK_STALE标记
 // 2. file被truncate了，这个时候需要删除数据
 block_t::~block_t() {
+    if(flags & BLOCK_DIRTY) {
+        release_dirty_block_slot();
+    }
     if((flags & BLOCK_STALE) == 0) {
         trim(getkey());
     }
@@ -396,6 +439,7 @@ retry:
         trim(b->getkey());
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
+        release_dirty_block_slot();
         return 0;
     } else {
         errorlog("save %s failed: %ju, %d\n", stripfile.path.c_str(), b->fi.inode, b->no);
@@ -464,6 +508,7 @@ void block_t::markdirty(filekey fileat, uint32_t start, uint32_t end) {
     pthread_mutex_lock(&dblocks_lock);
     dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
+    acquire_dirty_block_slot();
 }
 
 void block_t::markstale() {

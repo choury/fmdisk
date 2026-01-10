@@ -685,6 +685,13 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(ret < 0){
         return -errno;
     }
+    version++;
+    ctime = mtime = time(nullptr);
+    if((flags & FILE_DIRTY_F) == 0) {
+        last_meta_sync_time = mtime;
+        flags |= FILE_DIRTY_F;
+        sync_wlocked(true, false);
+    }
     if(inline_data.size()){
         assert(inline_data.size() == length);
         memcpy(inline_data.data() + offset, buff, size);
@@ -698,13 +705,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
             blocks.at(i)->markdirty(blockdir, startp - i * blksize, endp - i * blksize);
         }
     }
-    version++;
-    ctime = mtime = time(nullptr);
-    if((flags & FILE_DIRTY_F) == 0){
-        last_meta_sync_time = mtime;
-        flags |= FILE_DIRTY_F;
-        sync_wlocked(true, false);
-    }else if(mtime - last_meta_sync_time >= 600) {
+    if(mtime - last_meta_sync_time >= 600) {
         last_meta_sync_time = mtime;
         upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]{
             upload_meta_async_task(file);
