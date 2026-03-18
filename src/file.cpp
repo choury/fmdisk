@@ -113,6 +113,10 @@ static bool cleanup_cache_by_size() {
     return true;
 }
 
+bool cleanup_cache_by_size_for_test() {
+    return cleanup_cache_by_size();
+}
+
 void trim(const filekey& file) {
     string name = basename(file.path);
     if(name.empty() || name == "x"){

@@ -1,0 +1,33 @@
+# Repro: cache eviction + stale meta causes blocks table to be rebuilt with old keys
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false cache_size=1M
+
+# Seed 10MiB file (1MiB blocks in tests => 10 blocks)
+CREATE path="/race.bin" mode=0644 handle=seed
+WRITE handle=seed data="A" repeat=10485760
+RELEASE handle=seed sync=true
+
+# Overwrite file to rotate block keys; close without sync so files.meta stays old.
+OPEN path="/race.bin" handle=writer flags=RDWR
+WRITE handle=writer data="B" repeat=10485760 offset=0
+RELEASE handle=writer
+
+# Allow background block upload to finish, but exit before clean (60s) updates meta.
+BACKEND_SLEEP ms=2000
+
+# Evict cache file via cache_size GC and clear entry cache (stay mounted).
+BACKEND_FORCE_GC
+BACKEND_SLEEP ms=500
+OPEN path="/race.bin" handle=hold flags=RDWR
+BACKEND_POOLBLOCK pool=upload block=true
+
+# Rebuild blocks table from stale meta keys.
+WRITE handle=hold data="C" repeat=10485760 offset=0
+
+# Blocks table should now match stale files.meta keys (old block list).
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM blocks WHERE inode=(SELECT MAX(inode) FROM blocks)" expect="10"
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM blocks b WHERE b.inode=(SELECT MAX(inode) FROM blocks) AND instr((SELECT meta FROM files WHERE path='/cmFjZS5iaW4=.def'), b.path) > 0" expect="10"
+
+BACKEND_POOLBLOCK pool=upload block=false
+RELEASE handle=hold

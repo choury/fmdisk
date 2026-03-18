@@ -350,7 +350,7 @@ filekey fixMissBlock(const filekey& dir, const std::string& path, const std::map
 
     // 首先尝试从本地cache上传
     if (autofix) {
-        string remote_path = decodepath(path, file_encode_suffix);
+        string remote_path = encodepath(path, file_encode_suffix);
         filekey cache_result = uploadBlockFromCache(dir, remote_path, meta, no);
         if (cache_result.path != "x") {
             cerr << "Successfully uploaded block " << no << " from local cache for " << remote_path << endl;

@@ -105,12 +105,14 @@ ctest
 - **MOUNT**: 挂载文件系统。
   - `no_cache` (bool, 可选): 是否禁用缓存，默认为 `false`。
   - `rename_not_supported` (bool, 可选): 是否模拟后端不支持重命名的场景，默认为 `false`。
+  - `cache_size` (string, 可选): 缓存大小限制（字节）。支持 `K/M/G` 后缀（例如 `512K`, `4M`, `1G`）。
 
 - **UNMOUNT**: 卸载文件系统。
 
 - **BACKEND_RESET**: 清空模拟后端的所有数据。
 
 - **BACKEND_CLEAR_CACHE**: 删除本地缓存目录。
+- **BACKEND_FORCE_GC**: 立即执行一次缓存淘汰（遵循 `cache_size` 规则），并同步清理内存 entry 缓存。
 
 - **BACKEND_SEED**: 在模拟后端预置一个对象。
   - `path` (string, 必须): 对象路径。

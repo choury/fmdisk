@@ -98,6 +98,30 @@ long parse_long(const std::string& value, int base = 0) {
     return result;
 }
 
+long long parse_size_bytes(const std::string& value) {
+    if(value.empty()) {
+        throw std::runtime_error("invalid size ''");
+    }
+    char suffix = value.back();
+    long long multiplier = 1;
+    std::string number = value;
+    if(std::isalpha(static_cast<unsigned char>(suffix))) {
+        switch(std::toupper(static_cast<unsigned char>(suffix))) {
+            case 'K': multiplier = 1024LL; break;
+            case 'M': multiplier = 1024LL * 1024LL; break;
+            case 'G': multiplier = 1024LL * 1024LL * 1024LL; break;
+            default:
+                throw std::runtime_error("invalid size suffix '" + std::string(1, suffix) + "'");
+        }
+        number = value.substr(0, value.size() - 1);
+        if(number.empty()) {
+            throw std::runtime_error("invalid size '" + value + "'");
+        }
+    }
+    long long base_value = parse_long(number, 0);
+    return base_value * multiplier;
+}
+
 unsigned long parse_ulong(const std::string& value, int base = 0) {
     char* end = nullptr;
     errno = 0;
@@ -661,6 +685,12 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         }
         return;
     }
+    if(cmd.name == "BACKEND_FORCE_GC") {
+        while(cleanup_cache_by_size_for_test()) {
+        }
+        clean_entry_cache();
+        return;
+    }
 
     fail(ctx, cmd, "unknown backend command");
 }
@@ -724,11 +754,15 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     log_set_level(FUSE_LOG_DEBUG);
     bool no_cache = false;
     bool rename_not_supported = false;
+    long long cache_size = -1;
     if(auto opt_no_cache = optional_arg(cmd, "no_cache"); opt_no_cache.has_value()) {
         no_cache = parse_bool(opt_no_cache.value());
     }
     if(auto opt_rename = optional_arg(cmd, "rename_not_supported"); opt_rename.has_value()) {
         rename_not_supported = parse_bool(opt_rename.value());
+    }
+    if(auto opt_cache = optional_arg(cmd, "cache_size"); opt_cache.has_value()) {
+        cache_size = parse_size_bytes(opt_cache.value());
     }
     uint flags = FM_DELETE_NEED_PURGE;
     if(rename_not_supported) {
@@ -744,7 +778,7 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
         .block_len = 1 << 20,
         .flags = flags,
         .no_cache = no_cache ? 1 : 0,
-        .cache_size = -1,
+        .cache_size = cache_size,
         .entry_cache_second = -1,
     };
     backend_set_mount_option(&options);
