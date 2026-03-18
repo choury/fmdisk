@@ -313,17 +313,24 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     b->flags &= ~BLOCK_PULLING;
     b->pull_cond.notify_all();
     if(ret){
-        return ret;
-    }
-    // 直接写入缓存文件
-    if(b->flags & FILE_ENCODE_F){
-        xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
+        if(ret == -ENOENT && (b->flags & BLOCK_STALE) == 0) {
+            //seed empty block
+            memset(bs.mutable_data(), 0, bs.size());
+            warnlog("feed empty block for: %s, inode=%ju, no=%d\n", file.path.c_str(), b->fi.inode, b->no);
+        } else {
+            return ret;
+        }
+    } else {
+        if(b->flags & FILE_ENCODE_F){
+            xorcode(bs.mutable_data(), b->offset, bs.size(), opt.secret);
+        }
     }
 
     for(const auto& r : b->ranges) {
         pread(b->fi.fd, (char*)bs.mutable_data() + r.start, r.end - r.start, b->offset + r.start);
     }
 
+    // 直接写入缓存文件
     ret = TEMP_FAILURE_RETRY(pwrite(b->fi.fd, bs.mutable_data(), bs.size(), b->offset));
     if(ret >= 0){
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
