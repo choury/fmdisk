@@ -153,6 +153,27 @@ int entry_t::set_storage_class(enum storage_class storage) {
     return failed ? -EIO : 0;
 }
 
+int entry_t::to_standard() {
+    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
+        return -ENODATA;
+    }
+    std::vector<std::future<int>> futures;
+    TrdPool pool(UPLOADTHREADS * 2);
+    int ret = to_standard(&pool, futures);
+    if(ret < 0) {
+        return ret;
+    }
+    pool.wait_all();
+    bool failed = false;
+    for(auto& f: futures) {
+        ret = f.get();
+        if(ret < 0) {
+            failed = true;
+        }
+    }
+    return failed ? -EIO : 0;
+}
+
 static void merge_storage_info(storage_class_info& dst, const storage_class_info& src) {
     for(size_t i = 0; i < sizeof(dst.size_store) / sizeof(dst.size_store[0]); ++i) {
         dst.size_store[i] += src.size_store[i];

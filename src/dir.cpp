@@ -836,6 +836,35 @@ int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vec
     return -EIO;
 }
 
+int dir_t::to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
+    auto_rlock(this);
+    if(flags & ENTRY_DELETED_F){
+        return -ENOENT;
+    }
+    if((flags & ENTRY_INITED_F) == 0){
+        __r.upgrade();
+        int ret = pull_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    if((flags & DIR_PULLED_F) == 0){
+        __r.upgrade();
+        int ret = pull_entrys_wlocked();
+        if(ret < 0) {
+            return ret;
+        }
+    }
+    int ret = 0;
+    for(auto i : entrys){
+        ret |= i.second->to_standard(pool, futures);
+    }
+    if(ret == 0) {
+        return 0;
+    }
+    return -EIO;
+}
+
 static int fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
     if(S_ISREG(meta.mode)) {
         return file_t::fetchmeta(parent, file, meta);

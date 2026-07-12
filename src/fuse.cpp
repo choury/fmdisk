@@ -428,6 +428,8 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
             storage = STORAGE_ARCHIVE;
         } else if(storage_str == "DR") {
             storage = STORAGE_DEEP_ARCHIVE;
+        } else if(storage_str == "TS") {
+            return entry->to_standard();
         } else {
             return -EINVAL;
         }

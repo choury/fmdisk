@@ -38,6 +38,7 @@ class file_t: public entry_t {
     virtual int drop_cache_wlocked(bool mem_only, time_t before) override;
     virtual int remove_wlocked(bool skip_entry) override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
+    virtual int to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) override;
 public:
     file_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~file_t();

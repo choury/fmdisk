@@ -249,7 +249,7 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
             trim(getkey());
             this->fk.path = record.path;
             this->fk.private_key = fm_get_private_key(record.private_key.c_str());
-        } else {
+        } else if((this->flags & BLOCK_DIRTY) == 0) {
             //数据库中blocks表保存的信息不完整，重新上传
             this->flags |= BLOCK_DIRTY;
             acquire_dirty_block_slot();
