@@ -698,7 +698,7 @@ std::vector<cache_file_info> scan_cache_directory(const string& checkpath) {
 }
 
 static std::string generateRandomSuffix(size_t length) {
-    static constexpr char charset[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    static constexpr char charset[] = "0123456789BCDFGHJKLMNPQRSTVWXYZbcdfghjklmnpqrstvwxyz";
     static thread_local std::mt19937 generator(std::random_device{}());
     std::uniform_int_distribution<size_t> dist(0, sizeof(charset) - 2);
     std::string result;

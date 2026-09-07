@@ -1,0 +1,81 @@
+# 27_push_retry_on_failure.fmtest
+# 验证: push 失败的脏块必须回到 dblocks 重试队列, 会话恢复后自动续传。
+#
+# 背景(生产事故): writeback 提交 push 任务时即把块摘出 dblocks(防重复提交),
+# 任务失败(EACCES/网络错)后无人回填 —— 失败块从此"占着槽位但对重试系统
+# 不可见", 会话恢复也不会再传, 脏块槽位单向流失直至写路径饿死。
+# 修复: 提交 lambda 检查 push 返回值, <0 且非 STALE 时重新 emplace 回
+# dblocks(STALE 块除外, push 对它恒 -EAGAIN, 回填会制造新循环)。
+#
+# 流程: 正常写入 -> 注入 EACCES(模拟会话失效) -> 等两轮(修复前: 块被摘出
+# 且不再重试; 修复后: 回填重试, 日志/调用计数持续增长) -> 解除注入(模拟
+# 重新登录) -> 块全部补传, 表清空, 远端数据完整。
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+# 11 个文件各写满 1 块(full_cached -> 走 push 分支), 11>=UPLOADTHREADS 使
+# writeback 的 staled 阈值为 5s
+CREATE path="/q00" mode=0644 handle=h00
+CREATE path="/q01" mode=0644 handle=h01
+CREATE path="/q02" mode=0644 handle=h02
+CREATE path="/q03" mode=0644 handle=h03
+CREATE path="/q04" mode=0644 handle=h04
+CREATE path="/q05" mode=0644 handle=h05
+CREATE path="/q06" mode=0644 handle=h06
+CREATE path="/q07" mode=0644 handle=h07
+CREATE path="/q08" mode=0644 handle=h08
+CREATE path="/q09" mode=0644 handle=h09
+CREATE path="/q10" mode=0644 handle=h10
+
+WRITE handle=h00 data="a" repeat=1048576
+WRITE handle=h01 data="a" repeat=1048576
+WRITE handle=h02 data="a" repeat=1048576
+WRITE handle=h03 data="a" repeat=1048576
+WRITE handle=h04 data="a" repeat=1048576
+WRITE handle=h05 data="a" repeat=1048576
+WRITE handle=h06 data="a" repeat=1048576
+WRITE handle=h07 data="a" repeat=1048576
+WRITE handle=h08 data="a" repeat=1048576
+WRITE handle=h09 data="a" repeat=1048576
+WRITE handle=h10 data="a" repeat=1048576
+
+RELEASE handle=h00
+RELEASE handle=h01
+RELEASE handle=h02
+RELEASE handle=h03
+RELEASE handle=h04
+RELEASE handle=h05
+RELEASE handle=h06
+RELEASE handle=h07
+RELEASE handle=h08
+RELEASE handle=h09
+RELEASE handle=h10
+
+# 立刻注入上传失败(EACCES), 抢在 writeback 第一次推送之前(markdirty 后
+# 块的 staled 阈值 5s, 写入完成是毫秒级)
+BACKEND_FAIL_UPLOAD state=true
+BACKEND_SLEEP ms=7000
+
+# 修复点断言一: 失败的脏块必须回填 dblocks(等待重试)
+# 修复前红灯: 块被提交摘除且失败后无人回填, dblocks_live = 0
+DBLOCKS_COUNT expect_min=1
+BLOCK_PUSH_CALLS expect_min=11
+
+# 再等一轮: 仍在重试(回填语义 = 失败后保持可见)
+BACKEND_SLEEP ms=7000
+DBLOCKS_COUNT expect_min=1
+
+# 模拟重新登录: 会话恢复
+BACKEND_FAIL_UPLOAD state=false
+# 各块退避起点分布在注入窗口内; 且块数跌破 UPLOADTHREADS 后 writeback 的
+# staled 阈值从 5s 跳回 30s(尾部块要走满 30s 退避), 35s 覆盖最坏情况
+BACKEND_SLEEP ms=35000
+
+# 修复点断言二: 恢复后自动补传完成, 表清空, 远端数据完整
+DBLOCKS_COUNT expect=0
+BACKEND_PATH_EXISTS path="/cTAw.def" expected=true
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

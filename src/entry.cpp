@@ -29,6 +29,7 @@ int cache_prepare() {
         return 0;
     }
     upool = new TrdPool(UPLOADTHREADS + 1); //for writeback_thread;
+    writeback_done = false; // 测试会重新挂载
     upool->submit_fire_and_forget([&]() { writeback_thread(&writeback_done); });
     start_delay_thread();
     if((opt.flags & FM_RENAME_NOTSUPPRTED) && (opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {

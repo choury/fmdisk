@@ -1,0 +1,132 @@
+# 26_stale_partial_block_loop.fmtest
+# 验证: STALE + !full_cached 的块不应滞留 writeback 队列被无限捞起。
+#
+# 机制: markstale() 不从 dblocks 摘除块; pull 分支(writeback 对 !full_cached
+# 块提交 dpool pull)提交后不摘除; block_t::pull 对 STALE 块入口早退(连后端
+# 都不打)。三者叠加 = writeback 每轮捞起 STALE 部分块 -> 提交无效 pull ->
+# 块留在表里 -> 下一轮再捞起, 无限空转, 且按 staled 降序优先吃 download 配额。
+# (push 分支不受影响: 提交即摘除, 一次即终)
+#
+# 构造(复刻事故现场"上次会话遗留部分脏块"):
+#   阶段1: 正常写入 11 个 1M 文件, 等 writeback 上传完成(blocks 表 dirty=0)
+#   阶段2: 卸载后用 SQL 把块改成 ranges=[[0,1)] + dirty=1, files 表 dirty=1
+#   阶段3: 重挂载, recover_dirty_data 加载出 11 个"部分+脏"块;
+#          先阻塞下载线程池(块 ctor atime=0, staled 巨大, 不阻塞会被
+#          writeback 抢先 pull 补全), OPEN 持有 handle(保住块对象), UNLINK
+#          盖 STALE, 再放行 —— 无限循环条件齐备。
+# 修复(pull 入口把 STALE 部分块标记为全缓存, writeback 下一轮走 push
+# 分支提交即摘除)后本用例应通过。
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+CREATE path="/p00" mode=0644 handle=h00
+CREATE path="/p01" mode=0644 handle=h01
+CREATE path="/p02" mode=0644 handle=h02
+CREATE path="/p03" mode=0644 handle=h03
+CREATE path="/p04" mode=0644 handle=h04
+CREATE path="/p05" mode=0644 handle=h05
+CREATE path="/p06" mode=0644 handle=h06
+CREATE path="/p07" mode=0644 handle=h07
+CREATE path="/p08" mode=0644 handle=h08
+CREATE path="/p09" mode=0644 handle=h09
+CREATE path="/p10" mode=0644 handle=h10
+
+WRITE handle=h00 data="a" repeat=1048576
+WRITE handle=h01 data="a" repeat=1048576
+WRITE handle=h02 data="a" repeat=1048576
+WRITE handle=h03 data="a" repeat=1048576
+WRITE handle=h04 data="a" repeat=1048576
+WRITE handle=h05 data="a" repeat=1048576
+WRITE handle=h06 data="a" repeat=1048576
+WRITE handle=h07 data="a" repeat=1048576
+WRITE handle=h08 data="a" repeat=1048576
+WRITE handle=h09 data="a" repeat=1048576
+WRITE handle=h10 data="a" repeat=1048576
+
+RELEASE handle=h00
+RELEASE handle=h01
+RELEASE handle=h02
+RELEASE handle=h03
+RELEASE handle=h04
+RELEASE handle=h05
+RELEASE handle=h06
+RELEASE handle=h07
+RELEASE handle=h08
+RELEASE handle=h09
+RELEASE handle=h10
+
+BACKEND_SLEEP ms=7000
+UNMOUNT
+
+# 造"上次会话遗留的部分脏块": ranges 改为 [[0,1)] (Range{0,1} 小端 blob)
+BACKEND_EXEC_SQL sql="update files set dirty=1"
+BACKEND_EXEC_SQL sql="update blocks set dirty=1, ranges=X'0000000001000000'"
+
+# 重挂载: recover_dirty_data 加载部分脏块; 只阻塞 dpool —— 防止 pull 任务
+# 执行抢先补全块(任务仍会入队)。不能阻塞 upool: writeback_thread 本身
+# 跑在 upool 上(entry.cpp), 阻塞它等于把观测对象挂起。
+# (POOLBLOCK 必须在 MOUNT 之后: 池对象由每次 MOUNT 重建)
+MOUNT no_cache=false
+BACKEND_POOLBLOCK pool=download block=true
+# 观测: recover_dirty_data 加载出的"部分+脏"块(dpool 已阻塞, 不会被补全)
+DBLOCKS_COUNT
+
+OPEN path="/p00" flags=RDWR handle=h00
+OPEN path="/p01" flags=RDWR handle=h01
+OPEN path="/p02" flags=RDWR handle=h02
+OPEN path="/p03" flags=RDWR handle=h03
+OPEN path="/p04" flags=RDWR handle=h04
+OPEN path="/p05" flags=RDWR handle=h05
+OPEN path="/p06" flags=RDWR handle=h06
+OPEN path="/p07" flags=RDWR handle=h07
+OPEN path="/p08" flags=RDWR handle=h08
+OPEN path="/p09" flags=RDWR handle=h09
+OPEN path="/p10" flags=RDWR handle=h10
+
+UNLINK path="/p00"
+UNLINK path="/p01"
+UNLINK path="/p02"
+UNLINK path="/p03"
+UNLINK path="/p04"
+UNLINK path="/p05"
+UNLINK path="/p06"
+UNLINK path="/p07"
+UNLINK path="/p08"
+UNLINK path="/p09"
+UNLINK path="/p10"
+
+BACKEND_POOLBLOCK pool=download block=false
+
+# 修复验证(pull 入口对 STALE+DIRTY 块标记全缓存, 惰性出表):
+# UNLINK 后 STALE+partial+DIRTY 块滞留 dblocks(尚未被捞起, 此处仅观测);
+# 随后 writeback 的 pull 将其标记为全缓存(不打后端), 下一轮 push 分支
+# 提交即摘除, 表清空。修复前: pull 对 STALE 早退无效果, 块永远滞留,
+# 下面的 expect=0 红灯。
+DBLOCKS_COUNT
+# 覆盖 writeback 的双档 staled 阈值(快照跌破 UPLOADTHREADS 后从 5s 跳回
+# 30s)与队列节奏, 保证全部 STALE 块完成 pull 标记 -> push 分支摘除两跳
+BACKEND_SLEEP ms=60000
+
+# 修复点断言: STALE 块应已被 pull 标记 + push 分支摘除出表
+DBLOCKS_COUNT expect=0
+BLOCK_PULL_CALLS expect_min=1
+BACKEND_DOWNLOAD_CALLS expect=0
+
+# RELEASE 让 opened 归零, clean 得以把 file 从 opened_inodes 摘除,
+# UNMOUNT 时对象全部析构(否则 LeakSanitizer 报驻留)
+RELEASE handle=h00
+RELEASE handle=h01
+RELEASE handle=h02
+RELEASE handle=h03
+RELEASE handle=h04
+RELEASE handle=h05
+RELEASE handle=h06
+RELEASE handle=h07
+RELEASE handle=h08
+RELEASE handle=h09
+RELEASE handle=h10
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

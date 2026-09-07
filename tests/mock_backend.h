@@ -2,6 +2,10 @@
 
 #include <string>
 
+void backend_note_download();
+long long backend_download_calls();
+void backend_set_fail_upload(bool fail);
+
 void backend_reset_state();
 void backend_seed_file(const std::string& path, const std::string& content);
 void backend_set_mount_option(const struct fmoption* opt);

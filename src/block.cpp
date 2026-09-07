@@ -37,6 +37,8 @@ static std::string getRemotePathFromFd(int fd) {
 
 std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
+std::atomic<long long> g_block_pull_calls{0}; // 测试观测: pull 入口调用次数(含 STALE 早退)
+std::atomic<long long> g_block_push_calls{0}; // 测试观测: push 入口调用次数(含 STALE/非脏早退)
 static sem_t dirty_blocks_sem;
 static std::atomic<long long> dirty_blocks_limit{-1};
 static pthread_once_t dirty_blocks_once = PTHREAD_ONCE_INIT;
@@ -136,7 +138,6 @@ void writeback_thread(bool* done){
             continue;
         }
 
-        std::vector<std::weak_ptr<block_t>> pushed_blocks;
         for(const auto& item : candidates){
             if(upload_avail == 0 && download_avail == 0){
                 break;
@@ -153,23 +154,26 @@ void writeback_thread(bool* done){
                 if(upload_avail == 0){
                     continue;
                 }
-                upool->submit_fire_and_forget([block = std::weak_ptr<block_t>(item.block), fileat = item.fileat]{
-                    block_t::push(block, fileat);
+                std::weak_ptr<block_t> wb(item.block);
+                pthread_mutex_lock(&dblocks_lock);
+                dblocks.erase(wb);
+                pthread_mutex_unlock(&dblocks_lock);
+                upool->submit_fire_and_forget([block = wb, fileat = item.fileat]{
+                    int ret = block_t::push(block, fileat);
+                    if(ret >= 0){
+                        return;
+                    }
+                    // push 失败回填: 提交前块已摘出 dblocks, 不放回去就会导致没有重试路径
+                    // 刷新 atime: 防止频繁push
+                    if(auto b = block.lock(); b && (b->flags & BLOCK_STALE) == 0){
+                        b->atime = time(nullptr);
+                        pthread_mutex_lock(&dblocks_lock);
+                        dblocks.emplace(block, fileat);
+                        pthread_mutex_unlock(&dblocks_lock);
+                    }
                 });
-                pushed_blocks.push_back(item.block);
                 upload_avail--;
             }
-        }
-
-        if(!pushed_blocks.empty()){
-            pthread_mutex_lock(&dblocks_lock);
-            for(const auto& block : pushed_blocks){
-                auto it = dblocks.find(block);
-                if(it != dblocks.end()){
-                    dblocks.erase(it);
-                }
-            }
-            pthread_mutex_unlock(&dblocks_lock);
         }
     }
 }
@@ -284,12 +288,19 @@ filekey block_t::getkey() const {
 }
 
 int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
+    g_block_pull_calls.fetch_add(1, std::memory_order_relaxed);
     auto b = wb.lock();
     if(b == nullptr) {
         return -ENOENT;
     }
     b->wlock();
-    if((b->flags & BLOCK_STALE) || b->full_cached()){
+    if(b->flags & BLOCK_STALE){
+        // STALE 块远端可能已经删掉了: 直接标记为全缓存, 防止无限循环
+        b->ranges = std::vector<Range>{{0, (uint32_t)b->size}};
+        b->unwlock();
+        return 0;
+    }
+    if(b->full_cached()){
         b->unwlock();
         return 0;
     }
@@ -373,6 +384,7 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
 }
 
 int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
+    g_block_push_calls.fetch_add(1, std::memory_order_relaxed);
     auto b = wb.lock();
     if(b == nullptr) {
         return -ENOENT;

@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 #include <filesystem>
 #include <map>
 #include <unordered_map>
@@ -243,7 +244,17 @@ int fm_mkdir(const filekey& fileat, struct filekey& file) {
     return 0;
 }
 
+static std::atomic<bool> g_fail_upload{false};
+
+void backend_set_fail_upload(bool fail) {
+    g_fail_upload.store(fail);
+}
+
 int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool override) {
+    if(g_fail_upload.load()) {
+        errno = EACCES; // 模拟会话失效/风控: 上传被拒
+        return -errno;
+    }
     std::lock_guard<std::mutex> guard(remote_lock);
     uint64_t parent_id = get_entry_id(fileat);
     if(!id_map.contains(parent_id)) {
@@ -281,6 +292,7 @@ int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len
 }
 
 int fm_download(const filekey& file, off_t off, size_t size, buffstruct& bs) {
+    backend_note_download();
     std::lock_guard<std::mutex> guard(remote_lock);
     uint64_t entry_id = get_entry_id(file);
     if(!id_map.contains(entry_id)) {
@@ -454,9 +466,23 @@ const char* fm_private_key_tostring(std::shared_ptr<void> key) {
     return buf;
 }
 
+static std::atomic<long long> g_backend_download_calls{0};
+
+void backend_note_download() {
+    g_backend_download_calls.fetch_add(1, std::memory_order_relaxed);
+}
+
+long long backend_download_calls() {
+    return g_backend_download_calls.load();
+}
+
 void backend_reset_state() {
-    std::lock_guard<std::mutex> guard(remote_lock);
-    reset_remote_unlocked();
+    {
+        std::lock_guard<std::mutex> guard(remote_lock);
+        reset_remote_unlocked();
+    }
+    g_backend_download_calls.store(0);
+    g_fail_upload.store(false);
 }
 
 void backend_seed_file(const std::string& path, const std::string& content) {

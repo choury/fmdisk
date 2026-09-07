@@ -3,9 +3,16 @@
 #include "mock_backend.h"
 #include "../src/fuse.h"
 #include "../src/file.h"
+#include "../src/block.h"
 #include "../src/trdpool.h"
 #include "utils.h"
 #include "log.h"
+
+// 内部状态观测(定义在 fmdisk/src/block.cpp)
+extern std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks;
+extern pthread_mutex_t dblocks_lock;
+extern std::atomic<long long> g_block_pull_calls;
+extern std::atomic<long long> g_block_push_calls;
 
 #include <algorithm>
 #include <cerrno>
@@ -466,11 +473,74 @@ void exec_backend_sql(ExecutionContext& ctx, const Command& cmd) {
     }
 }
 
+static long long count_live_dblocks() {
+    pthread_mutex_lock(&dblocks_lock);
+    long long count = 0;
+    for(auto it = dblocks.begin(); it != dblocks.end(); ++it) {
+        if(it->first.lock() != nullptr) {
+            count++;
+        }
+    }
+    pthread_mutex_unlock(&dblocks_lock);
+    return count;
+}
+
+// 无参数 = 仅观测打印不断言; expect(相等) / expect_min(下限) / expect_max(上限), 三选一
+static void check_count_expect(ExecutionContext& ctx, const Command& cmd, const std::string& what, long long value) {
+    std::cout << "[fmtest] " << what << " = " << value << std::endl;
+    if(auto expect = optional_arg(cmd, "expect"); expect.has_value()) {
+        long long want = parse_long(expect.value(), 0);
+        if(value != want) {
+            std::ostringstream oss;
+            oss << what << " expected " << want << " got " << value;
+            fail(ctx, cmd, oss.str());
+        }
+        return;
+    }
+    if(auto expect_min = optional_arg(cmd, "expect_min"); expect_min.has_value()) {
+        long long want = parse_long(expect_min.value(), 0);
+        if(value < want) {
+            std::ostringstream oss;
+            oss << what << " expected at least " << want << " got " << value;
+            fail(ctx, cmd, oss.str());
+        }
+        return;
+    }
+    if(auto expect_max = optional_arg(cmd, "expect_max"); expect_max.has_value()) {
+        long long want = parse_long(expect_max.value(), 0);
+        if(value > want) {
+            std::ostringstream oss;
+            oss << what << " expected at most " << want << " got " << value;
+            fail(ctx, cmd, oss.str());
+        }
+        return;
+    }
+    // 无参数: 仅观测
+}
+
 void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name == "BACKEND_RESET") {
         backend_reset_state();
         return;
     }
+    if(cmd.name == "BACKEND_DOWNLOAD_CALLS") {
+        check_count_expect(ctx, cmd, "backend_download_calls", backend_download_calls());
+        return;
+    }
+    if(cmd.name == "DBLOCKS_COUNT") {
+        check_count_expect(ctx, cmd, "dblocks_live", count_live_dblocks());
+        return;
+    }
+
+    if(cmd.name == "BLOCK_PULL_CALLS") {
+        check_count_expect(ctx, cmd, "block_pull_calls", g_block_pull_calls.load());
+        return;
+    }
+    if(cmd.name == "BLOCK_PUSH_CALLS") {
+        check_count_expect(ctx, cmd, "block_push_calls", g_block_push_calls.load());
+        return;
+    }
+
     if(cmd.name == "BACKEND_CLEAR_CACHE") {
         backend_clear_cache_dir();
         cache_dir.clear();
@@ -646,6 +716,10 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
                 fail(ctx, cmd, "block hex data mismatch at provided offset");
             }
         }
+        return;
+    }
+    if(cmd.name == "BACKEND_FAIL_UPLOAD") {
+        backend_set_fail_upload(parse_bool(require_arg(cmd, "state")));
         return;
     }
     if(cmd.name == "BACKEND_SLEEP") {
@@ -1247,7 +1321,10 @@ void exec_setxattr(ExecutionContext& ctx, const Command& cmd) {
 }
 
 void exec_command(ExecutionContext& ctx, const Command& cmd) {
-    if(cmd.name.rfind("BACKEND_", 0) == 0) {
+    if(cmd.name.rfind("BACKEND_", 0) == 0
+       || cmd.name == "DBLOCKS_COUNT"
+       || cmd.name == "BLOCK_PULL_CALLS"
+       || cmd.name == "BLOCK_PUSH_CALLS") {
         run_backend_command(ctx, cmd);
         return;
     }
