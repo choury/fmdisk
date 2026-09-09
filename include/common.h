@@ -29,6 +29,7 @@ struct fmoption{
     long long cache_size;  // 缓存大小限制（字节），<0不限制，=0立即回收，>0按大小限制
     int  entry_cache_second; // 目录内存缓存超时时间（秒），<= 0 禁用自动回收
     const char* log_path;  // 日志文件路径，NULL使用stderr
+    void (*init)();        // 挂载就绪后调用(fuse init, re-exec 之后), 驱动起后台线程用
     void (*clean)();
 };
 

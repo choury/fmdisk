@@ -57,6 +57,9 @@ void *fm_fuse_init(struct fuse_conn_info *conn, struct fuse_config *cfg){
         recover_dirty_data();
     }
     start_gc();
+    if(opt.init) {
+        opt.init();
+    }
     return cache_root().get();
 }
 
