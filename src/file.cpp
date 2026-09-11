@@ -40,7 +40,7 @@ static bool cleanup_cache_by_size() {
 
 
     // 扫描缓存目录获取所有文件信息
-    std::vector<cache_file_info> cache_files = scan_cache_directory();
+    std::vector<cache_file_info> cache_files = scan_cache_files();
 
     // 计算总大小（磁盘占用）
     off_t total_size = 0;

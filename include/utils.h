@@ -103,8 +103,8 @@ struct fileInfo {
 
 std::string get_cache_path(const std::string& remote_path);
 std::string get_remote_path(const std::string& cache_path);
-// 扫描缓存目录，获取所有缓存文件的信息
-std::vector<cache_file_info> scan_cache_directory(const std::string& checkpath = "/");
+// 扫描缓存目录，获取所有缓存文件的信息; is_file 为false代表path是路径，递归扫描
+std::vector<cache_file_info> scan_cache_files(const std::string& checkpath = "/", bool is_file = false);
 filekey makeChunkBlockKey(size_t block_no);
 size_t Base64Encode(const char *src, size_t len, char *dst);
 size_t Base64Decode(const char *src, size_t len, char* dst);

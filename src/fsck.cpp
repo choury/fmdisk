@@ -628,7 +628,12 @@ static void checkcache(const filekey& file, filemeta& meta, std::vector<filekey>
 
     // 2. 验证数据库blocks表中该文件相关记录的private_key
     std::vector<block_record> db_blocks;
-    if (get_blocks_for_inode(cache_file->st.stx_ino, db_blocks) <= 0) {
+    int dbret = get_blocks_for_inode(cache_file->st.stx_ino, db_blocks);
+    if (dbret < 0) {
+        // -n 未开 DB(或 SQL 失败): 无法校验 blocks 表, 跳过而非当成"无记录"误报
+        return;
+    }
+    if (dbret == 0) {
         cerr << lock << "blocks for: [" << remote_path << "] not found"<< endl << unlock;
         if(autofix) {
             fixCacheInconsistency(cache_file);
@@ -709,9 +714,9 @@ void checkOrphanedFiles(const char* checkpath) {
 }
 
 // 扫描本地缓存目录，收集指定路径下的文件信息
-void scanLocalCacheFiles(const char* checkpath) {
+void scanLocalCacheFiles(const char* checkpath, bool is_file) {
     // 获取指定路径下的缓存文件
-    local_cache_files = scan_cache_directory(checkpath);
+    local_cache_files = scan_cache_files(checkpath, is_file);
 
     // 构建映射关系
     std::unique_lock<std::shared_mutex> index_lock(cache_index_lock);
@@ -832,7 +837,7 @@ int main(int argc, char **argv) {
     }
 
     // 扫描本地缓存文件
-    scanLocalCacheFiles(checkpath);
+    scanLocalCacheFiles(checkpath, isfile);
 
     pool = new TrdPool(concurrent);
     filekey* file = nullptr;

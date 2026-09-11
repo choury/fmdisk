@@ -662,10 +662,19 @@ cache_file_info::cache_file_info(const string& p, struct statx& st)
     : path(p), remote_path(get_remote_path(p)), st(st), checked(false) {
 }
 
-// 扫描缓存目录，获取所有缓存文件的信息
-std::vector<cache_file_info> scan_cache_directory(const string& checkpath) {
+// 扫描缓存目录，获取所有缓存文件的信息。is_file 时 checkpath 指向单个文件
+std::vector<cache_file_info> scan_cache_files(const string& checkpath, bool is_file) {
     std::vector<cache_file_info> cache_files;
     string cache_dir = pathjoin(opt.cache_dir, "cache", checkpath);
+
+    if (is_file) {
+        struct statx st;
+        if (statx(AT_FDCWD, cache_dir.c_str(), AT_SYMLINK_NOFOLLOW | AT_STATX_SYNC_AS_STAT,
+                  STATX_BASIC_STATS | STATX_BTIME, &st) == 0) {
+            cache_files.emplace_back(cache_dir, st);
+        }
+        return cache_files;
+    }
 
     // 递归扫描缓存目录
     std::function<void(const string&)> scan_dir = [&](const string& dir) {
