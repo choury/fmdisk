@@ -59,6 +59,10 @@ public:
     int read(void* buff, off_t offset, size_t size);
     int truncate(off_t offset);
     int write(const void* buff, off_t offset, size_t size);
+    //缓存策略: 对 [offset, offset+len) 覆盖的块做异步预取
+    int prefetch_range(off_t offset, size_t len);
+    //缓存策略: 异步加速写回 [offset, offset+len) 覆盖的脏块(不动 meta)
+    int writeback_range(off_t offset, size_t len);
     //It will release the wlock
     std::vector<filekey> getfblocks();
 

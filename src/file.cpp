@@ -522,6 +522,43 @@ int file_t::fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
     }
 }
 
+int file_t::prefetch_range(off_t offset, size_t len) {
+    atime = time(nullptr);
+    auto_rlock(this);
+    if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
+        return 0;
+    }
+    size_t last = GetBlkNo(length, blksize);
+    size_t startc = GetBlkNo(offset, blksize);
+    //endc 与 read 同式(不含 -1, 钳到 length), 否则末块会漏/越界
+    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length), blksize);
+    for(size_t i = startc; i <= endc && i <= last; i++){
+        auto it = blocks.find(i);
+        if(it != blocks.end()){
+            it->second->prefetch(0, blksize, false);
+        }
+    }
+    return 0;
+}
+
+int file_t::writeback_range(off_t offset, size_t len) {
+    atime = time(nullptr);
+    auto_rlock(this);
+    if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
+        return 0;
+    }
+    size_t last = GetBlkNo(length, blksize);
+    size_t startc = GetBlkNo(offset, blksize);
+    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length), blksize);
+    for(size_t i = startc; i <= endc && i <= last; i++){
+        auto it = blocks.find(i);
+        if(it != blocks.end()){
+            it->second->expire();
+        }
+    }
+    return 0;
+}
+
 int file_t::read(void* buff, off_t offset, size_t size) {
     atime = time(nullptr);
     auto_rlock(this);
@@ -543,15 +580,18 @@ int file_t::read(void* buff, off_t offset, size_t size) {
     size_t startc = GetBlkNo(offset, blksize);
     size_t endc = GetBlkNo(offset + size, blksize);
     if(!opt.no_cache) {
-        int left_size = 10 * 1024 * 1024; //10M
-        int left_block = 20;
-        for(size_t i = startc; i<= GetBlkNo(length, blksize); i++){
-            if(blocks.at(i)->prefetch(0, blksize, false) > 0){
-                left_size -= blksize;
-            }
-            left_block --;
-            if(left_size <= 0 || left_block <= 0) {
-                break;
+        // 10M/20块的前向预读, 嵌入模式下由 fmbed_advise 显式驱动
+        if(!opt.fmbed_mode) {
+            int left_size = 10 * 1024 * 1024; //10M
+            int left_block = 20;
+            for(size_t i = startc; i<= GetBlkNo(length, blksize); i++){
+                if(blocks.at(i)->prefetch(0, blksize, false) > 0){
+                    left_size -= blksize;
+                }
+                left_block --;
+                if(left_size <= 0 || left_block <= 0) {
+                    break;
+                }
             }
         }
         for(size_t i = startc; i<= endc; i++ ){
@@ -635,7 +675,8 @@ int file_t::truncate_wlocked(off_t offset){
             if((flags & ENTRY_DELETED_F) == 0) blocks.at(0)->markdirty(getblockdir(), 0, blksize);
         } else if(offset == 0) {
             inline_data.resize(1);
-        } else if(offset > (off_t)inline_data.size()) {
+        } else {
+            //增长补零; 收缩时同步裁剪, 维持 inline_data.size()==length 的不变量
             inline_data.resize(offset);
         }
     }
@@ -645,6 +686,9 @@ int file_t::truncate_wlocked(off_t offset){
 }
 
 int file_t::truncate(off_t offset){
+    if(opt.no_cache) {
+        return -EROFS; //no_cache 只读: fuse/fmbed 两个入口统一在此拦截, 此时 fi.fd 不会打开
+    }
     atime = time(nullptr);
     auto_wlock(this);
     //assert(opened);
@@ -671,6 +715,9 @@ int file_t::truncate(off_t offset){
 }
 
 int file_t::write(const void* buff, off_t offset, size_t size) {
+    if(opt.no_cache) {
+        return -EROFS; //同 truncate: no_cache 只读, 拦截下沉到本层
+    }
     atime = time(nullptr);
     auto_wlock(this);
     assert(opened);

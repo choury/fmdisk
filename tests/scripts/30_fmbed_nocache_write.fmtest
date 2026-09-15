@@ -1,0 +1,27 @@
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+# 先用缓存挂载准备一个已存在的远端文件
+MOUNT
+MKDIR path="/ro" mode=0755
+CREATE path="/ro/f.txt" mode=0644 handle=fw
+WRITE handle=fw data="hello"
+RELEASE handle=fw
+UNMOUNT
+# 常规 fuse 路径: 写/截断是 EROFS
+MOUNT no_cache=true
+OPEN path="/ro/f.txt" handle=writer
+WRITE handle=writer data="X" expect_error=EROFS
+TRUNCATE path="/ro/f.txt" length=1 expect_error=EROFS
+RELEASE handle=writer
+UNMOUNT
+# fmbed 路径: 已存在文件 WRONLY 可打开, 数据面写/截断 EROFS, 读不受影响
+MOUNT no_cache=true use_fmbed=true
+FMBED_OPEN path="/ro/f.txt" flags=WRONLY handle=ff
+FMBED_WRITE handle=ff data="X" expect_error=EROFS
+FMBED_TRUNCATE handle=ff length=2 expect_error=EROFS
+FMBED_CLOSE handle=ff
+FMBED_OPEN path="/ro/f.txt" flags=RDONLY handle=fr
+FMBED_READ handle=fr size=8 expect_data="hello"
+FMBED_CLOSE handle=fr
+UNMOUNT
+BACKEND_CLEAR_CACHE

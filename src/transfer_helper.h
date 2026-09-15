@@ -18,9 +18,11 @@ int upload_block_common(const filekey& block_parent,
                         size_t len,
                         bool encode);
 
+//后端不支持 rename 时块须集中存放: 确保 /.objs 存在并把 block_parent 指过去
+int ensure_block_parent(filekey& block_parent);
+
 // Upload whole file from an open fd into chunked layout; fills meta_out and fblocks_out.
-int upload_file_from_fd(const filekey& file_dir,
-                        const filekey& block_parent,
+int upload_file_from_fd(const filekey& block_parent,
                         int fd,
                         const struct stat& st,
                         bool encode,

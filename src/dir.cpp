@@ -6,6 +6,7 @@
 #include "sqlite.h"
 #include "utils.h"
 #include "trdpool.h"
+#include "transfer_helper.h"
 #include "defer.h"
 #include "log.h"
 
@@ -320,6 +321,11 @@ std::shared_ptr<dir_t> dir_t::mkdir(const string& name, mode_t mode) {
         return nullptr;
     }
     assert(flags & DIR_PULLED_F);
+    // 先查本地 entrys: Drive 同父目录下名字不唯一, 越过此检查直接 fm_mkdir 会建出重复目录
+    if(entrys.find(name) != entrys.end()){
+        errno = EEXIST;
+        return nullptr;
+    }
     if(children() >= MAXFILE){
         errno = ENOSPC;
         return nullptr;
@@ -347,6 +353,11 @@ std::shared_ptr<file_t> dir_t::create(const string& name, mode_t mode){
         return nullptr;
     }
     assert(flags & DIR_PULLED_F);
+    // 同 mkdir: 先查本地, 防并发 create 竞态下的重复远端 .def 目录
+    if(entrys.find(name) != entrys.end()){
+        errno = EEXIST;
+        return nullptr;
+    }
     if(children() >= MAXFILE){
         errno = ENOSPC;
         return nullptr;
@@ -365,6 +376,83 @@ std::shared_ptr<file_t> dir_t::create(const string& name, mode_t mode){
     meta.blksize = opt.block_len;
     meta.mode = S_IFREG | (mode & ~S_IFMT);
     return std::dynamic_pointer_cast<file_t>(insert_child_wlocked(name, std::make_shared<file_t>(shared_dir_from_this(), meta)));
+}
+
+//fd 内容直接流式上传远端, 供 fmbed_upload 使用。
+std::shared_ptr<file_t> dir_t::upload(const string& name, int fd) {
+    struct stat st;
+    if(fstat(fd, &st) != 0){
+        return nullptr;
+    }
+    atime = time(nullptr);
+    auto_wlock(this);
+    if(parent.lock() == nullptr && (opt.flags & FM_RENAME_NOTSUPPRTED) && name == ".objs"){
+        errno = EINVAL;
+        return nullptr;
+    }
+    assert(flags & DIR_PULLED_F);
+    if(entrys.find(name) != entrys.end()){
+        errno = EEXIST;
+        return nullptr;
+    }
+    if(children() >= MAXFILE){
+        errno = ENOSPC;
+        return nullptr;
+    }
+    struct filemeta meta = initfilemeta(filekey{encodepath(name, file_encode_suffix), 0});
+    if((opt.flags & FM_DONOT_REQUIRE_MKDIR) == 0) {
+        if(HANDLE_EAGAIN(fm_mkdir(getkey(), meta.key))){
+            return nullptr;
+        }
+    } else {
+        fm_getattrat(getkey(), meta.key); // 回填 private_key
+    }
+    filekey file_dir = meta.key; // private_key 已由 fm_mkdir/fm_getattrat 回填
+    filekey block_parent = file_dir;
+    struct filemeta upmeta;
+    std::vector<filekey> fblocks;
+    //失败时 best-effort 清理远端残留
+    auto cleanup = [&]() {
+        for(auto& blk : fblocks){
+            if(blk.path.empty() || blk.path == "x"){
+                continue;
+            }
+            filekey del = blk;
+            del.path = pathjoin(block_parent.path, blk.path);
+            HANDLE_EAGAIN(fm_delete(del));
+        }
+        filekey metakey{METANAME, nullptr};
+        if(HANDLE_EAGAIN(fm_getattrat(file_dir, metakey)) == 0){
+            HANDLE_EAGAIN(fm_delete(metakey));
+        }
+        HANDLE_EAGAIN(fm_delete(file_dir));
+    };
+    int ret = ensure_block_parent(block_parent);
+    if(ret == 0){
+        ret = upload_file_from_fd(block_parent, fd, st, true, upmeta, fblocks);
+        if(ret == 0){
+            ret = HANDLE_EAGAIN(upload_meta(file_dir, upmeta, fblocks));
+        }
+    }
+    if(ret){
+        if(ret < 0){
+            errno = -ret;
+        }
+        int saved_errno = errno; // cleanup 内的失败不能覆盖原始错误
+        cleanup();
+        errno = saved_errno;
+        return nullptr;
+    }
+    flags |= DIR_DIRTY_F;
+    mtime = ctime = time(nullptr);
+    filemeta lazymeta = initfilemeta(filekey{encodepath(name, file_encode_suffix), file_dir.private_key});
+    lazymeta.flags = ENTRY_CHUNCED_F | META_KEY_ONLY_F | FILE_ENCODE_F;
+    lazymeta.mode = S_IFREG | (st.st_mode & 0777);
+    lazymeta.blksize = upmeta.blksize;
+    lazymeta.ctime = lazymeta.mtime = upmeta.mtime;
+    entrys[name] = std::make_shared<file_t>(shared_dir_from_this(), lazymeta);
+    save_entry_to_db(getkey().path, lazymeta);
+    return std::dynamic_pointer_cast<file_t>(entrys[name]);
 }
 
 std::shared_ptr<symlink_t> dir_t::symlink(const string& name, const string& target) {

@@ -228,7 +228,12 @@ int fm_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi){
     fi->fh = (uint64_t)(new std::shared_ptr<entry_t>(entry));
     fi->direct_io = 1;
     fs = nullptr;
-    return entry->open();
+    int ret = entry->open();
+    if(ret != 0){
+        delete (std::shared_ptr<entry_t>*)fi->fh;
+        fi->fh = 0;
+    }
+    return ret;
 }
 
 int fm_fuse_open(const char *path, struct fuse_file_info *fi){
@@ -247,13 +252,15 @@ int fm_fuse_open(const char *path, struct fuse_file_info *fi){
 #if FUSE_VERSION > 314
     fi->parallel_direct_writes = 1;
 #endif
-    return entry->open();
+    int ret = entry->open();
+    if(ret != 0){
+        delete (std::shared_ptr<entry_t>*)fi->fh;
+        fi->fh = 0;
+    }
+    return ret;
 }
 
 int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
-    if(opt.no_cache) {
-        return -EROFS;
-    }
     std::shared_ptr<file_t> entry;
     if(fi){
         auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
@@ -262,7 +269,7 @@ int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
         entry = std::dynamic_pointer_cast<file_t>(find_entry(path));
     }
     if(entry == nullptr){
-        return -ENOENT;
+        return fi == nullptr ? -ENOENT : -EISDIR; // 路径不存在 vs 句柄是目录
     }
     fs = nullptr;
     return entry->truncate(offset);
@@ -271,15 +278,18 @@ int fm_fuse_truncate(const char* path, off_t offset, struct fuse_file_info *fi){
 int fm_fuse_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
     auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
+    if(entry == nullptr){
+        return -EISDIR;
+    }
     return entry->read(buf, offset, size);
 }
 
 int fm_fuse_write(const char *, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi){
-    if(opt.no_cache) {
-        return -EROFS;
-    }
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
     auto entry = std::dynamic_pointer_cast<file_t>(*entry_ptr);
+    if(entry == nullptr){
+        return -EISDIR;
+    }
     fs = nullptr;
     return entry->write(buf, offset, size);
 }

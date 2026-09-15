@@ -39,8 +39,28 @@ int upload_block_common(const filekey& block_parent,
     return 0;
 }
 
-int upload_file_from_fd(const filekey& file_dir,
-                        const filekey& block_parent,
+int ensure_block_parent(filekey& block_parent) {
+    if(!(opt.flags & FM_RENAME_NOTSUPPRTED)) {
+        return 0;
+    }
+    filekey root{"/", nullptr};
+    filekey objs{".objs", nullptr};
+    int ret = HANDLE_EAGAIN(fm_getattrat(root, objs));
+    if(ret == 0) {
+        block_parent = objs;
+        return 0;
+    }
+    if(errno != ENOENT) {
+        return ret;
+    }
+    ret = HANDLE_EAGAIN(fm_mkdir(root, objs));
+    if(ret && errno != EEXIST) {
+        return ret;
+    }
+    return HANDLE_EAGAIN(fm_getattrat(root, objs));
+}
+
+int upload_file_from_fd(const filekey& block_parent,
                         int fd,
                         const struct stat& st,
                         bool encode,

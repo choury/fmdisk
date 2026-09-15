@@ -35,6 +35,7 @@ public:
     void markdirty(filekey fileat, uint32_t start, uint32_t end);
     void markstale();
     bool sync(filekey fileat, bool wait);
+    void expire();
     bool full_cached();
     [[nodiscard]] bool dummy();
     [[nodiscard]] size_t release();

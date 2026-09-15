@@ -1,0 +1,49 @@
+# fmbed_upload 免缓存直传: 数据分块直传远端, 同会话经懒拉取立即可见
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT use_fmbed=true
+FMBED_MKDIR path="/up" mode=0755
+# 小文件(inline): 上传后同会话 stat/listdir/read 立即可见 —— 本接口的核心语义
+FMBED_UPLOAD path="/up/small.txt" data="hello inline"
+FMBED_STAT path="/up/small.txt" expect_type=file expect_size=12
+FMBED_OPEN path="/up/small.txt" flags=RDONLY handle=fs
+FMBED_READ handle=fs size=32 expect_data="hello inline"
+FMBED_CLOSE handle=fs
+# 错误分支: 目标已存在(文件/目录) EEXIST, 父目录不存在 ENOENT
+FMBED_UPLOAD path="/up/small.txt" data="x" expect_error=EEXIST
+FMBED_MKDIR path="/up/sub" mode=0755
+FMBED_UPLOAD path="/up/sub" data="x" expect_error=EEXIST
+FMBED_UPLOAD path="/up/none/f.txt" data="x" expect_error=ENOENT
+# 跨块文件(测试 block_len=1M): 1.5MB 全 'A', 读取跨 block0/block1 边界
+FMBED_UPLOAD path="/up/big.bin" data="A" repeat=1572864
+FMBED_STAT path="/up/big.bin" expect_type=file expect_size=1572864
+FMBED_OPEN path="/up/big.bin" flags=RDONLY handle=fb
+FMBED_READ handle=fb size=8 offset=1048572 expect_data="AAAAAAAA"
+FMBED_READ handle=fb size=4096 offset=1048576 expect_fill="A"
+FMBED_CLOSE handle=fb
+FMBED_LISTDIR path="/up" expect_names="small.txt,big.bin,sub"
+UNMOUNT
+# 清缓存重挂: 校验数据确实持久化到了 mock 远端
+BACKEND_CLEAR_CACHE
+MOUNT use_fmbed=true
+FMBED_STAT path="/up/small.txt" expect_type=file expect_size=12
+FMBED_OPEN path="/up/small.txt" flags=RDONLY handle=fs
+FMBED_READ handle=fs size=32 expect_data="hello inline"
+FMBED_CLOSE handle=fs
+FMBED_OPEN path="/up/big.bin" flags=RDONLY handle=fb
+FMBED_READ handle=fb size=1572864 expect_bytes=1572864
+FMBED_READ handle=fb size=4096 expect_fill="A"
+FMBED_CLOSE handle=fb
+UNMOUNT
+# no_cache 会话直传(核心卖点): 句柄写路径在 no_cache 下 EROFS, upload 可用
+BACKEND_CLEAR_CACHE
+MOUNT use_fmbed=true no_cache=true
+FMBED_UPLOAD path="/nc.bin" data="N" repeat=1048576
+FMBED_STAT path="/nc.bin" expect_type=file expect_size=1048576
+FMBED_OPEN path="/nc.bin" flags=RDONLY handle=fn
+FMBED_READ handle=fn size=65536 expect_fill="N"
+FMBED_READ handle=fn size=65536 offset=1048576 expect_bytes=0
+FMBED_CLOSE handle=fn
+FMBED_UPLOAD path="/nc.bin" data="x" expect_error=EEXIST
+UNMOUNT
+BACKEND_CLEAR_CACHE

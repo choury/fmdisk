@@ -1,5 +1,6 @@
 #include "common.h"
 #include "fmdisk.h"
+#include "fmbed.h"
 #include "mock_backend.h"
 #include "../src/fuse.h"
 #include "../src/file.h"
@@ -17,6 +18,8 @@ extern std::atomic<long long> g_block_push_calls;
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +39,7 @@ struct FuseMount {
     struct fuse_conn_info conn {};
     struct fuse_config cfg {};
     void* userdata = nullptr;
+    bool via_fmbed = false;
 };
 
 struct Command {
@@ -58,6 +62,7 @@ struct ExecutionContext {
     FuseMount mount;
     bool mounted = false;
     std::unordered_map<std::string, HandleState> handles;
+    std::unordered_map<std::string, fmbed_file*> fmbed_handles;
     std::string script_name;
 };
 
@@ -791,6 +796,12 @@ int flags_from_string(const std::string& value) {
     if(value == "EXCL") {
         return O_EXCL;
     }
+    if(value == "SYNC") {
+        return O_SYNC;
+    }
+    if(value == "DSYNC") {
+        return O_DSYNC;
+    }
     throw std::runtime_error("unknown flag '" + value + "'");
 }
 
@@ -828,12 +839,16 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     log_set_level(FUSE_LOG_DEBUG);
     bool no_cache = false;
     bool rename_not_supported = false;
+    bool use_fmbed = false;
     long long cache_size = -1;
     if(auto opt_no_cache = optional_arg(cmd, "no_cache"); opt_no_cache.has_value()) {
         no_cache = parse_bool(opt_no_cache.value());
     }
     if(auto opt_rename = optional_arg(cmd, "rename_not_supported"); opt_rename.has_value()) {
         rename_not_supported = parse_bool(opt_rename.value());
+    }
+    if(auto opt_fmbed = optional_arg(cmd, "use_fmbed"); opt_fmbed.has_value()) {
+        use_fmbed = parse_bool(opt_fmbed.value());
     }
     if(auto opt_cache = optional_arg(cmd, "cache_size"); opt_cache.has_value()) {
         cache_size = parse_size_bytes(opt_cache.value());
@@ -856,25 +871,57 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
         .entry_cache_second = -1,
     };
     backend_set_mount_option(&options);
-    int prep = fm_prepare();
-    if(prep < 0) {
-        fail(ctx, cmd, "fm_prepare failed with " + std::to_string(prep));
-    }
-    ctx.mount.userdata = fm_fuse_init(&ctx.mount.conn, &ctx.mount.cfg);
-    if(ctx.mount.userdata == nullptr) {
-        fail(ctx, cmd, "fm_fuse_init returned null");
+    if(use_fmbed) {
+        struct fmbed_opts fopts {};
+        fopts.mask = FMBED_OPT_NO_CACHE | FMBED_OPT_CACHE_SIZE | FMBED_OPT_CACHE_DIR |
+                     FMBED_OPT_ENTRY_CACHE_SECOND;
+        fopts.no_cache = no_cache ? 1 : 0;
+        fopts.cache_size = cache_size;
+        fopts.cache_dir = cache_dir.c_str();
+        fopts.entry_cache_second = -1;
+        int ret = fmbed_init(&fopts);
+        if(ret != 0) {
+            fail(ctx, cmd, "fmbed_init failed with " + std::to_string(ret));
+        }
+        ctx.mount.via_fmbed = true;
+    } else {
+        int prep = fm_prepare();
+        if(prep < 0) {
+            fail(ctx, cmd, "fm_prepare failed with " + std::to_string(prep));
+        }
+        ctx.mount.userdata = fm_fuse_init(&ctx.mount.conn, &ctx.mount.cfg);
+        if(ctx.mount.userdata == nullptr) {
+            fail(ctx, cmd, "fm_fuse_init returned null");
+        }
     }
     ctx.mounted = true;
+}
+
+void force_unmount(ExecutionContext& ctx) {
+    if(!ctx.mounted) {
+        return;
+    }
+    // fmbed_destroy 前必须关掉残留句柄, 否则悬空
+    for(auto& [name, file] : ctx.fmbed_handles) {
+        fmbed_close(file, 0);
+    }
+    ctx.fmbed_handles.clear();
+    if(ctx.mount.via_fmbed) {
+        fmbed_destroy();
+    } else {
+        fm_fuse_destroy(ctx.mount.userdata);
+    }
+    ctx.mount.userdata = nullptr;
+    ctx.mount.via_fmbed = false;
+    ctx.mounted = false;
+    ctx.handles.clear();
 }
 
 void exec_unmount(ExecutionContext& ctx, const Command& cmd) {
     if(!ctx.mounted) {
         fail(ctx, cmd, "no active mount to unmount");
     }
-    fm_fuse_destroy(ctx.mount.userdata);
-    ctx.mount.userdata = nullptr;
-    ctx.mounted = false;
-    ctx.handles.clear();
+    force_unmount(ctx);
 }
 
 void validate_errno(int ret, const std::optional<int>& expected_errno, ExecutionContext& ctx, const Command& cmd, const char* step) {
@@ -1320,6 +1367,334 @@ void exec_setxattr(ExecutionContext& ctx, const Command& cmd) {
     validate_errno(ret, expected_errno, ctx, cmd, "setxattr");
 }
 
+// fmbed 嵌入式接口的脚本命令(不经内核 fuse 的进程内路径)
+fmbed_file* require_fmbed_handle(ExecutionContext& ctx, const Command& cmd) {
+    std::string handle = require_arg(cmd, "handle");
+    auto it = ctx.fmbed_handles.find(handle);
+    if(it == ctx.fmbed_handles.end()) {
+        fail(ctx, cmd, "unknown fmbed handle '" + handle + "'");
+    }
+    return it->second;
+}
+
+void exec_fmbed_open(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    int flags = parse_flags(cmd);
+    fmbed_file* file = fmbed_open(path.c_str(), flags);
+    int err = errno; // 紧跟调用取值, 防止被后续库调用覆盖
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    if(file == nullptr) {
+        validate_errno(-err, expected_errno, ctx, cmd, "fmbed_open");
+        return;
+    }
+    if(expected_errno.has_value()) {
+        fmbed_close(file, 0); // 期望失败却成功了: 收掉句柄再报错
+        validate_errno(0, expected_errno, ctx, cmd, "fmbed_open");
+        return;
+    }
+    std::string handle = require_arg(cmd, "handle");
+    ctx.fmbed_handles[handle] = file;
+}
+
+void exec_fmbed_close(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string handle = require_arg(cmd, "handle");
+    auto it = ctx.fmbed_handles.find(handle);
+    if(it == ctx.fmbed_handles.end()) {
+        fail(ctx, cmd, "unknown fmbed handle '" + handle + "'");
+    }
+    fmbed_file* file = it->second;
+    ctx.fmbed_handles.erase(it); // POSIX close: 无论成败句柄都被消费
+    int flags = 0;
+    if(auto sync_arg = optional_arg(cmd, "sync"); sync_arg.has_value() && parse_bool(sync_arg.value())) {
+        flags |= FMBED_CLOSE_SYNC;
+    }
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_close(file, flags);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_close");
+    }
+}
+
+void exec_fmbed_write(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    fmbed_file* file = require_fmbed_handle(ctx, cmd);
+    std::string data = decode_escapes(require_arg(cmd, "data"));
+    if(auto repeat_opt = optional_arg(cmd, "repeat"); repeat_opt.has_value()) {
+        long repeat = parse_long(repeat_opt.value(), 0);
+        if(repeat <= 0 || data.empty()) {
+            fail(ctx, cmd, "repeat must be positive and requires non-empty data");
+        }
+        std::string expanded;
+        for(long i = 0; i < repeat; ++i) {
+            expanded.append(data);
+        }
+        data = std::move(expanded);
+    }
+    size_t size = data.size();
+    if(auto size_opt = optional_arg(cmd, "size"); size_opt.has_value()) {
+        long parsed_size = parse_long(size_opt.value(), 0);
+        if(parsed_size < 0) {
+            fail(ctx, cmd, "negative size not allowed");
+        }
+        size = static_cast<size_t>(parsed_size);
+        if(size > data.size()) {
+            data.resize(size, '\0');
+        }
+    }
+    uint64_t offset = 0;
+    if(auto offset_opt = optional_arg(cmd, "offset"); offset_opt.has_value()) {
+        offset = parse_ulong(offset_opt.value(), 0);
+    }
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int64_t ret = fmbed_write(file, data.data(), size, offset);
+    if(expected_errno.has_value()) {
+        validate_errno(static_cast<int>(ret), expected_errno, ctx, cmd, "fmbed_write");
+        return;
+    }
+    if(ret < 0) {
+        fail(ctx, cmd, "fmbed_write failed with " + std::to_string(ret));
+    }
+    if(static_cast<size_t>(ret) != size) {
+        fail(ctx, cmd, "fmbed_write wrote " + std::to_string(ret) + " expected " + std::to_string(size));
+    }
+}
+
+// data=/repeat=/size= 展开逻辑与 exec_fmbed_write 一致, 经 tmpfile 喂给 fmbed_upload
+static std::string expand_upload_payload(ExecutionContext& ctx, const Command& cmd) {
+    std::string data = decode_escapes(require_arg(cmd, "data"));
+    if(auto repeat_opt = optional_arg(cmd, "repeat"); repeat_opt.has_value()) {
+        long repeat = parse_long(repeat_opt.value(), 0);
+        if(repeat <= 0 || data.empty()) {
+            fail(ctx, cmd, "repeat must be positive and requires non-empty data");
+        }
+        std::string expanded;
+        expanded.reserve(data.size() * static_cast<size_t>(repeat));
+        for(long i = 0; i < repeat; ++i) {
+            expanded.append(data);
+        }
+        data = std::move(expanded);
+    }
+    if(auto size_opt = optional_arg(cmd, "size"); size_opt.has_value()) {
+        long parsed_size = parse_long(size_opt.value(), 0);
+        if(parsed_size < 0) {
+            fail(ctx, cmd, "negative size not allowed");
+        }
+        size_t size = static_cast<size_t>(parsed_size);
+        if(size > data.size()) {
+            data.resize(size, '\0');
+        }
+    }
+    return data;
+}
+
+void exec_fmbed_upload(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::string data = expand_upload_payload(ctx, cmd);
+    FILE* tmp = tmpfile();
+    if(tmp == nullptr) {
+        fail(ctx, cmd, std::string("tmpfile failed: ") + strerror(errno));
+    }
+    if(!data.empty() && fwrite(data.data(), 1, data.size(), tmp) != data.size()) {
+        fclose(tmp);
+        fail(ctx, cmd, "tmpfile write failed");
+    }
+    rewind(tmp);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_upload(path.c_str(), fileno(tmp));
+    fclose(tmp);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_upload");
+    }
+}
+
+void exec_fmbed_read(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    fmbed_file* file = require_fmbed_handle(ctx, cmd);
+    size_t size = static_cast<size_t>(parse_ulong(require_arg(cmd, "size"), 0));
+    uint64_t offset = 0;
+    if(auto offset_opt = optional_arg(cmd, "offset"); offset_opt.has_value()) {
+        offset = parse_ulong(offset_opt.value(), 0);
+    }
+    std::vector<char> buffer(size);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int64_t ret = fmbed_read(file, buffer.data(), buffer.size(), offset);
+    if(expected_errno.has_value()) {
+        validate_errno(static_cast<int>(ret), expected_errno, ctx, cmd, "fmbed_read");
+        return;
+    }
+    if(ret < 0) {
+        fail(ctx, cmd, "fmbed_read failed with " + std::to_string(ret));
+    }
+    if(auto expect_bytes = optional_arg(cmd, "expect_bytes"); expect_bytes.has_value()) {
+        long want = parse_long(expect_bytes.value(), 0);
+        if(ret != want) {
+            fail(ctx, cmd, "fmbed_read expected " + std::to_string(want) + " bytes got " + std::to_string(ret));
+        }
+    }
+    if(auto expect_data = optional_arg(cmd, "expect_data"); expect_data.has_value()) {
+        std::string expected = decode_escapes(expect_data.value());
+        std::string actual(buffer.data(), buffer.data() + ret);
+        if(expected != actual) {
+            fail(ctx, cmd, "fmbed_read expected '" + expected + "' got '" + actual + "'");
+        }
+    }
+    if(auto expect_fill = optional_arg(cmd, "expect_fill"); expect_fill.has_value()) {
+        std::string fill = decode_escapes(expect_fill.value());
+        if(std::empty(fill)) {
+            fail(ctx, cmd, "expect_fill requires a non-empty seed");
+        }
+        if(static_cast<size_t>(ret) != size) {
+            fail(ctx, cmd, "fmbed_read expect_fill requires a full read");
+        }
+        if(!std::all_of(buffer.data(), buffer.data() + ret, [&fill](char c) { return c == fill.front(); })) {
+            fail(ctx, cmd, "fmbed_read expect_fill mismatch");
+        }
+    }
+}
+
+void exec_fmbed_truncate(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    fmbed_file* file = require_fmbed_handle(ctx, cmd);
+    uint64_t length = parse_ulong(require_arg(cmd, "length"), 0);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_truncate(file, length);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_truncate");
+    }
+}
+
+void exec_fmbed_stat(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    struct stat st {};
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_stat(path.c_str(), &st);
+    if(expected_errno.has_value()) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_stat");
+        return;
+    }
+    if(ret < 0) {
+        fail(ctx, cmd, "fmbed_stat failed with " + std::to_string(ret));
+    }
+    if(auto expect_type = optional_arg(cmd, "expect_type"); expect_type.has_value()) {
+        const std::string& want = expect_type.value();
+        bool ok = (want == "dir" && S_ISDIR(st.st_mode)) || (want == "file" && S_ISREG(st.st_mode));
+        if(!ok) {
+            fail(ctx, cmd, "fmbed_stat expected type '" + want + "'");
+        }
+    }
+    if(auto expect_size = optional_arg(cmd, "expect_size"); expect_size.has_value()) {
+        long want = parse_long(expect_size.value(), 0);
+        if((long)st.st_size != want) {
+            fail(ctx, cmd, "fmbed_stat expected size " + std::to_string(want) + " got " + std::to_string(st.st_size));
+        }
+    }
+}
+
+void exec_fmbed_simple(ExecutionContext& ctx, const Command& cmd, const std::function<int(const char*)>& fn, const char* step) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fn(path.c_str());
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, step);
+    }
+}
+
+int fmbed_listdir_collect(void* ud, const char* name) {
+    ((std::vector<std::string>*)ud)->emplace_back(name);
+    return 0;
+}
+
+void exec_fmbed_listdir(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::vector<std::string> names;
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_listdir(path.c_str(), fmbed_listdir_collect, &names);
+    if(expected_errno.has_value()) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_listdir");
+        return;
+    }
+    if(ret < 0) {
+        fail(ctx, cmd, "fmbed_listdir failed with " + std::to_string(ret));
+    }
+    if(auto expect_names = optional_arg(cmd, "expect_names"); expect_names.has_value()) {
+        std::vector<std::string> expected;
+        std::stringstream ss(expect_names.value());
+        std::string item;
+        while(std::getline(ss, item, ',')) {
+            if(!item.empty()) {
+                expected.push_back(item);
+            }
+        }
+        std::vector<std::string> actual = names;
+        std::sort(expected.begin(), expected.end());
+        std::sort(actual.begin(), actual.end());
+        if(expected != actual) {
+            std::ostringstream oss;
+            oss << "fmbed_listdir expected " << expected.size() << " entries, got " << actual.size() << ":";
+            for(auto& n : actual) {
+                oss << " " << n;
+            }
+            fail(ctx, cmd, oss.str());
+        }
+    }
+}
+
+void exec_fmbed_rename(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string oldpath = require_arg(cmd, "old");
+    std::string newpath = require_arg(cmd, "new");
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_rename(oldpath.c_str(), newpath.c_str());
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_rename");
+    }
+}
+
+void exec_fmbed_advise(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    fmbed_file* file = require_fmbed_handle(ctx, cmd);
+    std::string advice = require_arg(cmd, "advice");
+    int code = -1;
+    if(advice == "will_read") {
+        code = FMBED_WILL_READ;
+    } else if(advice == "will_push") {
+        code = FMBED_WILL_PUSH;
+    }
+    if(code < 0) {
+        fail(ctx, cmd, "unknown advice '" + advice + "'");
+    }
+    uint64_t offset = 0;
+    uint64_t len = 0;
+    if(auto offset_opt = optional_arg(cmd, "offset"); offset_opt.has_value()) {
+        offset = parse_ulong(offset_opt.value(), 0);
+    }
+    if(auto len_opt = optional_arg(cmd, "len"); len_opt.has_value()) {
+        len = parse_ulong(len_opt.value(), 0);
+    }
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_advise(file, offset, len, code);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_advise");
+    }
+}
+
+void exec_fmbed_mkdir(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    mode_t mode = parse_mode(cmd);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_mkdir(path.c_str(), mode);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_mkdir");
+    }
+}
+
 void exec_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name.rfind("BACKEND_", 0) == 0
        || cmd.name == "DBLOCKS_COUNT"
@@ -1412,6 +1787,58 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
         exec_setxattr(ctx, cmd);
         return;
     }
+    if(cmd.name == "FMBED_OPEN") {
+        exec_fmbed_open(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_CLOSE") {
+        exec_fmbed_close(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_WRITE") {
+        exec_fmbed_write(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_READ") {
+        exec_fmbed_read(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_TRUNCATE") {
+        exec_fmbed_truncate(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_STAT") {
+        exec_fmbed_stat(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_MKDIR") {
+        exec_fmbed_mkdir(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_UNLINK") {
+        exec_fmbed_simple(ctx, cmd, fmbed_unlink, "fmbed_unlink");
+        return;
+    }
+    if(cmd.name == "FMBED_RMDIR") {
+        exec_fmbed_simple(ctx, cmd, fmbed_rmdir, "fmbed_rmdir");
+        return;
+    }
+    if(cmd.name == "FMBED_LISTDIR") {
+        exec_fmbed_listdir(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_RENAME") {
+        exec_fmbed_rename(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_ADVISE") {
+        exec_fmbed_advise(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_UPLOAD") {
+        exec_fmbed_upload(ctx, cmd);
+        return;
+    }
     fail(ctx, cmd, "unknown command");
 }
 
@@ -1451,16 +1878,10 @@ void run_script(const std::filesystem::path& path) {
             }
         }
         if(ctx.mounted) {
-            fm_fuse_destroy(ctx.mount.userdata);
-            ctx.mounted = false;
-            ctx.handles.clear();
+            force_unmount(ctx);
         }
     } catch(...) {
-        if(ctx.mounted) {
-            fm_fuse_destroy(ctx.mount.userdata);
-            ctx.mounted = false;
-        }
-        ctx.handles.clear();
+        force_unmount(ctx);
         throw;
     }
 }

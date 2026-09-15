@@ -1,5 +1,6 @@
 #include "common.h"
 #include "fmdisk.h"
+#include "fmbed.h"
 #include "utils.h"
 #include "log.h"
 #include "transfer_helper.h"
@@ -14,8 +15,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
-struct fmoption opt{};
 
 static constexpr const char* FILE_SUFFIX = ".def";
 
@@ -34,253 +33,56 @@ static std::string normalize_path(const std::string& raw_path) {
     return normalized;
 }
 
-static int resolve_dir(const std::string& raw_path, filekey& out) {
-    std::filesystem::path p(normalize_path(raw_path));
-    filekey current{"/", nullptr};
-    if(p == std::filesystem::path("/")) {
-        out = current;
-        return 0;
-    }
+struct ls_ctx {
+    const std::string* dir;
+};
 
-    for(const auto& part : p) {
-        auto name = part.string();
-        if(name.empty() || name == "/") {
-            continue;
-        }
-        if(name == ".") {
-            continue;
-        }
-        filekey child{name, nullptr};
-        int ret = HANDLE_EAGAIN(fm_getattrat(current, child));
-        if(ret) {
-            return ret;
-        }
-        current = child;
+static int ls_callback(void* ud, const char* name) {
+    auto* ctx = (ls_ctx*)ud;
+    struct stat st{};
+    std::string child = pathjoin(*ctx->dir, name);
+    if(fmbed_stat(child.c_str(), &st) != 0) {
+        memset(&st, 0, sizeof(st));
     }
-    out = current;
-    return 0;
-}
-
-static int resolve_file(const std::string& raw_path, filekey& parent, filekey& file_dir) {
-    std::string path = normalize_path(raw_path);
-    std::string parent_path = dirname(path);
-    if(parent_path.empty() || parent_path == ".") {
-        parent_path = "/";
+    std::cout << name;
+    if(S_ISDIR(st.st_mode)) {
+        std::cout << "/";
+    } else {
+        std::cout << "\t" << bytes2human(st.st_size);
     }
-    int ret = resolve_dir(parent_path, parent);
-    if(ret) {
-        return ret;
-    }
-
-    std::string encoded = encodepath(basename(path), FILE_SUFFIX);
-    file_dir = filekey{encoded, nullptr};
-    ret = HANDLE_EAGAIN(fm_getattrat(parent, file_dir));
-    if(ret == 0 && !file_dir.private_key) {
-        errno = ENOENT;
-        return -ENOENT;
-    }
-    return ret;
-}
-
-static int ensure_block_parent(filekey& block_parent) {
-    if(!(opt.flags & FM_RENAME_NOTSUPPRTED)) {
-        return 0;
-    }
-    filekey root{"/", nullptr};
-    filekey objs{".objs", nullptr};
-    int ret = HANDLE_EAGAIN(fm_getattrat(root, objs));
-    if(ret == 0) {
-        block_parent = objs;
-        return 0;
-    }
-    if(errno != ENOENT) {
-        return ret;
-    }
-    ret = HANDLE_EAGAIN(fm_mkdir(root, objs));
-    if(ret && errno != EEXIST) {
-        return ret;
-    }
-    return HANDLE_EAGAIN(fm_getattrat(root, objs));
-}
-
-static int list_dir(const filekey& dir) {
-    filemeta meta = initfilemeta(dir);
-    if(HANDLE_EAGAIN(fm_getattr(dir, meta)) != 0 || !S_ISDIR(meta.mode)) {
-        std::cerr << "ls: " << strerror(errno) << "\n";
-        return -errno;
-    }
-
-    std::vector<filemeta> flist;
-    int ret = HANDLE_EAGAIN(fm_list(dir, flist));
-    if(ret) {
-        std::cerr << "ls: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    for(auto& entry : flist) {
-        std::string name = basename(entry.key.path);
-        bool is_dir = S_ISDIR(entry.mode);
-        bool chunked = is_dir && endwith(name, FILE_SUFFIX);
-
-        if(chunked) {
-            name = decodepath(name, FILE_SUFFIX);
-            is_dir = false;
-        }
-        if(name == METANAME) {
-            continue;
-        }
-        if(is_dir && name == ".objs" && (opt.flags & FM_RENAME_NOTSUPPRTED)) {
-            continue;
-        }
-
-        size_t fsize = entry.size;
-        if(!is_dir) {
-            filemeta meta = initfilemeta(entry.key);
-            bool meta_loaded = false;
-            if(chunked) {
-                filekey metakey{METANAME, nullptr};
-                if(HANDLE_EAGAIN(fm_getattrat(entry.key, metakey)) == 0) {
-                    std::vector<filekey> dummy;
-                    if(download_meta(metakey, meta, dummy) == 0) {
-                        fsize = meta.size;
-                        meta_loaded = true;
-                    }
-                }
-            }
-            if(!meta_loaded && (entry.flags & META_KEY_ONLY_F || entry.size == 0)) {
-                if(HANDLE_EAGAIN(fm_getattr(entry.key, meta)) == 0) {
-                    fsize = meta.size;
-                }
-            }
-        }
-
-        std::cout << name;
-        if(is_dir) {
-            std::cout << "/";
-        } else {
-            std::cout << "\t" << bytes2human(fsize);
-        }
-        std::cout << "\n";
-    }
+    std::cout << "\n";
     return 0;
 }
 
 static int command_ls(const std::string& raw_path) {
     std::string target = normalize_path(raw_path.empty() ? "/" : raw_path);
-    filekey dir;
-    int ret_dir = resolve_dir(target, dir);
-    if(ret_dir == 0) {
-        filemeta meta = initfilemeta(dir);
-        if(HANDLE_EAGAIN(fm_getattr(dir, meta)) == 0) {
-            if(S_ISDIR(meta.mode)) {
-                return list_dir(dir);
-            } else {
-                std::cout << basename(normalize_path(target)) << "\t" << bytes2human(meta.size) << "\n";
-                return 0;
-            }
-        }
+    struct stat st{};
+    int ret = fmbed_stat(target.c_str(), &st);
+    if(ret == 0 && S_ISDIR(st.st_mode)) {
+        ls_ctx ctx{&target};
+        return fmbed_listdir(target.c_str(), ls_callback, &ctx);
     }
-
-    // Fallback: chunked file resolution (.def directory)
-    filekey parent;
-    filekey file_dir;
-    int ret_file = resolve_file(target, parent, file_dir);
-    if(ret_file) {
-        std::cerr << "ls: " << strerror(errno) << "\n";
-        return ret_file;
+    if(ret == 0) {
+        std::cout << basename(target) << "\t" << bytes2human(st.st_size) << "\n";
+        return 0;
     }
-
-    bool chunked = endwith(file_dir.path, FILE_SUFFIX);
-    size_t fsize = 0;
-    if(chunked) {
-        filekey metakey{METANAME, nullptr};
-        ret_file = HANDLE_EAGAIN(fm_getattrat(file_dir, metakey));
-        if(ret_file == 0) {
-            filemeta meta;
-            std::vector<filekey> dummy;
-            ret_file = download_meta(metakey, meta, dummy);
-            if(ret_file == 0) {
-                fsize = meta.size;
-            }
-        }
-    } else {
-        filemeta meta = initfilemeta(file_dir);
-        ret_file = HANDLE_EAGAIN(fm_getattr(file_dir, meta));
-        if(ret_file == 0) {
-            fsize = meta.size;
-        }
-    }
-    if(ret_file) {
-        std::cerr << "ls: " << strerror(errno) << "\n";
-        return ret_file;
-    }
-    std::cout << basename(normalize_path(target)) << "\t" << bytes2human(fsize) << "\n";
-    return 0;
-}
-
-static int download_blocks(const filekey& file_dir, const filemeta& meta, const std::vector<filekey>& fblocks, int fd) {
-    size_t blksize = meta.blksize ? meta.blksize : opt.block_len;
-    if(blksize == 0) {
-        blksize = 1024 * 1024;
-    }
-    size_t blocks = meta.size ? (meta.size + blksize - 1) / blksize : 0;
-    filekey block_parent = file_dir;
-    int ret = ensure_block_parent(block_parent);
-    if(ret) {
-        return ret;
-    }
-
-    std::vector<char> buffer;
-    buffer.resize(blksize);
-    for(size_t idx = 0; idx < blocks; ++idx) {
-        size_t chunk = std::min(blksize, meta.size - idx * blksize);
-        const filekey* block_entry = idx < fblocks.size() ? &fblocks[idx] : nullptr;
-        if(block_entry == nullptr || block_entry->path == "x" || block_entry->path.empty()) {
-            std::vector<char> zeros(chunk, 0);
-            ssize_t written = TEMP_FAILURE_RETRY(write(fd, zeros.data(), chunk));
-            if(written < 0) {
-                return -errno;
-            }
-            continue;
-        }
-        size_t got = 0;
-        ret = download_block_common(block_parent, *block_entry, idx, blksize, 0, chunk, meta.flags & FILE_ENCODE_F, buffer.data(), got);
-        if(ret) {
-            return ret;
-        }
-        ssize_t written = TEMP_FAILURE_RETRY(write(fd, buffer.data(), got));
-        if(written < 0) {
-            return -errno;
-        }
-    }
-    return 0;
+    std::cerr << "ls: " << strerror(-ret) << "\n";
+    return ret;
 }
 
 static int command_get(const std::string& remote_raw, const std::string& local_raw) {
     std::string remote = normalize_path(remote_raw);
     std::string local = local_raw.empty() ? basename(remote) : local_raw;
 
-    filekey parent;
-    filekey file_dir;
-    int ret = resolve_file(remote, parent, file_dir);
+    struct stat st{};
+    int ret = fmbed_stat(remote.c_str(), &st);
     if(ret) {
-        std::cerr << "get: " << strerror(errno) << "\n";
+        std::cerr << "get: " << strerror(-ret) << "\n";
         return ret;
     }
-
-    filekey meta_key{METANAME, nullptr};
-    ret = HANDLE_EAGAIN(fm_getattrat(file_dir, meta_key));
-    if(ret) {
-        std::cerr << "get: meta lookup failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    filemeta meta;
-    std::vector<filekey> fblocks;
-    ret = download_meta(meta_key, meta, fblocks);
-    if(ret) {
-        std::cerr << "get: meta download failed: " << strerror(errno) << "\n";
-        return ret;
+    if(S_ISDIR(st.st_mode)) {
+        std::cerr << "get: " << strerror(EISDIR) << "\n";
+        return -EISDIR;
     }
 
     std::filesystem::path local_path(local);
@@ -295,17 +97,52 @@ static int command_get(const std::string& remote_raw, const std::string& local_r
         return -errno;
     }
 
-    if(!meta.inline_data.empty()) {
-        ssize_t written = TEMP_FAILURE_RETRY(write(fd, meta.inline_data.data(), meta.size));
-        ret = (written < 0) ? -errno : 0;
-    } else {
-        ret = download_blocks(file_dir, meta, fblocks, fd);
+    // fmcli 跑在 no_cache 模式, 没有本地缓存自然无预取概念(advise 是空操作),
+    // 顺序读由 fmbed_read 逐段直拉远端; 句柄只开一次, 跨整个下载复用
+    fmbed_file* file = fmbed_open(remote.c_str(), O_RDONLY);
+    if(file == nullptr) {
+        std::cerr << "get: open failed: " << strerror(errno) << "\n";
+        close(fd);
+        return -errno;
     }
+    std::vector<char> buffer;
+    buffer.resize(1024 * 1024);
+    uint64_t offset = 0;
+    bool short_read = false;
+    while(offset < (uint64_t)st.st_size) {
+        size_t want = std::min<uint64_t>(buffer.size(), st.st_size - offset);
+        int64_t got = fmbed_read(file, buffer.data(), want, offset);
+        if(got < 0) {
+            std::cerr << "get: read failed: " << strerror((int)-got) << "\n";
+            fmbed_close(file, 0);
+            close(fd);
+            return (int)got;
+        }
+        if(got == 0) {
+            std::cerr << "get: short read at offset " << offset << " (remote file changed?)\n";
+            short_read = true;
+            break;
+        }
+        size_t written_total = 0;
+        while(written_total < (size_t)got) {
+            ssize_t written = TEMP_FAILURE_RETRY(write(fd, buffer.data() + written_total, got - written_total));
+            if(written < 0) {
+                std::cerr << "get: write " << local << " failed: " << strerror(errno) << "\n";
+                fmbed_close(file, 0);
+                close(fd);
+                return -errno;
+            }
+            written_total += written;
+        }
+        offset += got;
+    }
+    fmbed_close(file, 0);
     close(fd);
-    if(ret == 0) {
-        std::cout << "saved to " << local << "\n";
+    if(short_read) {
+        return -EIO; // 截尾文件不能报成功
     }
-    return ret;
+    std::cout << "saved to " << local << "\n";
+    return 0;
 }
 
 static int command_put(const std::string& local, const std::string& remote_raw) {
@@ -322,82 +159,19 @@ static int command_put(const std::string& local, const std::string& remote_raw) 
         return -EINVAL;
     }
 
-    filekey parent;
-    std::string filename;
-
     // If target is an existing dir (or trailing slash), upload into it using local basename.
+    std::string target = remote;
     bool target_is_dir = false;
-    int dir_ret = resolve_dir(remote, parent);
-    if(dir_ret == 0) {
-        filemeta dir_meta = initfilemeta(parent);
-        if(HANDLE_EAGAIN(fm_getattr(parent, dir_meta)) == 0 && S_ISDIR(dir_meta.mode)) {
-            target_is_dir = true;
-        }
+    struct stat rst{};
+    if(fmbed_stat(remote.c_str(), &rst) == 0 && S_ISDIR(rst.st_mode)) {
+        target_is_dir = true;
     }
-
     if(target_is_dir || remote_had_slash) {
-        if(dir_ret != 0) {
-            std::cerr << "put: parent lookup failed: " << strerror(errno) << "\n";
-            return dir_ret;
+        if(!target_is_dir) {
+            std::cerr << "put: parent lookup failed: " << strerror(ENOENT) << "\n";
+            return -ENOENT;
         }
-        filename = basename(local);
-    } else {
-        std::string parent_path = dirname(remote);
-        if(parent_path.empty() || parent_path == ".") {
-            parent_path = "/";
-        }
-        int ret = resolve_dir(parent_path, parent);
-        if(ret) {
-            std::cerr << "put: parent lookup failed: " << strerror(errno) << "\n";
-            return ret;
-        }
-        filename = basename(remote);
-    }
-
-    std::string encoded = encodepath(filename, FILE_SUFFIX);
-    filekey file_dir{encoded, nullptr};
-    int ret = HANDLE_EAGAIN(fm_getattrat(parent, file_dir));
-    if(ret == 0 && !file_dir.private_key) {
-        errno = ENOENT;
-        ret = -ENOENT;
-    }
-    if(ret == 0 && file_dir.private_key) {
-        filekey metakey{METANAME, nullptr};
-        int meta_ret = HANDLE_EAGAIN(fm_getattrat(file_dir, metakey));
-        if(meta_ret != 0 && errno == ENOENT) {
-            // Reuse existing file_dir when metadata is missing.
-        } else if(meta_ret == 0) {
-            std::cerr << "put: existing file" << "\n";
-            return -EEXIST;
-        } else {
-            std::cerr << "put: lookup failed: " << strerror(errno) << "\n";
-            return meta_ret;
-        }
-    } else if(ret != 0 && errno != ENOENT) {
-        std::cerr << "put: lookup failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    if(!file_dir.private_key) {
-        ret = HANDLE_EAGAIN(fm_mkdir(parent, file_dir));
-        if(ret && errno != EEXIST) {
-            std::cerr << "put: mkdir failed: " << strerror(errno) << "\n";
-            return ret;
-        }
-        if(ret) {
-            ret = HANDLE_EAGAIN(fm_getattrat(parent, file_dir));
-            if(ret) {
-                std::cerr << "put: fetch existing dir failed: " << strerror(errno) << "\n";
-                return ret;
-            }
-        }
-    }
-
-    filekey block_parent = file_dir;
-    ret = ensure_block_parent(block_parent);
-    if(ret) {
-        std::cerr << "put: prepare block parent failed: " << strerror(errno) << "\n";
-        return ret;
+        target = pathjoin(remote, basename(local));
     }
 
     int fd = TEMP_FAILURE_RETRY(open(local.c_str(), O_RDONLY));
@@ -405,93 +179,22 @@ static int command_put(const std::string& local, const std::string& remote_raw) 
         std::cerr << "put: open " << local << " failed: " << strerror(errno) << "\n";
         return -errno;
     }
-
-    filemeta meta{};
-    std::vector<filekey> fblocks;
-    ret = upload_file_from_fd(file_dir, block_parent, fd, st, true, meta, fblocks);
+    // fmcli 跑在 no_cache 模式: 句柄写路径只读, 直传走 fmbed_upload
+    int ret = fmbed_upload(target.c_str(), fd);
     close(fd);
-    if(ret) {
-        std::cerr << "put: upload data failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    ret = upload_meta(file_dir, meta, fblocks);
-    if(ret) {
-        std::cerr << "put: upload meta failed: " << strerror(errno) << "\n";
+    if(ret == -EEXIST) {
+        std::cerr << "put: existing file" << "\n";
+    } else if(ret < 0) {
+        std::cerr << "put: " << strerror(-ret) << "\n";
     }
     return ret;
 }
 
 static int command_rm(const std::string& remote_raw) {
     std::string remote = normalize_path(remote_raw);
-
-    filekey parent;
-    filekey file_dir;
-    int ret = resolve_file(remote, parent, file_dir);
-    if(ret) {
-        std::cerr << "rm: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    bool chunked = endwith(file_dir.path, FILE_SUFFIX);
-    if(!chunked) {
-        ret = HANDLE_EAGAIN(fm_delete(file_dir));
-        if(ret && errno != ENOENT) {
-            std::cerr << "rm: " << strerror(errno) << "\n";
-        }
-        return ret;
-    }
-
-    filekey metakey{METANAME, nullptr};
-    ret = HANDLE_EAGAIN(fm_getattrat(file_dir, metakey));
-    if(ret) {
-        std::cerr << "rm: meta lookup failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    filemeta meta;
-    std::vector<filekey> fblocks;
-    ret = download_meta(metakey, meta, fblocks);
-    if(ret) {
-        std::cerr << "rm: read meta failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    filekey block_parent = file_dir;
-    ret = ensure_block_parent(block_parent);
-    if(ret) {
-        std::cerr << "rm: prepare block parent failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    for(auto& blk : fblocks) {
-        if(blk.path == "x" || blk.path.empty()) {
-            continue;
-        }
-        filekey del = blk;
-        del.path = pathjoin(block_parent.path, blk.path);
-        if(!del.private_key) {
-            filekey lookup{blk.path, nullptr};
-            if(HANDLE_EAGAIN(fm_getattrat(block_parent, lookup)) == 0) {
-                del.private_key = lookup.private_key;
-            }
-        }
-        int del_ret = HANDLE_EAGAIN(fm_delete(del));
-        if(del_ret && errno != ENOENT) {
-            std::cerr << "rm: delete block failed: " << strerror(errno) << "\n";
-            return del_ret;
-        }
-    }
-
-    ret = HANDLE_EAGAIN(fm_delete(metakey));
-    if(ret && errno != ENOENT) {
-        std::cerr << "rm: delete meta failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    ret = HANDLE_EAGAIN(fm_delete(file_dir));
-    if(ret && errno != ENOENT) {
-        std::cerr << "rm: delete dir failed: " << strerror(errno) << "\n";
+    int ret = fmbed_unlink(remote.c_str());
+    if(ret && ret != -ENOENT) {
+        std::cerr << "rm: " << strerror(-ret) << "\n";
     }
     return ret;
 }
@@ -502,39 +205,9 @@ static int command_rmdir(const std::string& remote_raw) {
         std::cerr << "rmdir: cannot remove root\n";
         return -EINVAL;
     }
-
-    filekey dir;
-    int ret = resolve_dir(remote, dir);
+    int ret = fmbed_rmdir(remote.c_str());
     if(ret) {
-        std::cerr << "rmdir: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    filemeta meta = initfilemeta(dir);
-    ret = HANDLE_EAGAIN(fm_getattr(dir, meta));
-    if(ret) {
-        std::cerr << "rmdir: " << strerror(errno) << "\n";
-        return ret;
-    }
-    if(!S_ISDIR(meta.mode)) {
-        std::cerr << "rmdir: not a directory\n";
-        return -ENOTDIR;
-    }
-
-    std::vector<filemeta> flist;
-    ret = HANDLE_EAGAIN(fm_list(dir, flist));
-    if(ret) {
-        std::cerr << "rmdir: " << strerror(errno) << "\n";
-        return ret;
-    }
-    if(!flist.empty()) {
-        std::cerr << "rmdir: directory not empty\n";
-        return -ENOTEMPTY;
-    }
-
-    ret = HANDLE_EAGAIN(fm_delete(dir));
-    if(ret && errno != ENOENT) {
-        std::cerr << "rmdir: " << strerror(errno) << "\n";
+        std::cerr << "rmdir: " << strerror(-ret) << "\n";
     }
     return ret;
 }
@@ -545,31 +218,9 @@ static int command_mkdir(const std::string& remote_raw) {
         std::cerr << "mkdir: cannot create root\n";
         return -EINVAL;
     }
-
-    std::string parent_path = dirname(remote);
-    if(parent_path.empty() || parent_path == ".") {
-        parent_path = "/";
-    }
-    filekey parent;
-    int ret = resolve_dir(parent_path, parent);
+    int ret = fmbed_mkdir(remote.c_str(), 0755);
     if(ret) {
-        std::cerr << "mkdir: parent lookup failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    filekey dir{basename(remote), nullptr};
-    ret = HANDLE_EAGAIN(fm_getattrat(parent, dir));
-    if(ret == 0 && dir.private_key) {
-        std::cerr << "mkdir: existing path\n";
-        return -EEXIST;
-    } else if(ret != 0 && errno != ENOENT) {
-        std::cerr << "mkdir: lookup failed: " << strerror(errno) << "\n";
-        return ret;
-    }
-
-    ret = HANDLE_EAGAIN(fm_mkdir(parent, dir));
-    if(ret && errno != EEXIST) {
-        std::cerr << "mkdir: create failed: " << strerror(errno) << "\n";
+        std::cerr << "mkdir: " << strerror(-ret) << "\n";
     }
     return ret;
 }
@@ -590,54 +241,59 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if(fm_prepare()) {
-        std::cerr << "fm_prepare failed\n";
+    struct fmbed_opts fopts{};
+    fopts.mask = FMBED_OPT_NO_CACHE | FMBED_OPT_CACHE_SIZE | FMBED_OPT_ENTRY_CACHE_SECOND;
+    fopts.no_cache = 1;
+    fopts.cache_size = 0;
+    fopts.entry_cache_second = -1;
+    if(fmbed_init(&fopts)) {
+        std::cerr << "fmbed_init failed\n";
         return 2;
     }
-    opt.no_cache = 1;
-    opt.cache_size = 0;
-    opt.entry_cache_second = -1;
-    log_init(opt.log_path);
 
     std::string cmd = argv[1];
+    int ret = 1;
     if(cmd == "ls") {
         if(argc < 3) {
-            return command_ls("/");
+            ret = command_ls("/");
+        } else {
+            ret = command_ls(argv[2]);
         }
-        return command_ls(argv[2]);
     } else if(cmd == "get") {
         if(argc < 3) {
             usage();
-            return 1;
+        } else {
+            std::string local = (argc >= 4) ? argv[3] : "";
+            ret = command_get(argv[2], local);
         }
-        std::string local = (argc >= 4) ? argv[3] : "";
-        return command_get(argv[2], local);
     } else if(cmd == "put") {
         if(argc < 4) {
             usage();
-            return 1;
+        } else {
+            ret = command_put(argv[2], argv[3]);
         }
-        return command_put(argv[2], argv[3]);
     } else if(cmd == "mkdir") {
         if(argc < 3) {
             usage();
-            return 1;
+        } else {
+            ret = command_mkdir(argv[2]);
         }
-        return command_mkdir(argv[2]);
     } else if(cmd == "rm") {
         if(argc < 3) {
             usage();
-            return 1;
+        } else {
+            ret = command_rm(argv[2]);
         }
-        return command_rm(argv[2]);
     } else if(cmd == "rmdir") {
         if(argc < 3) {
             usage();
-            return 1;
+        } else {
+            ret = command_rmdir(argv[2]);
         }
-        return command_rmdir(argv[2]);
+    } else {
+        usage();
     }
 
-    usage();
-    return 1;
+    fmbed_destroy();
+    return ret;
 }

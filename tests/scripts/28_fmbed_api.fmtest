@@ -1,0 +1,75 @@
+# fmbed embedding API (in-process, no kernel fuse) — 句柄式数据面
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT use_fmbed=true
+FMBED_MKDIR path="/fm" mode=0755
+# open 错误分支: 父目录不存在 / 路径是目录 / 已存在且带 EXCL
+FMBED_OPEN path="/missing-dir/x.txt" flags=RDWR|CREAT expect_error=ENOENT
+FMBED_OPEN path="/fm" flags=RDONLY expect_error=EISDIR
+FMBED_OPEN path="/fm/a.txt" flags=RDWR|CREAT handle=fa
+FMBED_OPEN path="/fm/a.txt" flags=RDWR|CREAT|EXCL expect_error=EEXIST
+# 同一句柄上多次读写, 复用生命周期
+FMBED_WRITE handle=fa data="hello"
+FMBED_WRITE handle=fa data=" fmbed" offset=5
+FMBED_READ handle=fa size=32 expect_data="hello fmbed"
+FMBED_READ handle=fa size=4 offset=2 expect_data="llo "
+FMBED_READ handle=fa size=8 offset=100 expect_bytes=0
+FMBED_STAT path="/fm/a.txt" expect_type=file expect_size=11
+FMBED_STAT path="/fm" expect_type=dir
+FMBED_ADVISE handle=fa advice=will_read offset=0 len=11
+FMBED_TRUNCATE handle=fa length=8
+FMBED_READ handle=fa size=32 expect_data="hello fm"
+FMBED_CLOSE handle=fa
+FMBED_RENAME old="/fm/a.txt" new="/fm/b.txt"
+FMBED_STAT path="/fm/a.txt" expect_error=ENOENT
+FMBED_MKDIR path="/fm/sub" mode=0755
+FMBED_LISTDIR path="/fm" expect_names="b.txt,sub"
+# 只写句柄不可读(EBADF); 只读句柄可定稿
+FMBED_OPEN path="/fm/b.txt" flags=WRONLY handle=fw
+FMBED_READ handle=fw size=1 expect_error=EBADF
+# sync close: 同步推脏块+上传 meta, 新参数的执行路径
+FMBED_WRITE handle=fw data="X" offset=7
+FMBED_CLOSE handle=fw sync=true
+FMBED_OPEN path="/fm/b.txt" flags=RDONLY handle=fb
+FMBED_CLOSE handle=fb
+FMBED_OPEN path="/fm/missing.txt" flags=RDONLY expect_error=ENOENT
+# >64K 分块文件(测试 block_len=1M): 覆盖 inline→分块、跨块写、advise 回写、
+# 清缓存重挂后经 mock 远端的完整往返
+FMBED_MKDIR path="/big" mode=0755
+FMBED_OPEN path="/big/large.bin" flags=RDWR|CREAT handle=fl
+FMBED_WRITE handle=fl data="A" repeat=1048576
+FMBED_WRITE handle=fl data="B" repeat=524288 offset=1048576
+FMBED_STAT path="/big/large.bin" expect_type=file expect_size=1572864
+FMBED_READ handle=fl size=8 offset=1048572 expect_data="AAAABBBB"
+FMBED_READ handle=fl size=4096 offset=0 expect_fill="A"
+FMBED_READ handle=fl size=4096 offset=1048576 expect_fill="B"
+# will_push 加速脏块异步推送; meta 不归它管, 靠 close 后的 clean 及 UNMOUNT 排空 delay 队列上传
+FMBED_ADVISE handle=fl advice=will_push offset=0 len=1572864
+FMBED_CLOSE handle=fl
+BACKEND_SLEEP ms=2000
+UNMOUNT
+# 清缓存后重挂载, 校验数据确实推送到了 mock 远端
+BACKEND_CLEAR_CACHE
+MOUNT use_fmbed=true
+FMBED_STAT path="/big/large.bin" expect_type=file expect_size=1572864
+FMBED_OPEN path="/big/large.bin" flags=RDONLY handle=fl
+FMBED_READ handle=fl size=1572864 expect_bytes=1572864
+FMBED_READ handle=fl size=65536 offset=0 expect_fill="A"
+FMBED_READ handle=fl size=65536 offset=1048576 expect_fill="B"
+FMBED_READ handle=fl size=8 offset=1048572 expect_data="AAAABBBB"
+FMBED_CLOSE handle=fl
+FMBED_OPEN path="/fm/b.txt" flags=RDONLY handle=fb
+FMBED_READ handle=fb size=32 expect_data="hello fX"
+FMBED_CLOSE handle=fb
+FMBED_STAT path="/fm/b.txt" expect_type=file expect_size=8
+FMBED_LISTDIR path="/fm" expect_names="b.txt,sub"
+FMBED_RMDIR path="/fm" expect_error=ENOTEMPTY
+FMBED_UNLINK path="/fm/b.txt"
+FMBED_UNLINK path="/big/large.bin"
+FMBED_RMDIR path="/big"
+FMBED_LISTDIR path="/fm" expect_names="sub"
+FMBED_RMDIR path="/fm/sub"
+FMBED_RMDIR path="/fm"
+FMBED_STAT path="/fm" expect_error=ENOENT
+UNMOUNT
+BACKEND_CLEAR_CACHE

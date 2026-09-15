@@ -2,7 +2,8 @@ add_executable(locker_test locker_test.cpp)
 target_link_libraries(locker_test pthread)
 
 add_executable(fmtest fm_test.cpp mock_backend.cpp)
-target_link_libraries(fmtest fmdisk pthread)
+# 进程内直调 fm_fuse_*, 不经内核挂载: fmdisk_objs 即可, fuse 符号由垫片提供
+target_link_libraries(fmtest fmdisk_objs fmbed_shim pthread)
 set_property(TARGET fmtest PROPERTY CXX_STANDARD 20)
 set_property(TARGET fmtest PROPERTY CXX_STANDARD_REQUIRED ON)
 target_compile_definitions(fmtest PRIVATE FMDISK_TEST_SCRIPT_DIR="${CMAKE_CURRENT_SOURCE_DIR}/scripts")

@@ -102,7 +102,9 @@ void writeback_thread(bool* done){
         pthread_mutex_unlock(&dblocks_lock);
 
         int staled_threshold = 30; // seconds
-        if(upool->tasks_in_queue() == 0 && snapshot.size() >= UPLOADTHREADS){
+        if(opt.fmbed_mode) {
+            staled_threshold = 300;
+        } else if(upool->tasks_in_queue() == 0 && snapshot.size() >= UPLOADTHREADS){
             staled_threshold = 5;
         }
 
@@ -288,11 +290,11 @@ filekey block_t::getkey() const {
 }
 
 int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
-    g_block_pull_calls.fetch_add(1, std::memory_order_relaxed);
     auto b = wb.lock();
     if(b == nullptr) {
         return -ENOENT;
     }
+    g_block_pull_calls.fetch_add(1, std::memory_order_relaxed);
     b->wlock();
     if(b->flags & BLOCK_STALE){
         // STALE 块远端可能已经删掉了: 直接标记为全缓存, 防止无限循环
@@ -323,6 +325,10 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     auto_wlock(b);
     b->flags &= ~BLOCK_PULLING;
     b->pull_cond.notify_all();
+    if(b->flags & BLOCK_STALE){
+        //下载期间块被释放(reset/gc): fi.fd 已 close 甚至被复用, 直接返回
+        return 0;
+    }
     if(ret){
         if(ret == -ENOENT && (b->flags & BLOCK_STALE) == 0) {
             //seed empty block
@@ -494,7 +500,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
             return 0; // 已经同步，不需要预取
         }
         dpool->submit_fire_and_forget([b = weak_from_this()]{
-            pull(b, false);
+            block_t::pull(b, false);
         });
         return 1;
     }
@@ -560,6 +566,14 @@ bool block_t::sync(filekey fileat, bool wait){
     dblocks.emplace(weak_from_this(), fileat);
     pthread_mutex_unlock(&dblocks_lock);
     return true;
+}
+
+//WILL_PUSH advice: atime 置 0 让 staled() 视为早已过期, writeback_thread 下一轮轮询即推送
+void block_t::expire() {
+    auto_wlock(this);
+    if(flags & BLOCK_DIRTY) {
+        atime = 0;
+    }
 }
 
 bool block_t::dummy() {

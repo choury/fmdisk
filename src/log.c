@@ -62,10 +62,11 @@ void log_cleanup(void) {
     // Reset FUSE log handler to default
     fuse_set_log_func(NULL);
 
-    if (log_file) {
+    //log_init(NULL) 时 log_file 就是 stderr, 不能把进程的 stderr 关掉
+    if (log_file && log_file != stderr) {
         fclose(log_file);
-        log_file = NULL;
     }
+    log_file = NULL;
 
     pthread_mutex_unlock(&log_mutex);
 }
