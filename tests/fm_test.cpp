@@ -765,7 +765,8 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         return;
     }
     if(cmd.name == "BACKEND_FORCE_GC") {
-        while(cleanup_cache_by_size_for_test()) {
+        for(int i = 0; i < 300 && cleanup_cache_by_size_for_test(); i++) {
+            usleep(100000);
         }
         clean_entry_cache();
         return;
@@ -901,11 +902,16 @@ void force_unmount(ExecutionContext& ctx) {
     if(!ctx.mounted) {
         return;
     }
-    // fmbed_destroy 前必须关掉残留句柄, 否则悬空
+    // destroy 前必须关掉残留句柄: fmbed 句柄悬空, fuse 句柄漏 fh 装箱
+    // (内核卸载前会为打开文件补发 RELEASE, 这里对齐)
     for(auto& [name, file] : ctx.fmbed_handles) {
         fmbed_close(file, 0);
     }
     ctx.fmbed_handles.clear();
+    for(auto& [name, state] : ctx.handles) {
+        fm_fuse_release(nullptr, &state.info);
+    }
+    ctx.handles.clear();
     if(ctx.mount.via_fmbed) {
         fmbed_destroy();
     } else {
@@ -914,7 +920,6 @@ void force_unmount(ExecutionContext& ctx) {
     ctx.mount.userdata = nullptr;
     ctx.mount.via_fmbed = false;
     ctx.mounted = false;
-    ctx.handles.clear();
 }
 
 void exec_unmount(ExecutionContext& ctx, const Command& cmd) {

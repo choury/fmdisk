@@ -28,6 +28,12 @@ static pthread_mutex_t droped_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::vector<filekey> droped;
 static pthread_mutex_t openfile_lock = PTHREAD_MUTEX_INITIALIZER;
 static std::map<ino_t, std::shared_ptr<file_t>> opened_inodes;
+
+void clear_opened_files() {
+    auto_lock(&openfile_lock);
+    opened_inodes.clear();
+}
+
 static std::atomic<bool> gc_stop(false);
 static std::thread gc_thread;
 static std::thread trim_thread;
@@ -385,9 +391,10 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
         return;
     }
     if (file->flags & FILE_DIRTY_F && file->sync_wlocked(false, false)) {
+        //脏块由 writeback 按 staled 阈值推送, 重试间隔对齐它
         submit_delay_job([file_]() {
             file_t::clean(file_);
-        }, 60);
+        }, 5);
         return;
     }
     file->flags &= ~ENTRY_REASEWAIT_F;

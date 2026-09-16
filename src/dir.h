@@ -34,7 +34,7 @@ public:
     virtual ~dir_t() override;
     virtual int getmeta(filemeta& meta) override;
     int foreach_entrys(const std::function<int(const string&, std::shared_ptr<filemeta>)>& visitor);
-    size_t children();
+    ssize_t children();
     static std::shared_ptr<entry_t> find(std::shared_ptr<dir_t> root, std::string_view path);
 
     virtual int open() override;

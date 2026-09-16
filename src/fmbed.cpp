@@ -205,32 +205,81 @@ int fmbed_stat(const char* path, struct stat* st) {
     return fm_fuse_getattr(path, st, nullptr);
 }
 
+// 内核挂载下变更请求发出前 LOOKUP 已把父目录子项拉齐, 嵌入式直连没有这一步;
+// children() 顺带完成 pull, 满足 dir_t 变更方法对 DIR_PULLED_F 的前置
+static std::shared_ptr<dir_t> checked_parent(const char* path) {
+    auto entry = find_entry(dirname(path));
+    if(entry == nullptr){
+        errno = ENOENT;
+        return nullptr;
+    }
+    auto parent = std::dynamic_pointer_cast<dir_t>(entry);
+    if(parent == nullptr){
+        errno = ENOTDIR;
+        return nullptr;
+    }
+    if(parent->children() < 0){
+        return nullptr; // errno 已由 children() 设置
+    }
+    return parent;
+}
+
 int fmbed_mkdir(const char* path, mode_t mode) {
     if(!fmbed_inited) {
         return -ENODEV;
     }
-    return fm_fuse_mkdir(path, mode);
+    auto parent = checked_parent(path);
+    if(parent == nullptr) {
+        return -errno;
+    }
+    if(parent->mkdir(basename(path), mode) == nullptr) {
+        return -errno;
+    }
+    fs = nullptr;
+    return 0;
 }
 
 int fmbed_unlink(const char* path) {
     if(!fmbed_inited) {
         return -ENODEV;
     }
-    return fm_fuse_unlink(path);
+    auto parent = checked_parent(path);
+    if(parent == nullptr) {
+        return -errno;
+    }
+    fs = nullptr;
+    return parent->unlink(basename(path));
 }
 
 int fmbed_rmdir(const char* path) {
     if(!fmbed_inited) {
         return -ENODEV;
     }
-    return fm_fuse_rmdir(path);
+    auto parent = checked_parent(path);
+    if(parent == nullptr) {
+        return -errno;
+    }
+    fs = nullptr;
+    return parent->rmdir(basename(path));
 }
 
 int fmbed_rename(const char* oldpath, const char* newpath) {
     if(!fmbed_inited) {
         return -ENODEV;
     }
-    return fm_fuse_rename(oldpath, newpath, 0);
+    if(opt.no_cache) {
+        return -EROFS; // rename 需要db来保证一致性，禁用本地缓存时禁止rename
+    }
+    auto parent = checked_parent(oldpath);
+    if(parent == nullptr) {
+        return -errno;
+    }
+    auto newparent = checked_parent(newpath);
+    if(newparent == nullptr) {
+        return -errno;
+    }
+    fs = nullptr;
+    return parent->moveto(newparent, basename(oldpath), basename(newpath), 0);
 }
 
 int fmbed_statfs(const char* path, struct statvfs* sf) {
@@ -305,14 +354,9 @@ int fmbed_upload(const char* path, int fd) {
     if(path == nullptr) {
         return -EINVAL;
     }
-    std::string parent_path = dirname(path);
-    auto entry = find_entry(parent_path);
-    if(entry == nullptr) {
-        return -ENOENT;
-    }
-    auto parent = std::dynamic_pointer_cast<dir_t>(entry);
+    auto parent = checked_parent(path);
     if(parent == nullptr) {
-        return -ENOTDIR;
+        return -errno;
     }
     auto file = parent->upload(basename(path), fd);
     if(file == nullptr) {

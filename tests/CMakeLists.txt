@@ -21,7 +21,6 @@ foreach(FMTEST_SCRIPT ${FMTEST_SCRIPTS})
     )
 endforeach()
 
-# Run locker_test after scripted fmtest scenarios to keep longer run time at the end.
 add_test(
     NAME locker_test
     COMMAND $<TARGET_FILE:locker_test>

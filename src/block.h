@@ -41,4 +41,6 @@ public:
     [[nodiscard]] size_t release();
 };
 
+void clear_dblocks();
+
 #endif

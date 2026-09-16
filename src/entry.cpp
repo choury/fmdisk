@@ -58,9 +58,13 @@ void cache_destroy(){
         delete upool;
     }
     delete dpool;
-    if(!opt.no_cache) stop_delay_thread();
+    if(!opt.no_cache) {
+        stop_delay_thread();
+        clear_opened_files(); //测试需要重入
+    }
     if(!opt.no_cache) sqldeinit();
     root = nullptr;
+    clear_dblocks(); //测试需要
 }
 
 void clean_entry_cache() {

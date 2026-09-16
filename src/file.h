@@ -82,6 +82,7 @@ void start_gc();
 void stop_gc();
 void trim(const filekey& file);
 void recover_dirty_data();
+void clear_opened_files();
 bool cleanup_cache_by_size_for_test();
 
 #endif

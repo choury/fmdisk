@@ -37,6 +37,12 @@ static std::string getRemotePathFromFd(int fd) {
 
 std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks; // dirty blocks
 pthread_mutex_t dblocks_lock = PTHREAD_MUTEX_INITIALIZER;
+
+void clear_dblocks() {
+    //销毁路径，不需要加锁
+    dblocks.clear();
+}
+
 std::atomic<long long> g_block_pull_calls{0}; // 测试观测: pull 入口调用次数(含 STALE 早退)
 std::atomic<long long> g_block_push_calls{0}; // 测试观测: push 入口调用次数(含 STALE/非脏早退)
 static sem_t dirty_blocks_sem;
@@ -216,7 +222,6 @@ block_t::block_t(const fileInfo& fi, filekey fk, size_t no, off_t offset, size_t
     atime(0)
 {
     assert(opt.no_cache || fi.fd >= 0);
-
     std::string fk_private = fm_private_key_tostring(fk.private_key);
     if(fk.path == "" && fk_private[0] == '\0') {
         this->fk.path = "x";

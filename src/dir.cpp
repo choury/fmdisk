@@ -304,8 +304,15 @@ int dir_t::remove_wlocked(bool skip_entry) {
     return 1;
 }
 
-size_t dir_t::children() {
-    auto_rlock(this);
+ssize_t dir_t::children() {
+    auto_wlock(this);
+    if((flags & DIR_PULLED_F) == 0){
+        int ret = pull_entrys_wlocked();
+        if(ret < 0){
+            errno = -ret;
+            return -1;
+        }
+    }
     return entrys.size();
 }
 
@@ -634,7 +641,6 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
                 return -ENOTDIR;
             }
             auto dir_existing = std::dynamic_pointer_cast<dir_t>(existing);
-            dir_existing->pull_entrys_wlocked();
             if(dir_existing->children()){
                 return -ENOTEMPTY;
             }
