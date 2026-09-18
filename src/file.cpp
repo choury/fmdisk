@@ -969,12 +969,13 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
         flags &= ~FILE_UPMETA_F;
     }
     if(ret){
-        errorlog("upload_meta IO Error: %s, err=%s\n", key.path.c_str(), strerror(errorno));
+        errorlog("upload_meta IO Error: %s, inode=%ju, err=%s\n", key.path.c_str(), fi.inode, strerror(errorno));
         return true;
     }
     private_key = meta.key.private_key;
     if(version_snapshot != version.load()) {
-        infolog("file version: %s version %zu vs %zu, flags: %x\n", key.path.c_str(), version_snapshot, version.load(), flags);
+        infolog("file version: %s, inode=%ju, version %zu vs %zu, flags: %x\n",
+                key.path.c_str(), fi.inode, version_snapshot, version.load(), flags);
         return true;
     }
     if(!dirty){
@@ -1099,6 +1100,12 @@ void file_t::dump_to_db(const std::string& path, const std::string& name) {
         return;
     }
     if((flags & ENTRY_INITED_F) == 0){
+        //占位态: 只写 entrys 行(分块文件的 mode 用远端目录形态), files 行由 pull_wlocked 按需补
+        filemeta meta = initfilemeta(filekey{
+            (flags & ENTRY_CHUNCED_F) ? encodepath(name, file_encode_suffix) : name,
+            fk.load()->private_key});
+        meta.mode = (flags & ENTRY_CHUNCED_F) ? (mode_t)(S_IFDIR | 0755) : (mode_t)mode;
+        save_entry_to_db(path, meta);
         return;
     }
     filemeta meta;
@@ -1476,6 +1483,6 @@ size_t file_t::release_clean_blocks() {
     for(auto& [_, block]: blocks) {
         released += block->release();
     }
-    infolog("released %zd for %s\n", released, getcwd().c_str());
+    infolog("released %zd for %s, inode=%ju\n", released, getcwd().c_str(), fi.inode);
     return released;
 }

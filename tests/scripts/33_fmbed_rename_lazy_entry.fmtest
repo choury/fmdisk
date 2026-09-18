@@ -1,0 +1,50 @@
+# rename 占位态(未 INITED)条目后, 缓存重建不得丢条目:
+# dump_to_db 对未 INITED 条目也要写 entrys 行, files 行留给 pull_wlocked 按需补
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT use_fmbed=true
+
+FMBED_MKDIR path="/p" mode=0755
+FMBED_MKDIR path="/p/sub" mode=0755
+FMBED_OPEN path="/p/keeper.txt" flags=RDWR|CREAT handle=fk
+FMBED_WRITE handle=fk data="keep"
+FMBED_CLOSE handle=fk sync=true
+FMBED_OPEN path="/p/sub/f.txt" flags=RDWR|CREAT handle=ff
+FMBED_WRITE handle=ff data="data"
+FMBED_CLOSE handle=ff sync=true
+FMBED_OPEN path="/p/lazy.txt" flags=RDWR|CREAT handle=fl
+FMBED_WRITE handle=fl data="lazydata"
+FMBED_CLOSE handle=fl sync=true
+SYMLINK target="/p/keeper.txt" link="/p/sym"
+
+# GC 重建后仅走查(不 stat sub/lazy.txt/sym), 它们处于占位态
+BACKEND_FORCE_GC
+FMBED_STAT path="/p/keeper.txt" expect_type=file
+
+# rename 占位态目录/文件/符号链接
+FMBED_RENAME old="/p/sub" new="/p/sub2"
+FMBED_RENAME old="/p/lazy.txt" new="/p/lazy2.txt"
+FMBED_RENAME old="/p/sym" new="/p/sym2"
+
+# GC 重建后立即断言: 占位 rename 只落 entrys 行, files 行不写(留给 pull_wlocked 按需补);
+# 断言必须先于 LISTDIR——opendir 会对非 INITED 直接子项异步拉取并落 files 行
+BACKEND_FORCE_GC
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/p/sub2/Zi50eHQ=.def') THEN 1 ELSE 0 END" expect="0"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/p/bGF6eTIudHh0.def') THEN 1 ELSE 0 END" expect="0"
+
+# 父目录 entrys 命中缓存(cached=true), 新名条目必须仍在
+FMBED_LISTDIR path="/p" expect_names="keeper.txt,lazy2.txt,sub2,sym2"
+FMBED_STAT path="/p/sub2" expect_type=dir
+
+# 数据/target 经远端自愈读回
+FMBED_OPEN path="/p/sub2/f.txt" flags=RDONLY handle=ff2
+FMBED_READ handle=ff2 size=32 expect_data="data"
+FMBED_CLOSE handle=ff2
+FMBED_OPEN path="/p/lazy2.txt" flags=RDONLY handle=fl2
+FMBED_READ handle=fl2 size=32 expect_data="lazydata"
+FMBED_CLOSE handle=fl2
+READLINK path="/p/sym2" size=64 expect="/p/keeper.txt"
+GETATTR path="/p/sym2" expect_type=symlink
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

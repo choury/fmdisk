@@ -823,15 +823,19 @@ void dir_t::dump_to_db(const std::string& path, const std::string& name) {
         return;
     }
     if((flags & ENTRY_INITED_F) == 0){
-        return;
+        //占位态: entrys 行只需 name/key/mode, files 行由 pull_wlocked 按需补
+        filemeta meta = initfilemeta(filekey{name, fk.load()->private_key});
+        meta.mode = mode;
+        save_entry_to_db(path, meta);
+    }else{
+        filemeta meta;
+        if(getmeta(meta) < 0) {
+            return;
+        }
+        meta.key.path = name;
+        save_entry_to_db(path, meta);
+        save_file_to_db(pathjoin(path, name), meta, {});
     }
-    filemeta meta;
-    if(getmeta(meta) < 0) {
-        return;
-    }
-    meta.key.path = name;
-    save_entry_to_db(path, meta);
-    save_file_to_db(pathjoin(path, name), meta, {});
     if((flags & DIR_PULLED_F) == 0){
         return;
     }
@@ -850,9 +854,7 @@ int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     if((flags & ENTRY_REASEWAIT_F) || (flags & ENTRY_PULLING_F)){
         return -EAGAIN;
     }
-    if((flags & ENTRY_INITED_F) == 0){
-        return 0;
-    }
+    // 子条目保护必须先于其他判断: 未 INITED 的目录也可能已 DIR_PULLED 挂着子树(含打开中的句柄)
     int ret = 0;
     for(auto i : entrys){
         ret |= i.second->drop_cache(mem_only, before);
@@ -865,7 +867,7 @@ int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     }
     entrys.clear();
     flags &= ~DIR_PULLED_F;
-    if(opt.no_cache || mem_only) {
+    if((flags & ENTRY_INITED_F) == 0 || opt.no_cache || mem_only) {
         return 0;
     }
     return delete_entry_prefix_from_db(parent.lock() ? getkey().path: "");

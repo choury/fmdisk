@@ -176,6 +176,9 @@ void symlink_t::dump_to_db(const std::string& path, const std::string& name) {
         return;
     }
     if((flags & ENTRY_INITED_F) == 0){
+        filemeta meta = initfilemeta(filekey{encodepath(name, symlink_encode_suffix), fk.load()->private_key});
+        meta.mode = mode;
+        save_entry_to_db(path, meta);
         return;
     }
     filemeta meta;

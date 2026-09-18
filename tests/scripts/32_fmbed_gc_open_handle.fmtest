@@ -1,0 +1,37 @@
+# GC 不得驱逐仍持有打开句柄的目录:
+# 未 INITED 的目录(DIR_PULLED, 自身 meta 未拉取)在 drop_cache 时也要遍历子条目传播 -EBUSY,
+# 否则目录链被拆, 打开句柄的 getcwd()/getkey() 退化为根路径, files 表出现根键行
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT use_fmbed=true
+
+FMBED_MKDIR path="/p" mode=0755
+FMBED_MKDIR path="/p/sub" mode=0755
+FMBED_OPEN path="/p/sub/victim.bin" flags=RDWR|CREAT handle=fv
+FMBED_WRITE handle=fv data="victim-data"
+FMBED_CLOSE handle=fv sync=true
+
+# 首轮 GC 清内存树, 此后路径走查的 entrys 从本地表加载(META_KEY_ONLY_F), p/sub 均非 INITED
+BACKEND_FORCE_GC
+FMBED_OPEN path="/p/sub/victim.bin" flags=RDWR handle=fv
+
+# 句柄打开期间 GC: 目录链必须存活, 路径仍可走查
+BACKEND_FORCE_GC
+FMBED_STAT path="/p/sub/victim.bin" expect_type=file expect_size=11
+
+# 句柄记账仍用完整路径: 只写 /p/sub/ 行, 不产生根键行
+FMBED_WRITE handle=fv data="rot" offset=0
+FMBED_CLOSE handle=fv sync=true
+BACKEND_SLEEP ms=8000
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/dmljdGltLmJpbg==.def') THEN 1 ELSE 0 END" expect="0"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/p/sub/dmljdGltLmJpbg==.def') THEN 1 ELSE 0 END" expect="1"
+
+# 句柄关闭后 GC 恢复可回收, 回收后路径重新走查数据不丢
+BACKEND_FORCE_GC
+FMBED_STAT path="/p/sub/victim.bin" expect_type=file expect_size=11
+FMBED_OPEN path="/p/sub/victim.bin" flags=RDONLY handle=fv2
+FMBED_READ handle=fv2 size=32 expect_data="rottim-data"
+FMBED_CLOSE handle=fv2
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
