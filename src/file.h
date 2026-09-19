@@ -24,6 +24,7 @@ class file_t: public entry_t {
     size_t block_size = 0; // cache for getmeta
     std::atomic<size_t> version = 0;
     int truncate_wlocked(off_t offset);
+    int read_impl(void* buff, off_t offset, size_t size);
     int update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> meta_updater);
     virtual int pull_wlocked() override;
     static void clean(std::weak_ptr<file_t> file);

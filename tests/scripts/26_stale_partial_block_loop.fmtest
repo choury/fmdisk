@@ -111,7 +111,7 @@ BACKEND_SLEEP ms=15000
 
 # 修复点断言: STALE 块应已被 pull 标记 + push 分支摘除出表
 DBLOCKS_COUNT expect=0
-STATS name=pull_total expect_min=1
+STATS name=pull_total expect=0                     # pull 标记 STALE 块不打后端; pull_total 只计真实网络请求
 BACKEND_DOWNLOAD_CALLS expect=0
 
 # RELEASE 让 opened 归零, clean 得以把 file 从 opened_inodes 摘除,

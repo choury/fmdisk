@@ -10,6 +10,7 @@
 
 #include <string.h>
 #include <sys/xattr.h>
+#include <sys/stat.h>
 #include <fcntl.h>
 
 #include <semaphore.h>
@@ -298,7 +299,6 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     if(b == nullptr) {
         return -ENOENT;
     }
-    fm_stat_add(FM_STAT_PULL_TOTAL);
     b->wlock();
     if(b->flags & BLOCK_STALE){
         // STALE 块远端可能已经删掉了: 直接标记为全缓存, 防止无限循环
@@ -324,6 +324,7 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     b->flags |= BLOCK_PULLING;
     b->unwlock();
     buffstruct bs((char*)malloc(size), size);
+    fm_stat_add(FM_STAT_PULL_TOTAL);
     //for chunk file, read from begin
     int ret = HANDLE_EAGAIN(fm_download(file, startp, size, bs));
     auto_wlock(b);
@@ -340,6 +341,7 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
             fm_stat_add(FM_STAT_PULL_SEED_EMPTY);
             warnlog("feed empty block for: %s, inode=%ju, no=%d\n", file.path.c_str(), b->fi.inode, b->no);
         } else {
+            fm_stat_add(FM_STAT_PULL_DOWNLOAD_FAIL);
             return ret;
         }
     } else {
@@ -348,15 +350,35 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
         }
     }
 
+    // 下载不足整块(尾块/截断过)时, 以缓存文件长度为准
+    size_t wlen = bs.size();
+    if(bs.size() < b->size) {
+        struct stat st;
+        if(fstat(b->fi.fd, &st) == 0 && (size_t)st.st_size > (size_t)b->offset) {
+            wlen = std::min((size_t)b->size, (size_t)st.st_size - (size_t)b->offset);
+        }
+        if(bs.size() < wlen) {
+            memset((char*)bs.mutable_data() + bs.size(), 0, wlen - bs.size());
+        }
+    }
     for(const auto& r : b->ranges) {
-        pread(b->fi.fd, (char*)bs.mutable_data() + r.start, r.end - r.start, b->offset + r.start);
+        ssize_t got = TEMP_FAILURE_RETRY(pread(b->fi.fd, (char*)bs.mutable_data() + r.start, r.end - r.start, b->offset + r.start));
+        if(got < 0) {
+            fm_stat_add(FM_STAT_PULL_LOCAL_FAIL);
+            return got; // 读缓存失败: 放弃本次 pull 留待重试, 不得把真实数据当 EOF 整段补零
+        }
+        // 短读 = 区间超出缓存文件 EOF(truncate 标脏的零尾巴): 剩余部分按零处理,
+        // 否则下载下来的陈旧尾巴会在这里存活, 扩容后漏出非零的洞
+        if((size_t)got < (size_t)(r.end - r.start)) {
+            memset((char*)bs.mutable_data() + r.start + got, 0, r.end - r.start - got);
+        }
     }
 
     // 直接写入缓存文件
-    ret = TEMP_FAILURE_RETRY(pwrite(b->fi.fd, bs.mutable_data(), bs.size(), b->offset));
+    ret = TEMP_FAILURE_RETRY(pwrite(b->fi.fd, bs.mutable_data(), wlen, b->offset));
     if(ret >= 0){
         //这里因为没有执行sync操作，进程异常退出不会有问题，但是os crash的话，数据会有不一致的情况
-        assert((size_t)ret == bs.size());
+        assert((size_t)ret == wlen);
         b->ranges = std::vector<Range>{{0, (uint32_t)b->size}};
         //save_block_to_db(b->fi, b->no, b->fk, false);
         save_block_to_db(block_record{
@@ -368,6 +390,8 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
             (b->flags & BLOCK_DIRTY) != 0,
             b->ranges
          });
+    } else {
+        fm_stat_add(FM_STAT_PULL_LOCAL_FAIL);
     }
     return ret;
 }
@@ -391,6 +415,7 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
     if(ret < 0) {
         return ret;
     }
+    fm_stat_add(FM_STAT_READ_BYTES_MISS, got);
     return got;
 }
 
@@ -399,7 +424,6 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     if(b == nullptr) {
         return -ENOENT;
     }
-    fm_stat_add(FM_STAT_PUSH_TOTAL);
     size_t version = 0;
     char *buff = (char*)malloc(b->size);
     defer(free, buff);
@@ -434,6 +458,7 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     }
     filekey file;
     if(len){
+        fm_stat_add(FM_STAT_PUSH_TOTAL);
         //It must be chunk file, because native file can't be written
 retry:
         file = makeChunkBlockKey(b->no);
@@ -491,7 +516,6 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
         // check range
         for (const auto& r : ranges) {
             if (start >= r.start && end <= r.end) {
-                fm_stat_add(FM_STAT_READ_BLOCK_HIT);
                 return 0;
             }
         }
@@ -499,7 +523,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
             return 0; // 已经被释放，不预取
         }
         __r.unlock();
-        fm_stat_add(FM_STAT_READ_BLOCK_MISS);
+        fm_stat_add(FM_STAT_READ_BYTES_MISS, end - start);
         return pull(weak_from_this(), true);
     } else {
         if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
