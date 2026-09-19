@@ -6,6 +6,7 @@
 #include <time.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 static FILE* log_file = NULL;
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -56,6 +57,14 @@ int log_init(const char* log_path) {
     return 0;
 }
 
+//fd 是否指向 /dev/null(fuse 后台化会把 fd 0/1/2 都换成它)
+static int is_devnull_fd(int fd) {
+    struct stat st, nullst;
+    return fstat(fd, &st) == 0 && S_ISCHR(st.st_mode) &&
+           stat("/dev/null", &nullst) == 0 &&
+           st.st_rdev == nullst.st_rdev;
+}
+
 void log_cleanup(void) {
     pthread_mutex_lock(&log_mutex);
 
@@ -83,12 +92,15 @@ void fuse_log_handler(enum fuse_log_level level, const char *fmt, va_list ap) {
     strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
 
     pthread_mutex_lock(&log_mutex);
-    static int duped = 0;
-    if (log_file != stderr && !duped) {
-        //redirect stdout and stderr to log file
-        dup2(fileno(log_file), STDOUT_FILENO);
-        dup2(fileno(log_file), STDERR_FILENO);
-        duped = 1;
+    if(log_file != stderr) {
+        //只在发现 fd 已被 fuse 后台化换成 /dev/null 时才收编
+        int log_fd = fileno(log_file);
+        if(is_devnull_fd(STDOUT_FILENO)) {
+            dup2(log_fd, STDOUT_FILENO);
+        }
+        if(is_devnull_fd(STDERR_FILENO)) {
+            dup2(log_fd, STDERR_FILENO);
+        }
     }
     // Print timestamp, level, and PID
     fprintf(log_file, "[%s] [%s] [%d] ",

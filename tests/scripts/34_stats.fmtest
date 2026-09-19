@@ -1,7 +1,7 @@
 # 34_stats.fmtest
-# 运行统计指标: 读缓存命中/未命中、推送各分支计数、meta 推送、目录条目缓存
-# STATS 断言只认原始计数器 key(stats.h 的名字表); 派生行(read_miss_rate 等)仅
-# 出现在 xattr dump 里, 用 GETXATTR contains= 验证
+# 运行统计指标: 读缓存命中/未命中(按请求字节累计)、推送各分支计数、meta 推送、目录条目缓存
+# STATS 断言只认原始计数器 key(stats.h 的名字表); 派生行(read_bytes_hit/read_miss_rate)
+# 仅出现在 xattr dump 里, 用 GETXATTR contains= 验证
 # block_len=1M: /w.bin 2 块普通数据, /z.bin 1 块全零(truncate 扩展空洞)
 # 注意: MOUNT 阶段根目录就会被拉取一次(冷 DB=miss), CREATE 不触发子目录拉取(直接插入)
 
@@ -50,6 +50,7 @@ STATS name=push_upload_fail expect=0
 STATS name=push_discard_race expect=0
 STATS name=meta_push_total expect_min=1 # 数据块推完后 meta 由后台 clean 上传
 DBLOCKS_COUNT expect=0
+STATS name=write_bytes expect=2097153    # data.bin 1 字节 + w.bin 2M; z.bin 是 truncate 不计
 
 # --- 边界写: offset 恰在块边界(1M)只应标脏后一块, 内容未变的前一块不得重传 ---
 CREATE path="/b.bin" mode=0644 handle=hb
@@ -63,6 +64,7 @@ RELEASE handle=hb2 sync=true
 BACKEND_SLEEP ms=1000
 STATS name=push_total expect=1
 STATS name=push_ok expect=1
+STATS name=write_bytes expect=4
 DBLOCKS_COUNT expect=0
 
 # --- 边界扩容: 旧长度恰在块边界(1M)时扩容, 已完整的前一块不标脏 ---
@@ -88,19 +90,21 @@ MOUNT no_cache=false
 STATS_RESET
 OPEN path="/w.bin" handle=hr
 READ handle=hr size=4 offset=0 expect_data="WWWW"      # 首读块0
-STATS name=read_block_miss
-STATS name=read_block_hit
+STATS name=read_bytes_miss
+STATS name=read_bytes
 READ handle=hr size=4 offset=0 expect_data="WWWW"      # 重读块0: 必命中
-STATS name=read_block_hit expect_min=1
-STATS name=read_block_miss
-BACKEND_SLEEP ms=2000                                  # 等隐式预读把块1拉完
+STATS name=read_bytes expect=8
+STATS name=read_bytes_miss expect_max=4                # 首读竞速至多一次 4 字节 miss
+BACKEND_SLEEP ms=2000                                  # 等隐式预读把块1拉完(高负载下可能未完成)
 READ handle=hr size=4 offset=1048600 expect_data="WWWW" # 块1内部(避开块边界)
-STATS name=read_block_miss expect_max=1                # 全程至多一次 miss(只可能来自首读)
+STATS name=read_bytes expect=12
+STATS name=read_bytes_miss expect_max=8                # 首读与本次各至多 4 字节 miss(预读慢时本次也 miss)
 RELEASE handle=hr
 
 # --- user.stats xattr 三种调用形态: 查长度 / 正常取值 / 缓冲区不足 ---
 GETXATTR path="/" name="user.stats" size=0
 GETXATTR path="/" name="user.stats" contains="read_miss_rate"
+GETXATTR path="/" name="user.stats" contains="read_bytes_hit"
 GETXATTR path="/" name="user.stats" size=8 expect_error=ERANGE
 
 UNMOUNT
@@ -111,14 +115,101 @@ MOUNT use_fmbed=true
 STATS_RESET
 FMBED_OPEN path="/w.bin" flags=RDONLY handle=hb3
 FMBED_READ handle=hb3 size=4 offset=1048576 expect_fill="W"
-STATS name=read_block_miss expect=1
-STATS name=read_block_hit expect=0
+STATS name=read_bytes_miss expect=4
+STATS name=read_bytes expect=4
 FMBED_READ handle=hb3 size=4 offset=0 expect_fill="W"  # 首读块0: miss
-STATS name=read_block_miss expect=2
-FMBED_READ handle=hb3 size=4 offset=0 expect_fill="W"  # 重读块0: hit
-STATS name=read_block_hit expect=1
+STATS name=read_bytes_miss expect=8
+STATS name=read_bytes expect=8
+FMBED_READ handle=hb3 size=4 offset=0 expect_fill="W"  # 重读块0: hit(12-8=4)
+STATS name=read_bytes expect=12
 STATS name=pull_seed_empty expect=0
 FMBED_CLOSE handle=hb3
+
+UNMOUNT
+
+# --- no_cache 直读(block_t::read): 应用层请求字节全部计 miss ---
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=true
+STATS_RESET
+OPEN path="/w.bin" handle=hn
+READ handle=hn size=4 offset=0 expect_data="WWWW"
+STATS name=read_bytes_miss expect=4
+STATS name=read_bytes expect=4                          # miss==total ⇒ hit=0
+READ handle=hn size=8 offset=1048574 expect_data="WWWWWWWW" # 跨块边界: 块0尾2字节+块1头6字节
+STATS name=read_bytes_miss expect=12
+STATS name=read_bytes expect=12
+RELEASE handle=hn
+
+UNMOUNT
+
+# --- truncate 收缩: 无同步预取, push 前由 pull 补齐; 截断尾巴零回填 ---
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+STATS_RESET
+CREATE path="/s.bin" mode=0644 handle=hs
+WRITE handle=hs data="S" repeat=1048576
+WRITE handle=hs data="S" repeat=512 offset=1048576
+RELEASE handle=hs sync=true
+BACKEND_SLEEP ms=1000
+UNMOUNT
+BACKEND_CLEAR_CACHE                                  # 清本地缓存, 远端保留
+MOUNT no_cache=false
+STATS_RESET
+OPEN path="/s.bin" flags=RDWR handle=hs2
+TRUNCATE handle=hs2 length=1048832                  # 收缩到块1内部(块1保留前 256 字节)
+STATS name=read_bytes expect=0
+STATS name=read_bytes_miss expect=0
+STATS name=pull_total expect=0                      # truncate 纯本地, 零拉取
+RELEASE handle=hs2 sync=true                        # sync 先 pull 补齐再 push
+BACKEND_SLEEP ms=1000
+STATS name=pull_total expect=1                      # 拉取发生在 push 前
+STATS name=push_total expect=1
+STATS name=read_bytes_miss expect=0                 # pull 不走 prefetch, 统计天然干净
+
+UNMOUNT
+# 冷挂载下再扩回 1M+512: 若 push 前的 pull 没把截断尾巴零回填, 远端对象里的陈旧 'S'
+# 会在这次扩容的 pull 中被原样下载并重新上传, 下一段冷读就漏出非零的洞
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+OPEN path="/s.bin" flags=RDWR handle=hs3
+TRUNCATE handle=hs3 length=1049088
+RELEASE handle=hs3 sync=true
+BACKEND_SLEEP ms=1000
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+OPEN path="/s.bin" flags=RDONLY handle=hs4
+READ handle=hs4 size=8 offset=1048876 expect_data="\0\0\0\0\0\0\0\0"  # 截断掉的洞必须是零
+READ handle=hs4 size=4 offset=1048576 expect_data="SSSS"             # 保留的前缀仍在
+RELEASE handle=hs4
+
+UNMOUNT
+
+# --- 尾块有效区外不得上传垃圾: 冷读尾块(clean pull)后写入推送, 远端对象长度必须等于有效长度 ---
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+CREATE path="/t2.bin" mode=0644 handle=ht2
+WRITE handle=ht2 data="T" repeat=1048832              # 1M+256, 非块对齐
+RELEASE handle=ht2 sync=true
+BACKEND_SLEEP ms=1000
+UNMOUNT
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+OPEN path="/t2.bin" flags=RDWR handle=ht3
+READ handle=ht3 size=4 offset=1048676 expect_data="TTTT"  # 冷读尾块: clean pull
+WRITE handle=ht3 data="XXXX" offset=1048776               # 写尾块并同步推送
+RELEASE handle=ht3 sync=true
+BACKEND_SLEEP ms=1000
+BACKEND_EXPECT_BLOCK path="/t2.bin" block=1 expect_size=256  # 对象恰好等于有效长度, 不得带垃圾/零膨胀
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+OPEN path="/t2.bin" flags=RDONLY handle=ht4
+READ handle=ht4 size=4 offset=1048676 expect_data="TTTT"      # 内容经冷读回验(编码由读路径解码)
+READ handle=ht4 size=4 offset=1048776 expect_data="XXXX"
+RELEASE handle=ht4
 
 UNMOUNT
 BACKEND_CLEAR_CACHE

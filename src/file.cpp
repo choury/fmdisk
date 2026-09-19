@@ -576,6 +576,14 @@ int file_t::writeback_range(off_t offset, size_t len) {
 }
 
 int file_t::read(void* buff, off_t offset, size_t size) {
+    int ret = read_impl(buff, offset, size);
+    if(ret > 0){
+        fm_stat_add(FM_STAT_READ_BYTES, ret);
+    }
+    return ret;
+}
+
+int file_t::read_impl(void* buff, off_t offset, size_t size) {
     atime = time(nullptr);
     auto_rlock(this);
     assert(opened);
@@ -646,6 +654,7 @@ int file_t::read(void* buff, off_t offset, size_t size) {
         return ret;
     }
     assert(bs.size() <= (size_t)size);
+    fm_stat_add(FM_STAT_READ_BYTES_MISS, bs.size());
     return bs.size();
 }
 
@@ -670,11 +679,9 @@ int file_t::truncate_wlocked(off_t offset){
     }else if(oldc >= newc && inline_data.empty()){
         // 如果offset正好在newc块的结束位置，不需要修改该块
         if((size_t)offset != (newc + 1) * blksize) {
-            int ret = blocks.at(newc)->prefetch(0, blksize, true);
-            if(ret < 0) {
-                return ret;
-            }
-            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir(), 0, blksize);
+            // 只标被截断的尾巴区间, 缺失部分由 push 前的 pull 补齐(sync 与 writeback 均先 pull 后 push);
+            // 不能标整块: 冷块时谎报覆盖, pull 的本地补丁会用零页盖掉下载下来的真实数据
+            if((flags & ENTRY_DELETED_F) == 0) blocks.at(newc)->markdirty(getblockdir(), offset - newc * blksize, blksize);
         }
         for(size_t i = newc + 1; i<= oldc; i++){
             blocks.erase(i);
@@ -753,6 +760,7 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(ret < 0){
         return -errno;
     }
+    fm_stat_add(FM_STAT_WRITE_BYTES, ret);
     version++;
     ctime = mtime = time(nullptr);
     if((flags & FILE_DIRTY_F) == 0) {

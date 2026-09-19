@@ -655,8 +655,9 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         }
         auto data_opt = optional_arg(cmd, "data");
         auto data_hex_opt = optional_arg(cmd, "data_hex");
-        if(!data_opt.has_value() && !data_hex_opt.has_value()) {
-            fail(ctx, cmd, "BACKEND_EXPECT_BLOCK requires 'data=' or 'data_hex='");
+        auto size_opt = optional_arg(cmd, "expect_size");
+        if(!data_opt.has_value() && !data_hex_opt.has_value() && !size_opt.has_value()) {
+            fail(ctx, cmd, "BACKEND_EXPECT_BLOCK requires 'data=' or 'data_hex=' or 'expect_size='");
         }
         std::string encoded_dir = encodepath(path, file_encode_suffix);
         std::string meta_path = pathjoin(encoded_dir, METANAME);
@@ -690,6 +691,17 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
             fail(ctx, cmd, oss.str());
         }
         std::string raw_block = backend_read_file(block_path);
+        if(size_opt.has_value()) {
+            long want = parse_long(size_opt.value(), 0);
+            if(want < 0) {
+                fail(ctx, cmd, "expect_size must be non-negative");
+            }
+            if(static_cast<long>(raw_block.size()) != want) {
+                std::ostringstream oss;
+                oss << "block size expected " << want << " got " << raw_block.size();
+                fail(ctx, cmd, oss.str());
+            }
+        }
         if(raw_block.size() < offset) {
             fail(ctx, cmd, "block smaller than requested offset");
         }

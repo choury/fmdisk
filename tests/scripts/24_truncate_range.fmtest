@@ -18,7 +18,9 @@ WRITE handle=edit data="tail_data" offset=900000
 TRUNCATE handle=edit length=131072
 
 # Ranges should be recorded in DB for the block after truncate
-BACKEND_EXEC_SQL sql="select hex(ranges) from blocks where block_no=0" expect="0000000000001000"
+# (小端): {4096,4110}=patch 写入区间, {131072,1M}=截断尾巴区间;
+# [4110,131072) 未覆盖, 由 push 前的 pull 懒补齐, 不再整块谎报覆盖
+BACKEND_EXEC_SQL sql="select hex(ranges) from blocks where block_no=0" expect="001000000E1000000000020000001000"
 RELEASE handle=edit sync=true
 
 # Verify size and content within the truncated range

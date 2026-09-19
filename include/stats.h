@@ -5,10 +5,10 @@
 
 // 运行统计计数器(进程内原子量, 生命周期与挂载一致, 不落盘)
 enum fm_stat_id {
-    // 需求读(prefetch wait=true)的块请求, STALE 早退与预读不计入;
-    // truncate 收缩路径的补块预取同样走 wait=true, 也计入
-    FM_STAT_READ_BLOCK_HIT,      // 命中本地缓存
-    FM_STAT_READ_BLOCK_MISS,     // 未命中, 触发整块拉取
+    // 应用层统计
+    FM_STAT_READ_BYTES,          // 读取总字节
+    FM_STAT_READ_BYTES_MISS,     // 触发网络获取的应用读取字节
+    FM_STAT_WRITE_BYTES,         // 写入总字节
     // 块拉取(block_t::pull 实际处理的入口, 含 STALE 早退与后台预读)
     FM_STAT_PULL_TOTAL,
     FM_STAT_PULL_SEED_EMPTY,     // 远端缺块(ENOENT), 本地补零
@@ -37,7 +37,7 @@ const char* fm_stat_name(enum fm_stat_id id);
 // 按 dump 输出中的 key 名查找计数器, 未找到返回 -1
 int fm_stat_find(const char* name);
 
-// key=value 多行文本, 含派生行(read_block_total/read_miss_rate/entry_hit_rate等)
+// key=value 多行文本, 含派生行(read_bytes_hit/read_miss_rate/entry_hit_rate等)
 std::string fm_stats_dump(void);
 
 #endif // STATS_H__
