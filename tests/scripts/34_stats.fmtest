@@ -1,0 +1,124 @@
+# 34_stats.fmtest
+# 运行统计指标: 读缓存命中/未命中、推送各分支计数、meta 推送、目录条目缓存
+# STATS 断言只认原始计数器 key(stats.h 的名字表); 派生行(read_miss_rate 等)仅
+# 出现在 xattr dump 里, 用 GETXATTR contains= 验证
+# block_len=1M: /w.bin 2 块普通数据, /z.bin 1 块全零(truncate 扩展空洞)
+# 注意: MOUNT 阶段根目录就会被拉取一次(冷 DB=miss), CREATE 不触发子目录拉取(直接插入)
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+STATS_RESET
+
+# --- 目录条目缓存 ---
+MKDIR path="/d" mode=0755
+CREATE path="/d/data.bin" mode=0644 handle=hd
+WRITE handle=hd data="D"
+RELEASE handle=hd
+BACKEND_SLEEP ms=1000
+# mkdir 即标记目录已拉取(新建目录内容已知), 日常访问不触发任何拉取
+GETATTR path="/d/data.bin" expect_type=file expect_size=1
+STATS name=entry_hit expect=0
+STATS name=entry_miss expect=0
+# mem-only drop_cache: 清内存保留 DB, 重拉命中本地
+SETXATTR path="/d" name="user.drop_cache" value="2"
+GETATTR path="/d/data.bin" expect_type=file expect_size=1
+STATS name=entry_hit expect=1
+STATS name=entry_miss expect=0
+# 全量 drop_cache: 连 DB 一起清, 重拉走远端 = miss
+SETXATTR path="/d" name="user.drop_cache" value="1"
+GETATTR path="/d/data.bin" expect_type=file expect_size=1
+STATS name=entry_miss expect=1
+STATS name=entry_hit expect=1
+
+# --- 普通块推送: 写满 2 块, O_SYNC RELEASE 同步推送 ---
+CREATE path="/w.bin" mode=0644 handle=hw
+WRITE handle=hw data="W" repeat=2097152
+RELEASE handle=hw sync=true
+BACKEND_SLEEP ms=1000
+
+# --- 全零块推送: truncate 扩展出的 1M 空洞块 ---
+CREATE path="/z.bin" mode=0644 handle=hz
+TRUNCATE handle=hz length=1048576
+RELEASE handle=hz sync=true
+BACKEND_SLEEP ms=2000
+
+STATS name=push_ok expect=3             # w.bin 2 块 + z.bin 全零块(零块也计 push_ok)
+STATS name=push_zero expect=1
+STATS name=push_local_fail expect=0
+STATS name=push_upload_fail expect=0
+STATS name=push_discard_race expect=0
+STATS name=meta_push_total expect_min=1 # 数据块推完后 meta 由后台 clean 上传
+DBLOCKS_COUNT expect=0
+
+# --- 边界写: offset 恰在块边界(1M)只应标脏后一块, 内容未变的前一块不得重传 ---
+CREATE path="/b.bin" mode=0644 handle=hb
+WRITE handle=hb data="B" repeat=2097152
+RELEASE handle=hb sync=true            # 推净 2 块
+BACKEND_SLEEP ms=1000
+STATS_RESET
+OPEN path="/b.bin" flags=RDWR handle=hb2
+WRITE handle=hb2 data="X" size=4 offset=1048576
+RELEASE handle=hb2 sync=true
+BACKEND_SLEEP ms=1000
+STATS name=push_total expect=1
+STATS name=push_ok expect=1
+DBLOCKS_COUNT expect=0
+
+# --- 边界扩容: 旧长度恰在块边界(1M)时扩容, 已完整的前一块不标脏 ---
+CREATE path="/t.bin" mode=0644 handle=ht
+WRITE handle=ht data="T" repeat=1048576
+RELEASE handle=ht sync=true            # 恰好推净 1 个完整块
+BACKEND_SLEEP ms=1000
+STATS_RESET
+OPEN path="/t.bin" flags=RDWR handle=ht2
+TRUNCATE handle=ht2 length=2097152     # 从块边界扩容: 无需补零, 无块标脏
+RELEASE handle=ht2 sync=true
+BACKEND_SLEEP ms=1000
+STATS name=push_total expect=0
+DBLOCKS_COUNT expect=0
+
+UNMOUNT
+
+# --- 冷缓存重挂载(FUSE 模式): 读路径观测 ---
+# FUSE 隐式预读与需求预取对首块存在竞速(先提交的异步 pull 可能抢先完成, miss 计为 hit),
+# 高负载下 hit/miss 的精确归属不确定; 精确断言在下方 fmbed 段(无隐式预读), 此处观测+不变式
+BACKEND_CLEAR_CACHE
+MOUNT no_cache=false
+STATS_RESET
+OPEN path="/w.bin" handle=hr
+READ handle=hr size=4 offset=0 expect_data="WWWW"      # 首读块0
+STATS name=read_block_miss
+STATS name=read_block_hit
+READ handle=hr size=4 offset=0 expect_data="WWWW"      # 重读块0: 必命中
+STATS name=read_block_hit expect_min=1
+STATS name=read_block_miss
+BACKEND_SLEEP ms=2000                                  # 等隐式预读把块1拉完
+READ handle=hr size=4 offset=1048600 expect_data="WWWW" # 块1内部(避开块边界)
+STATS name=read_block_miss expect_max=1                # 全程至多一次 miss(只可能来自首读)
+RELEASE handle=hr
+
+# --- user.stats xattr 三种调用形态: 查长度 / 正常取值 / 缓冲区不足 ---
+GETXATTR path="/" name="user.stats" size=0
+GETXATTR path="/" name="user.stats" contains="read_miss_rate"
+GETXATTR path="/" name="user.stats" size=8 expect_error=ERANGE
+
+UNMOUNT
+
+# --- 边界读(fmbed 无隐式预读, 计数精确): offset 恰在块边界只应 miss 后一块 ---
+BACKEND_CLEAR_CACHE
+MOUNT use_fmbed=true
+STATS_RESET
+FMBED_OPEN path="/w.bin" flags=RDONLY handle=hb3
+FMBED_READ handle=hb3 size=4 offset=1048576 expect_fill="W"
+STATS name=read_block_miss expect=1
+STATS name=read_block_hit expect=0
+FMBED_READ handle=hb3 size=4 offset=0 expect_fill="W"  # 首读块0: miss
+STATS name=read_block_miss expect=2
+FMBED_READ handle=hb3 size=4 offset=0 expect_fill="W"  # 重读块0: hit
+STATS name=read_block_hit expect=1
+STATS name=pull_seed_empty expect=0
+FMBED_CLOSE handle=hb3
+
+UNMOUNT
+BACKEND_CLEAR_CACHE

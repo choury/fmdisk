@@ -8,6 +8,7 @@
 #include "sqlite.h"
 #include "utils.h"
 #include "log.h"
+#include "stats.h"
 
 #include <string.h>
 #include <assert.h>
@@ -174,6 +175,8 @@ static void trim_worker() {
 }
 
 static void gc_worker() {
+    // 统计打印复用 entry clean 的周期, 不另设定时器
+    static time_t last_stats = time(nullptr);
     while(!gc_stop) {
         bool haswork = false;
 
@@ -184,6 +187,10 @@ static void gc_worker() {
 
         if(opt.entry_cache_second > 0) {
             clean_entry_cache();
+            if(time(nullptr) - last_stats >= opt.entry_cache_second) {
+                last_stats = time(nullptr);
+                infolog("stats:\n%s", fm_stats_dump().c_str());
+            }
         }
 
         if(haswork) {
@@ -253,12 +260,14 @@ static int persistent_cache_file(const string& remote_path) {
     return fd;
 }
 
-//计算某位置在哪个块中,从0开始计数,分界点算在前一个块中
 inline size_t GetBlkNo(size_t p, blksize_t blksize) {
     assert(blksize);
-    if (p == 0)
-        return 0;
-    return (p - 1) / blksize;
+    return p / blksize;
+}
+
+inline size_t GetBlkCount(size_t len, blksize_t blksize) {
+    assert(blksize);
+    return len ? (len - 1) / blksize + 1 : 0;
 }
 
 file_t::file_t(std::shared_ptr<dir_t> parent, const filemeta& meta):
@@ -363,12 +372,12 @@ int file_t::open(){
     opened_inodes.emplace(fi.inode, shared_file_from_this());
     if(flags & ENTRY_CHUNCED_F) {
         auto fblocks = getfblocks();
-        assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
+        assert(fblocks.size() == GetBlkCount(length, blksize) || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
             blocks.emplace(i, std::make_shared<block_t>(fi, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
     } else {
-        for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
+        for(size_t i = 0; i < std::max<size_t>(GetBlkCount(length, blksize), 1); i++ ){
             blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
@@ -491,12 +500,12 @@ int file_t::pull_wlocked() {
         return 0;
     }
     if(flags & ENTRY_CHUNCED_F) {
-        assert(fblocks.size() == GetBlkNo(length, blksize)+1 || (fblocks.empty() && length <= INLINE_DLEN));
+        assert(fblocks.size() == GetBlkCount(length, blksize) || (fblocks.empty() && length <= INLINE_DLEN));
         for(size_t i = 0; i < fblocks.size(); i++){
             blocks.emplace(i, std::make_shared<block_t>(fi, fblocks[i], i, blksize * i, blksize, flags & FILE_ENCODE_F));
         }
     } else {
-        for(size_t i = 0; i <= GetBlkNo(length, blksize); i++ ){
+        for(size_t i = 0; i < std::max<size_t>(GetBlkCount(length, blksize), 1); i++ ){
             blocks.emplace(i, std::make_shared<block_t>(fi, filekey{"", private_key}, i, blksize * i, blksize, 0));
         }
     }
@@ -535,11 +544,11 @@ int file_t::prefetch_range(off_t offset, size_t len) {
     if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
         return 0;
     }
-    size_t last = GetBlkNo(length, blksize);
+    size_t nblk = GetBlkCount(length, blksize);
     size_t startc = GetBlkNo(offset, blksize);
-    //endc 与 read 同式(不含 -1, 钳到 length), 否则末块会漏/越界
-    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length), blksize);
-    for(size_t i = startc; i <= endc && i <= last; i++){
+    // 末字节所在块, 钳到 EOF; -1 防止终点落在块边界时多算一块
+    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length) - 1, blksize);
+    for(size_t i = startc; i <= endc && i < nblk; i++){
         auto it = blocks.find(i);
         if(it != blocks.end()){
             it->second->prefetch(0, blksize, false);
@@ -554,10 +563,10 @@ int file_t::writeback_range(off_t offset, size_t len) {
     if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
         return 0;
     }
-    size_t last = GetBlkNo(length, blksize);
+    size_t nblk = GetBlkCount(length, blksize);
     size_t startc = GetBlkNo(offset, blksize);
-    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length), blksize);
-    for(size_t i = startc; i <= endc && i <= last; i++){
+    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length) - 1, blksize);
+    for(size_t i = startc; i <= endc && i < nblk; i++){
         auto it = blocks.find(i);
         if(it != blocks.end()){
             it->second->expire();
@@ -585,13 +594,13 @@ int file_t::read(void* buff, off_t offset, size_t size) {
         return size;
     }
     size_t startc = GetBlkNo(offset, blksize);
-    size_t endc = GetBlkNo(offset + size, blksize);
+    size_t endc = GetBlkNo(offset + size - 1, blksize);
     if(!opt.no_cache) {
         // 10M/20块的前向预读, 嵌入模式下由 fmbed_advise 显式驱动
         if(!opt.fmbed_mode) {
             int left_size = 10 * 1024 * 1024; //10M
             int left_block = 20;
-            for(size_t i = startc; i<= GetBlkNo(length, blksize); i++){
+            for(size_t i = startc; i < GetBlkCount(length, blksize); i++){
                 if(blocks.at(i)->prefetch(0, blksize, false) > 0){
                     left_size -= blksize;
                 }
@@ -644,8 +653,9 @@ int file_t::truncate_wlocked(off_t offset){
     if((size_t)offset == length){
         return 0;
     }
-    size_t newc = GetBlkNo(offset, blksize);
-    size_t oldc = GetBlkNo(length, blksize);
+    // 新旧长度的末块下标; 长度为 0 仍算 block0
+    size_t newc = offset ? GetBlkNo(offset - 1, blksize) : 0;
+    size_t oldc = length ? GetBlkNo(length - 1, blksize) : 0;
     if(newc > oldc){
         if(newc >= MAXFILE && (opt.flags & FM_RENAME_NOTSUPPRTED) == 0){
             errno = EFBIG;
@@ -753,10 +763,10 @@ int file_t::write(const void* buff, off_t offset, size_t size) {
     if(inline_data.size()){
         assert(inline_data.size() == length);
         memcpy(inline_data.data() + offset, buff, size);
-    }else if((flags & ENTRY_DELETED_F) == 0) {
+    }else if((flags & ENTRY_DELETED_F) == 0 && size > 0) {
         auto blockdir = getblockdir();
         const size_t startc = GetBlkNo(offset, blksize);
-        const size_t endc = GetBlkNo(offset + size, blksize);
+        const size_t endc = GetBlkNo(offset + size - 1, blksize);
         for(size_t i = startc; i <= endc; i++){
             size_t startp = std::max(i * (size_t)blksize, (size_t)offset);
             size_t endp =  std::min((i + 1) * (size_t)blksize, (size_t)offset + size);
@@ -832,12 +842,12 @@ std::vector<filekey> file_t::getfblocks(){
         if(meta.blksize == 0) {
             assert((flags & ENTRY_INITED_F) == 0);
         }else {
-            assert(fblocks.size() == GetBlkNo(length, blksize)+1);
+            assert(fblocks.size() == GetBlkCount(length, blksize));
         }
         return fblocks;
     }
     assert(flags & ENTRY_INITED_F);
-    assert(blocks.size() == GetBlkNo(length, blksize)+1);
+    assert(blocks.size() == GetBlkCount(length, blksize));
     std::vector<filekey> fblocks(blocks.size());
     for(auto i : this->blocks){
         if(i.second->dummy()){
@@ -976,6 +986,7 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     if(version_snapshot != version.load()) {
         infolog("file version: %s, inode=%ju, version %zu vs %zu, flags: %x\n",
                 key.path.c_str(), fi.inode, version_snapshot, version.load(), flags);
+        fm_stat_add(FM_STAT_META_PUSH_STALE);
         return true;
     }
     if(!dirty){

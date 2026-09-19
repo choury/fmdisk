@@ -22,6 +22,7 @@
 #include "utils.h"
 #include "fmdisk.h"
 #include "log.h"
+#include "stats.h"
 
 using std::string;
 
@@ -629,6 +630,7 @@ json_object* marshal_meta(const filemeta& meta, const std::vector<filekey>& fblo
 }
 
 int upload_meta(const filekey& fileat, filemeta& meta, const std::vector<filekey>& fblocks){
+    fm_stat_add(FM_STAT_META_PUSH_TOTAL);
     json_object *jobj = marshal_meta(meta, fblocks);
     const char *jstring = json_object_to_json_string(jobj);
 
@@ -638,6 +640,9 @@ retry:
         goto retry;
     }
     json_object_put(jobj);
+    if(ret != 0){
+        fm_stat_add(FM_STAT_META_PUSH_FAIL);
+    }
     return ret;
 }
 

@@ -9,6 +9,7 @@
 #include "transfer_helper.h"
 #include "defer.h"
 #include "log.h"
+#include "stats.h"
 
 #include <string.h>
 #include <assert.h>
@@ -123,12 +124,14 @@ int dir_t::pull_entrys_wlocked() {
     std::vector<filemeta> flist;
     auto key = getkey();
     if(load_entry_from_db(key.path, flist) == 0){
+        fm_stat_add(FM_STAT_ENTRY_MISS);
         debuglog("Miss from localcache: %s\n", key.path.c_str());
         int ret = HANDLE_EAGAIN(fm_list(key, flist));
         if(ret < 0) {
             return ret;
         }
     }else{
+        fm_stat_add(FM_STAT_ENTRY_HIT);
         cached = true;
     }
     insert_meta_wlocked(flist, !cached);

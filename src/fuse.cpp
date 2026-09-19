@@ -6,6 +6,7 @@
 #include "utils.h"
 #include "fmdisk.h"
 #include "log.h"
+#include "stats.h"
 
 #include <errno.h>
 #include <string.h>
@@ -456,6 +457,18 @@ int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len
 #else
 int fm_fuse_getxattr(const char *path, const char *name, char *value, size_t len){
 #endif
+    // 统计信息不依赖具体路径, 放在 entry 解析之前, 挂载根即可查询
+    if(strcmp(name, "user.stats") == 0) {
+        std::string stats = fm_stats_dump();
+        if(len == 0){
+            return stats.length();
+        }
+        if(stats.length() >= len){
+            return -ERANGE;
+        }
+        strcpy(value, stats.c_str());
+        return stats.length();
+    }
     auto entry = find_entry(path);
     if(entry == nullptr){
         return -ENOENT;

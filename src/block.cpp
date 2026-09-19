@@ -6,6 +6,7 @@
 #include "defer.h"
 #include "log.h"
 #include "transfer_helper.h"
+#include "stats.h"
 
 #include <string.h>
 #include <sys/xattr.h>
@@ -43,8 +44,6 @@ void clear_dblocks() {
     dblocks.clear();
 }
 
-std::atomic<long long> g_block_pull_calls{0}; // 测试观测: pull 入口调用次数(含 STALE 早退)
-std::atomic<long long> g_block_push_calls{0}; // 测试观测: push 入口调用次数(含 STALE/非脏早退)
 static sem_t dirty_blocks_sem;
 static std::atomic<long long> dirty_blocks_limit{-1};
 static pthread_once_t dirty_blocks_once = PTHREAD_ONCE_INIT;
@@ -299,7 +298,7 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     if(b == nullptr) {
         return -ENOENT;
     }
-    g_block_pull_calls.fetch_add(1, std::memory_order_relaxed);
+    fm_stat_add(FM_STAT_PULL_TOTAL);
     b->wlock();
     if(b->flags & BLOCK_STALE){
         // STALE 块远端可能已经删掉了: 直接标记为全缓存, 防止无限循环
@@ -338,6 +337,7 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
         if(ret == -ENOENT && (b->flags & BLOCK_STALE) == 0) {
             //seed empty block
             memset(bs.mutable_data(), 0, bs.size());
+            fm_stat_add(FM_STAT_PULL_SEED_EMPTY);
             warnlog("feed empty block for: %s, inode=%ju, no=%d\n", file.path.c_str(), b->fi.inode, b->no);
         } else {
             return ret;
@@ -395,11 +395,11 @@ ssize_t block_t::read(filekey fileat, void* buff, off_t offset, size_t len) {
 }
 
 int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
-    g_block_push_calls.fetch_add(1, std::memory_order_relaxed);
     auto b = wb.lock();
     if(b == nullptr) {
         return -ENOENT;
     }
+    fm_stat_add(FM_STAT_PUSH_TOTAL);
     size_t version = 0;
     char *buff = (char*)malloc(b->size);
     defer(free, buff);
@@ -415,6 +415,7 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
         }
         int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
         if(ret < 0){
+            fm_stat_add(FM_STAT_PUSH_LOCAL_FAIL);
             return ret;
         }
         len = ret;
@@ -425,6 +426,7 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
         bool allzero = isAllZero(buff, len);
 #endif
         if (allzero) {
+            fm_stat_add(FM_STAT_PUSH_ZERO);
             len = 0;
         } else if(b->flags & FILE_ENCODE_F){
             xorcode(buff, b->offset, len, opt.secret);
@@ -441,6 +443,7 @@ retry:
         }
         if(ret != 0){
             errorlog("fm_upload IO Error %s: %s\n", file.path.c_str(), strerror(-ret));
+            fm_stat_add(FM_STAT_PUSH_UPLOAD_FAIL);
             return ret;
         }
     }else{
@@ -450,6 +453,7 @@ retry:
     auto_wlock(b);
     if (version != b->version || (b->flags & BLOCK_STALE)) {
         infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
+        fm_stat_add(FM_STAT_PUSH_DISCARD_RACE);
         trim(file);
         return -EAGAIN;
     }
@@ -470,9 +474,11 @@ retry:
         b->fk = stripfile;
         b->flags &= ~BLOCK_DIRTY;
         release_dirty_block_slot();
+        fm_stat_add(FM_STAT_PUSH_OK);
         return 0;
     } else {
         errorlog("save %s failed: %ju, %d\n", stripfile.path.c_str(), b->fi.inode, b->no);
+        fm_stat_add(FM_STAT_PUSH_LOCAL_FAIL);
         trim(file);
         return -EIO;
     }
@@ -485,6 +491,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
         // check range
         for (const auto& r : ranges) {
             if (start >= r.start && end <= r.end) {
+                fm_stat_add(FM_STAT_READ_BLOCK_HIT);
                 return 0;
             }
         }
@@ -492,6 +499,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
             return 0; // 已经被释放，不预取
         }
         __r.unlock();
+        fm_stat_add(FM_STAT_READ_BLOCK_MISS);
         return pull(weak_from_this(), true);
     } else {
         if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
@@ -512,6 +520,9 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
 }
 
 void block_t::markdirty(filekey fileat, uint32_t start, uint32_t end) {
+    if(start >= end) {
+        return; // 空区间无数据变更, 标脏会导致未变的整块被重传
+    }
     version++;
     atime = time(nullptr);
     auto_wlock(this);

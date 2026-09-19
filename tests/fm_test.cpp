@@ -8,12 +8,11 @@
 #include "../src/trdpool.h"
 #include "utils.h"
 #include "log.h"
+#include "stats.h"
 
 // 内部状态观测(定义在 fmdisk/src/block.cpp)
 extern std::map<std::weak_ptr<block_t>, filekey, std::owner_less<std::weak_ptr<block_t>>> dblocks;
 extern pthread_mutex_t dblocks_lock;
-extern std::atomic<long long> g_block_pull_calls;
-extern std::atomic<long long> g_block_push_calls;
 
 #include <algorithm>
 #include <cerrno>
@@ -265,7 +264,8 @@ const std::unordered_map<std::string, int> kErrnoMap = {
     {"EACCES", EACCES}, {"EAGAIN", EAGAIN}, {"EBADF", EBADF}, {"EBUSY", EBUSY}, {"EEXIST", EEXIST},
     {"EINTR", EINTR}, {"EINVAL", EINVAL}, {"EIO", EIO}, {"EISDIR", EISDIR}, {"EMFILE", EMFILE},
     {"ENAMETOOLONG", ENAMETOOLONG}, {"ENOENT", ENOENT}, {"ENOSYS", ENOSYS}, {"ENOTDIR", ENOTDIR},
-    {"ENOTEMPTY", ENOTEMPTY}, {"EROFS", EROFS}, {"EXDEV", EXDEV}
+    {"ENOTEMPTY", ENOTEMPTY}, {"EOVERFLOW", EOVERFLOW}, {"ERANGE", ERANGE},
+    {"EROFS", EROFS}, {"EXDEV", EXDEV}
 };
 
 std::optional<int> parse_expected_errno(const Command& cmd, const std::string& key) {
@@ -537,12 +537,20 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         return;
     }
 
-    if(cmd.name == "BLOCK_PULL_CALLS") {
-        check_count_expect(ctx, cmd, "block_pull_calls", g_block_pull_calls.load());
+    if(cmd.name == "STATS") {
+        std::string name = require_arg(cmd, "name");
+        int id = fm_stat_find(name.c_str());
+        if(id < 0) {
+            std::ostringstream oss;
+            oss << "unknown stat name: " << name;
+            fail(ctx, cmd, oss.str());
+            return;
+        }
+        check_count_expect(ctx, cmd, name, fm_stat_get((enum fm_stat_id)id));
         return;
     }
-    if(cmd.name == "BLOCK_PUSH_CALLS") {
-        check_count_expect(ctx, cmd, "block_push_calls", g_block_push_calls.load());
+    if(cmd.name == "STATS_RESET") {
+        fm_stats_reset();
         return;
     }
 
@@ -1372,6 +1380,55 @@ void exec_setxattr(ExecutionContext& ctx, const Command& cmd) {
     validate_errno(ret, expected_errno, ctx, cmd, "setxattr");
 }
 
+void exec_getxattr(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::string name = require_arg(cmd, "name");
+    size_t size = 4096;
+    if(auto size_opt = optional_arg(cmd, "size"); size_opt.has_value()) {
+        size = static_cast<size_t>(parse_long(size_opt.value(), 0));
+    }
+    std::vector<char> buffer(size);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+#ifdef __APPLE__
+    int ret = fm_fuse_getxattr(path.c_str(), name.c_str(), buffer.data(), size, 0);
+#else
+    int ret = fm_fuse_getxattr(path.c_str(), name.c_str(), buffer.data(), size);
+#endif
+    if(expected_errno.has_value()) {
+        validate_errno(ret, expected_errno, ctx, cmd, "getxattr");
+        return;
+    }
+    if(ret < 0) {
+        fail(ctx, cmd, "getxattr failed with " + std::to_string(ret));
+        return;
+    }
+    // size=0 是查询所需长度的调用形态, 返回值即长度, 无内容可取
+    std::string actual;
+    if(size > 0 && ret > 0) {
+        actual.assign(buffer.data(), ret);
+    }
+    if(auto expect = optional_arg(cmd, "expect"); expect.has_value()) {
+        std::string expected = decode_escapes(expect.value());
+        if(expected != actual) {
+            fail(ctx, cmd, "getxattr expected '" + expected + "' got '" + actual + "'");
+        }
+    }
+    if(auto contains = optional_arg(cmd, "contains"); contains.has_value()) {
+        if(actual.find(contains.value()) == std::string::npos) {
+            fail(ctx, cmd, "getxattr result missing '" + contains.value() + "'");
+        }
+    }
+    if(auto expect_len = optional_arg(cmd, "expect_len"); expect_len.has_value()) {
+        long want = parse_long(expect_len.value(), 0);
+        if(ret != want) {
+            fail(ctx, cmd, "getxattr expected length " + std::to_string(want)
+                           + " got " + std::to_string(ret));
+        }
+    }
+    std::cout << "[fmtest] getxattr " << name << " -> " << ret << " bytes" << std::endl;
+}
+
 // fmbed 嵌入式接口的脚本命令(不经内核 fuse 的进程内路径)
 fmbed_file* require_fmbed_handle(ExecutionContext& ctx, const Command& cmd) {
     std::string handle = require_arg(cmd, "handle");
@@ -1703,8 +1760,8 @@ void exec_fmbed_mkdir(ExecutionContext& ctx, const Command& cmd) {
 void exec_command(ExecutionContext& ctx, const Command& cmd) {
     if(cmd.name.rfind("BACKEND_", 0) == 0
        || cmd.name == "DBLOCKS_COUNT"
-       || cmd.name == "BLOCK_PULL_CALLS"
-       || cmd.name == "BLOCK_PUSH_CALLS") {
+       || cmd.name == "STATS"
+       || cmd.name == "STATS_RESET") {
         run_backend_command(ctx, cmd);
         return;
     }
@@ -1790,6 +1847,10 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "SETXATTR") {
         exec_setxattr(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "GETXATTR") {
+        exec_getxattr(ctx, cmd);
         return;
     }
     if(cmd.name == "FMBED_OPEN") {

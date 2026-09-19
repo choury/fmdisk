@@ -1,5 +1,5 @@
 # fmbed 嵌入模式关闭隐式预读: 无 advise 不预取, 预取只能由 WILL_READ 显式驱动
-# 观测手段: BLOCK_PULL_CALLS(进程内累计的 block 拉取次数; meta 下载与 push 不计入)
+# 观测手段: STATS pull_total(进程内累计的 block 拉取次数; meta 下载与 push 不计入)
 # advise 的预取是异步的: 先 sleep 等它落地再 close(close 时在途 pull 会被 STALE 早退作废)
 BACKEND_CLEAR_CACHE
 BACKEND_RESET
@@ -21,23 +21,23 @@ MOUNT use_fmbed=true
 FMBED_OPEN path="/nopf/cold.bin" flags=RDONLY handle=fc
 FMBED_READ handle=fc size=4096 offset=0 expect_fill="C"
 BACKEND_SLEEP ms=2000
-BLOCK_PULL_CALLS expect=1
+STATS name=pull_total expect=1
 # 边界回归: len=1MB+1 时末字节落在第 1 块块首, advise 应覆盖第 1 块(块 0 已缓存)
 FMBED_ADVISE handle=fc advice=will_read offset=0 len=1048577
 BACKEND_SLEEP ms=500
 FMBED_CLOSE handle=fc
-BLOCK_PULL_CALLS expect=2
+STATS name=pull_total expect=2
 # 显式 WILL_READ 整文件: 只有最后一块未缓存被预取
 FMBED_OPEN path="/nopf/cold.bin" flags=RDONLY handle=fc
 FMBED_ADVISE handle=fc advice=will_read offset=0 len=3145728
 BACKEND_SLEEP ms=500
 FMBED_CLOSE handle=fc
-BLOCK_PULL_CALLS expect=3
+STATS name=pull_total expect=3
 # 预取过的块重开句柄可读, 不产生额外拉取
 FMBED_OPEN path="/nopf/cold.bin" flags=RDONLY handle=fc
 FMBED_READ handle=fc size=4096 offset=2097152 expect_fill="C"
 BACKEND_SLEEP ms=500
-BLOCK_PULL_CALLS expect=3
+STATS name=pull_total expect=3
 FMBED_CLOSE handle=fc
 FMBED_UNLINK path="/nopf/cold.bin"
 FMBED_RMDIR path="/nopf"

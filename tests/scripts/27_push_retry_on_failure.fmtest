@@ -61,7 +61,8 @@ BACKEND_SLEEP ms=7000
 # 修复点断言一: 失败的脏块必须回填 dblocks(等待重试)
 # 修复前红灯: 块被提交摘除且失败后无人回填, dblocks_live = 0
 DBLOCKS_COUNT expect_min=1
-BLOCK_PUSH_CALLS expect_min=11
+STATS name=push_total expect_min=11
+STATS name=push_upload_fail expect_min=10
 
 # 再等一轮: 仍在重试(回填语义 = 失败后保持可见)
 BACKEND_SLEEP ms=7000
