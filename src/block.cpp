@@ -300,6 +300,13 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
         return -ENOENT;
     }
     b->wlock();
+    if((b->flags & BLOCK_PULLING) && !wait) {
+        b->unwlock();
+        return -EBUSY;
+    }
+    while(b->flags & BLOCK_PULLING){
+        b->pull_cond.wait_write(b);
+    }
     if(b->flags & BLOCK_STALE){
         // STALE 块远端可能已经删掉了: 直接标记为全缓存, 防止无限循环
         b->ranges = std::vector<Range>{{0, (uint32_t)b->size}};
@@ -309,13 +316,6 @@ int block_t::pull(std::weak_ptr<block_t> wb, bool wait) {
     if(b->full_cached()){
         b->unwlock();
         return 0;
-    }
-    if((b->flags & BLOCK_PULLING) && !wait) {
-        b->unwlock();
-        return -EBUSY;
-    }
-    while(b->flags & BLOCK_PULLING){
-        b->pull_cond.wait_write(b);
     }
 
     off_t startp = b->fk.path.size() ? 0 : b->offset;
@@ -527,7 +527,7 @@ int block_t::prefetch(uint32_t start, uint32_t end, bool wait) {
         return pull(weak_from_this(), true);
     } else {
         if(dpool->tasks_in_queue() > DOWNLOADTHREADS){
-            return 1;
+            return -EAGAIN;
         }
         if(tryrlock() != 0) {
             return 1; // 已经有写锁，说明正在被修改，不需要预取

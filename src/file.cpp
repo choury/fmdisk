@@ -541,17 +541,23 @@ int file_t::fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {
 int file_t::prefetch_range(off_t offset, size_t len) {
     atime = time(nullptr);
     auto_rlock(this);
-    if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
-        return 0;
+    if(opt.no_cache || inline_data.size()){
+        return -EOPNOTSUPP;
     }
-    size_t nblk = GetBlkCount(length, blksize);
+    if(len == 0 || (size_t)offset >= length){
+        return -EINVAL;
+    }
+    len = std::min<uint64_t>(len, length - offset); // 钳到 EOF, 同时防 offset+len 回绕
     size_t startc = GetBlkNo(offset, blksize);
-    // 末字节所在块, 钳到 EOF; -1 防止终点落在块边界时多算一块
-    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length) - 1, blksize);
-    for(size_t i = startc; i <= endc && i < nblk; i++){
+    size_t endc = GetBlkNo(offset + len - 1, blksize); // -1 防止终点落在块边界时多算一块
+    for(size_t i = startc; i <= endc; i++){
         auto it = blocks.find(i);
-        if(it != blocks.end()){
-            it->second->prefetch(0, blksize, false);
+        if(it == blocks.end()){
+            return -EIO;
+        }
+        int ret = it->second->prefetch(0, blksize, false);
+        if(ret < 0){
+            return ret;
         }
     }
     return 0;
@@ -560,17 +566,21 @@ int file_t::prefetch_range(off_t offset, size_t len) {
 int file_t::writeback_range(off_t offset, size_t len) {
     atime = time(nullptr);
     auto_rlock(this);
-    if(opt.no_cache || inline_data.size() || len == 0 || (size_t)offset >= length){
-        return 0;
+    if(opt.no_cache || inline_data.size()){
+        return -EOPNOTSUPP;
     }
-    size_t nblk = GetBlkCount(length, blksize);
+    if(len == 0 || (size_t)offset >= length){
+        return -EINVAL;
+    }
+    len = std::min<uint64_t>(len, length - offset);
     size_t startc = GetBlkNo(offset, blksize);
-    size_t endc = GetBlkNo(std::min<uint64_t>(offset + len, length) - 1, blksize);
-    for(size_t i = startc; i <= endc && i < nblk; i++){
+    size_t endc = GetBlkNo(offset + len - 1, blksize);
+    for(size_t i = startc; i <= endc; i++){
         auto it = blocks.find(i);
-        if(it != blocks.end()){
-            it->second->expire();
+        if(it == blocks.end()){
+            return -EIO;
         }
+        it->second->expire();
     }
     return 0;
 }

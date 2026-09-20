@@ -264,8 +264,8 @@ const std::unordered_map<std::string, int> kErrnoMap = {
     {"EACCES", EACCES}, {"EAGAIN", EAGAIN}, {"EBADF", EBADF}, {"EBUSY", EBUSY}, {"EEXIST", EEXIST},
     {"EINTR", EINTR}, {"EINVAL", EINVAL}, {"EIO", EIO}, {"EISDIR", EISDIR}, {"EMFILE", EMFILE},
     {"ENAMETOOLONG", ENAMETOOLONG}, {"ENOENT", ENOENT}, {"ENOSYS", ENOSYS}, {"ENOTDIR", ENOTDIR},
-    {"ENOTEMPTY", ENOTEMPTY}, {"EOVERFLOW", EOVERFLOW}, {"ERANGE", ERANGE},
-    {"EROFS", EROFS}, {"EXDEV", EXDEV}
+    {"ENOTEMPTY", ENOTEMPTY}, {"ENOTSUP", ENOTSUP}, {"EOPNOTSUPP", EOPNOTSUPP}, {"EOVERFLOW", EOVERFLOW},
+    {"ERANGE", ERANGE}, {"EROFS", EROFS}, {"EXDEV", EXDEV}
 };
 
 std::optional<int> parse_expected_errno(const Command& cmd, const std::string& key) {
@@ -714,7 +714,7 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
             if(slice != expected) {
                 fail(ctx, cmd, "block data mismatch at provided offset");
             }
-        } else {
+        } else if(data_hex_opt.has_value()) {
             std::string expected_hex = *data_hex_opt;
             std::string lowered;
             lowered.reserve(expected_hex.size());

@@ -16,7 +16,9 @@ FMBED_READ handle=fa size=4 offset=2 expect_data="llo "
 FMBED_READ handle=fa size=8 offset=100 expect_bytes=0
 FMBED_STAT path="/fm/a.txt" expect_type=file expect_size=11
 FMBED_STAT path="/fm" expect_type=dir
-FMBED_ADVISE handle=fa advice=will_read offset=0 len=11
+# inline 文件(<=64K)无块级缓存, advise 不适用
+FMBED_ADVISE handle=fa advice=will_read offset=0 len=11 expect_error=EOPNOTSUPP
+FMBED_ADVISE handle=fa advice=will_push offset=0 len=11 expect_error=EOPNOTSUPP
 FMBED_TRUNCATE handle=fa length=8
 FMBED_READ handle=fa size=32 expect_data="hello fm"
 FMBED_CLOSE handle=fa
@@ -43,6 +45,12 @@ FMBED_STAT path="/big/large.bin" expect_type=file expect_size=1572864
 FMBED_READ handle=fl size=8 offset=1048572 expect_data="AAAABBBB"
 FMBED_READ handle=fl size=4096 offset=0 expect_fill="A"
 FMBED_READ handle=fl size=4096 offset=1048576 expect_fill="B"
+# advise 错误分支: 空区间 / 起点越界(EOF=1572864) → EINVAL
+FMBED_ADVISE handle=fl advice=will_read len=0 expect_error=EINVAL
+FMBED_ADVISE handle=fl advice=will_read offset=1572864 len=1 expect_error=EINVAL
+FMBED_ADVISE handle=fl advice=will_push offset=2097152 len=4096 expect_error=EINVAL
+# 区间钳到 EOF: 越出部分忽略, 覆盖的块本已全量缓存 → 0
+FMBED_ADVISE handle=fl advice=will_read offset=1048576 len=10485760
 # will_push 加速脏块异步推送; meta 不归它管, 靠 close 后的 clean 及 UNMOUNT 排空 delay 队列上传
 FMBED_ADVISE handle=fl advice=will_push offset=0 len=1572864
 FMBED_CLOSE handle=fl
