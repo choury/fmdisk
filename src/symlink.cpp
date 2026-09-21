@@ -2,6 +2,7 @@
 #include "symlink.h"
 #include "dir.h"
 #include "sqlite.h"
+#include "stats.h"
 #include <errno.h>
 #include <string.h>
 
@@ -65,6 +66,7 @@ int symlink_t::pull_wlocked() {
     assert((flags & ENTRY_INITED_F) == 0);
     std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
+    fm_stat_add(meta.blksize ? FM_STAT_META_HIT : FM_STAT_META_MISS);
     assert(fblocks.empty());
     assert(flags & ENTRY_CHUNCED_F);
     if(meta.blksize == 0){

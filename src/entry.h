@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <atomic>
+#include <functional>
 #include <future>
 #include <utility>
 
@@ -41,6 +42,8 @@ protected:
     virtual int drop_cache_wlocked(bool mem_only, time_t before) = 0;
     virtual int remove_wlocked(bool skip_entry) = 0;
     static void pull(std::weak_ptr<entry_t> entry);
+    void submit_pull();
+    void warm_subtree();
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
         return -EINVAL;
     }
@@ -89,6 +92,7 @@ public:
         return -ENODATA;
     }
 
+    int run_storage_op(const std::function<int(TrdPool*, std::vector<std::future<int>>&)>& op);
     int set_storage_class(enum storage_class storage);
     int to_standard();
     friend class dir_t;

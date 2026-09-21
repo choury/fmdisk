@@ -25,6 +25,8 @@ static const char* g_stat_names[FM_STAT_MAX] = {
     "meta_push_stale",
     "entry_hit",
     "entry_miss",
+    "meta_hit",
+    "meta_miss",
 };
 
 void fm_stat_add(enum fm_stat_id id, long long val) {
@@ -116,5 +118,9 @@ std::string fm_stats_dump(void) {
     line("entry_hit", std::to_string(v[FM_STAT_ENTRY_HIT]));
     line("entry_miss", std::to_string(v[FM_STAT_ENTRY_MISS]));
     line("entry_hit_rate", percent(v[FM_STAT_ENTRY_HIT], entry_total));
+    long long meta_cache_total = v[FM_STAT_META_HIT] + v[FM_STAT_META_MISS];
+    line("meta_hit", std::to_string(v[FM_STAT_META_HIT]));
+    line("meta_miss", std::to_string(v[FM_STAT_META_MISS]));
+    line("meta_hit_rate", percent(v[FM_STAT_META_HIT], meta_cache_total));
     return s;
 }

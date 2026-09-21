@@ -16,6 +16,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -51,25 +52,26 @@ void fmbed_destroy(void);
 typedef struct fmbed_file fmbed_file;
 
 /* 打开文件返回句柄。
- * flags 接受 O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_EXCL:
+ * flags 接受 O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_EXCL/O_DIRECTORY:
  *   - O_CREAT: 不存在则创建(父目录必须存在; no_cache 模式 EROFS)
  *   - O_EXCL: 与 O_CREAT 同用时, 路径已存在则 EEXIST
+ *   - O_DIRECTORY: 打开目录(不拉取目录项, 仅供 FMBED_WILL_SCAN)
  * 其余标志(如 O_APPEND/O_TRUNC)未实现, 静默忽略。
- * 打开目录返回 EISDIR, 打开符号链接返回 ELOOP。
+ * 打开目录(不带 O_DIRECTORY)返回 EISDIR, 打开符号链接返回 ELOOP。
  * 成功返回句柄; 失败返回 NULL 并设置 errno。
  * 句柄可被多线程并发使用(内部读写锁保护); fmbed_close 须等该句柄
  * 全部在飞调用返回后才能调用。 */
 fmbed_file* fmbed_open(const char* path, int flags);
 
 /* 读 [off, off+len): 返回读取字节数(0=EOF), <0 为 -errno。
- * O_WRONLY 句柄返回 -EBADF。 */
+ * O_WRONLY 句柄返回 -EBADF, 目录句柄返回 -EISDIR。 */
 int64_t fmbed_read(fmbed_file* f, void* buf, size_t len, uint64_t off);
 
 /* 写 [off, off+len): 超出末尾自动扩展。返回写入字节数, <0 为 -errno。
- * O_RDONLY 句柄返回 -EBADF。 */
+ * O_RDONLY 句柄返回 -EBADF, 目录句柄返回 -EISDIR。 */
 int64_t fmbed_write(fmbed_file* f, const void* buf, size_t len, uint64_t off);
 
-/* 截断/扩展到 size(对象存储天然稀疏, 可用于预分配) */
+/* 截断/扩展到 size(对象存储天然稀疏, 可用于预分配); 目录句柄返回 -EISDIR */
 int fmbed_truncate(fmbed_file* f, uint64_t size);
 
 #define FMBED_CLOSE_SYNC 1  /* close 时同步推脏块并上传 meta 后再返回 */
@@ -87,16 +89,23 @@ int fmbed_unlink(const char* path);
 int fmbed_rmdir(const char* path);                       /* 仅空目录 */
 int fmbed_rename(const char* oldpath, const char* newpath);
 int fmbed_statfs(const char* path, struct statvfs* sf);
+int fmbed_utimens(const char* path, const struct timespec tv[2]);
 
 /* 枚举目录: 对每个条目名(不含 ./..)调用 cb, 返回非0则提前停止。
  * 返回 0 完成, 1 被 cb 提前停止, <0 为 -errno */
 typedef int (*fmbed_list_cb)(void* ud, const char* name);
 int fmbed_listdir(const char* path, fmbed_list_cb cb, void* ud);
 
+/* ---- 扩展属性: 与 FUSE 挂载的 xattr 同名同义 ---- */
+
+int fmbed_setxattr(const char* path, const char* name, const void* value, size_t size, int flags);
+int fmbed_getxattr(const char* path, const char* name, void* value, size_t size);
+
 /* ---- 缓存策略 ---- */
 
 #define FMBED_WILL_READ 1   /* 异步预取覆盖块(recheck 等顺序读前调用) */
 #define FMBED_WILL_PUSH 2   /* 异步加速写回覆盖的脏块(writeback_thread 下一轮即推); 不上传 meta, meta 仍走 close/unmount 的常规路径 */
+#define FMBED_WILL_SCAN 4   /* 目录句柄专用: 异步递归预取整棵子树的元数据; off 为下钻深度 (-1 无限, 0 只拉本层, 默认 0); len 忽略 */
 
 /* 返回 0 成功, <0 为 -errno */
 int fmbed_advise(fmbed_file* f, uint64_t off, uint64_t len, int advice);

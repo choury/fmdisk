@@ -28,6 +28,7 @@ class dir_t: public entry_t {
     virtual int remove_wlocked(bool skip_entry) override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
     virtual int to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) override;
+    int foreach_child_storage_op(const std::function<int(entry_t*)>& op);
     virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) override;
 public:
     dir_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
@@ -58,6 +59,11 @@ public:
     void finalize_local_move(std::shared_ptr<entry_t> entry, std::shared_ptr<dir_t> newparent, const journal_entry& jr);
 
     virtual void dump_to_db(const std::string& path, const std::string& name) override;
+
+    // 异步递归预取整棵子树的元数据: 每级目录拉自身 meta+目录项,
+    // depth 限制下钻的子目录层数: -1 无限, 0 只拉本层(目录子项仍拉 meta)
+    static void prefetch_tree(std::weak_ptr<dir_t> dir, int depth);
+    int submit_prefetch_tree(int depth);
 };
 
 

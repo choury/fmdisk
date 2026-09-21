@@ -95,6 +95,7 @@ int dir_t::pull_wlocked() {
     assert((flags & ENTRY_INITED_F) == 0);
     std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
+    fm_stat_add(meta.blksize ? FM_STAT_META_HIT : FM_STAT_META_MISS);
     assert(fblocks.empty());
     if(meta.blksize == 0){
         int ret = HANDLE_EAGAIN(fm_getattr(key, meta));
@@ -190,35 +191,86 @@ std::shared_ptr<entry_t> dir_t::find(std::shared_ptr<dir_t> current, std::string
 
 int dir_t::open() {
     atime = time(nullptr);
-    auto_wlock(this);
-    if((flags & ENTRY_INITED_F) == 0){
-        int ret = pull_wlocked();
-        if(ret < 0) {
-            return ret;
+    {
+        auto_wlock(this);
+        if((flags & ENTRY_INITED_F) == 0){
+            int ret = pull_wlocked();
+            if(ret < 0) {
+                return ret;
+            }
         }
+        // fmbed 模式目录项由访问/advise 惰性拉取
+        if(!opt.fmbed_mode && (flags & DIR_PULLED_F) == 0){
+            int ret = pull_entrys_wlocked();
+            if(ret < 0) {
+                return ret;
+            }
+        }
+        opened++;
     }
-    if((flags & DIR_PULLED_F) == 0){
-        int ret = pull_entrys_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
+    if(!opt.fmbed_mode) {
+        submit_prefetch_tree(0);
     }
-    for(auto [name, entry]: entrys){
-        if(name == "." || name == ".." || entry == nullptr){
-            continue;
-        }
-        auto_rlock(entry);
-        if((entry->flags & ENTRY_INITED_F) || (entry->flags & ENTRY_PULLING_F)){
-            continue;
-        }
-        __r.upgrade();
-        entry->flags |= ENTRY_PULLING_F;
-        dpool->submit_fire_and_forget([entry = std::weak_ptr<entry_t>(entry)]{
-            pull(entry);
-        });
-    }
-    opened++;
     return 0;
+}
+
+int dir_t::submit_prefetch_tree(int depth) {
+    {
+        auto_wlock(this);
+        if(flags & ENTRY_DELETED_F){
+            return 0;
+        }
+        if(flags & ENTRY_PULLING_F){
+            return -EBUSY;
+        }
+        flags |= ENTRY_PULLING_F;
+    }
+    dpool->submit_fire_and_forget([dir = std::weak_ptr<dir_t>(shared_dir_from_this()), depth]{
+        prefetch_tree(dir, depth);
+    });
+    return 0;
+}
+
+void dir_t::prefetch_tree(std::weak_ptr<dir_t> dir_, int depth) {
+    auto dir = dir_.lock();
+    if(dir == nullptr) {
+        return;
+    }
+    // 在途标志让 drop_cache 对 scan 覆盖的目录返回 EAGAIN, 避免 drop 后任务重拉并写回已删的库行
+    defer([&dir]{ auto_wlock(dir.get()); dir->flags &= ~ENTRY_PULLING_F; });
+    {
+        auto_wlock(dir.get());
+        if(dir->flags & ENTRY_DELETED_F){
+            return;
+        }
+        if((dir->flags & ENTRY_INITED_F) == 0){
+            int ret = dir->pull_wlocked();
+            if(ret < 0) {
+                return;
+            }
+        }
+    }
+    if(dir->children() < 0){
+        return;
+    }
+    std::vector<std::shared_ptr<entry_t>> childs;
+    {
+        auto_rlock(dir.get());
+        for(auto& [name, entry]: dir->entrys){
+            if(name == "." || name == ".." || entry == nullptr){
+                continue;
+            }
+            childs.push_back(entry);
+        }
+    }
+    for(auto& entry: childs){
+        auto sub = std::dynamic_pointer_cast<dir_t>(entry);
+        if(sub == nullptr || depth == 0){
+            entry->submit_pull();
+        }else{
+            sub->submit_prefetch_tree(depth < 0 ? depth : depth - 1);
+        }
+    }
 }
 
 int dir_t::foreach_entrys(const std::function<int(const string&, std::shared_ptr<filemeta>)>& visitor) {
@@ -876,92 +928,47 @@ int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     return delete_entry_prefix_from_db(parent.lock() ? getkey().path: "");
 }
 
+int dir_t::foreach_child_storage_op(const std::function<int(entry_t*)>& op) {
+    {
+        auto_rlock(this);
+        if(flags & ENTRY_DELETED_F){
+            return -ENOENT;
+        }
+    }
+    if(children() < 0){
+        return -errno;
+    }
+    std::vector<std::shared_ptr<entry_t>> childs;
+    {
+        auto_rlock(this);
+        for(auto& [name, entry]: entrys){
+            childs.push_back(entry);
+        }
+    }
+    int ret = 0;
+    for(auto& entry: childs){
+        ret |= op(entry.get());
+    }
+    return ret == 0 ? 0 : -EIO;
+}
+
 int dir_t::collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) {
     assert(pool != nullptr);
-    auto_rlock(this);
-    if(flags & ENTRY_DELETED_F) {
-        return -ENOENT;
-    }
-    if((flags & ENTRY_INITED_F) == 0) {
-        __r.upgrade();
-        int ret = pull_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    if((flags & DIR_PULLED_F) == 0) {
-        __r.upgrade();
-        int ret = pull_entrys_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    bool failed = false;
-    for(auto& entry : entrys) {
-        int ret = entry.second->collect_storage_classes(pool, futures);
-        if(ret < 0) {
-            failed = true;
-        }
-    }
-    return failed ? -EIO : 0;
+    return foreach_child_storage_op([pool, &futures](entry_t* entry){
+        return entry->collect_storage_classes(pool, futures);
+    });
 }
 
 int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
-    auto_rlock(this);
-    if(flags & ENTRY_DELETED_F){
-        return -ENOENT;
-    }
-    if((flags & ENTRY_INITED_F) == 0){
-        __r.upgrade();
-        int ret = pull_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    if((flags & DIR_PULLED_F) == 0){
-        __r.upgrade();
-        int ret = pull_entrys_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    int ret = 0;
-    for(auto i : entrys){
-        ret |= i.second->set_storage_class(storage, pool, futures);
-    }
-    if(ret == 0) {
-        return 0;
-    }
-    return -EIO;
+    return foreach_child_storage_op([storage, pool, &futures](entry_t* entry){
+        return entry->set_storage_class(storage, pool, futures);
+    });
 }
 
 int dir_t::to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
-    auto_rlock(this);
-    if(flags & ENTRY_DELETED_F){
-        return -ENOENT;
-    }
-    if((flags & ENTRY_INITED_F) == 0){
-        __r.upgrade();
-        int ret = pull_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    if((flags & DIR_PULLED_F) == 0){
-        __r.upgrade();
-        int ret = pull_entrys_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    int ret = 0;
-    for(auto i : entrys){
-        ret |= i.second->to_standard(pool, futures);
-    }
-    if(ret == 0) {
-        return 0;
-    }
-    return -EIO;
+    return foreach_child_storage_op([pool, &futures](entry_t* entry){
+        return entry->to_standard(pool, futures);
+    });
 }
 
 static int fetchmeta(const filekey& parent, filekey& file, filemeta& meta) {

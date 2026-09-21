@@ -1,0 +1,98 @@
+# fmbed_advise WILL_SCAN: 目录句柄上异步递归预取整棵子树元数据
+# 效果验证: scan 后再 stat/listdir 深层路径, entry_miss/meta_miss 不再增长
+# (entry_* 计目录项缓存, meta_* 计文件元数据缓存, 均 miss 才走网络)
+# fmbed 模式无隐式预取(opendir 不预取自身目录项), 一切拉取由访问或 advise 驱动;
+# 路径解析会拉取各级祖先目录项(首次访问根目录计一次 entry_miss)
+# mock 后端的 fm_list 返回完整 meta: 列表建立的条目已初始化, 无 meta 拉取;
+# KEY_ONLY 占位条目(仅 sqlite entrys 表三样)只在 drop_cache 后的重建路径出现
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/sc/a.txt" data="aaa"
+BACKEND_SEED path="/sc/sub/b.txt" data="bbbb"
+BACKEND_SEED path="/sc/sub/deep/c.txt" data="ccccc"
+BACKEND_SEED path="/ns/x.txt" data="x"
+BACKEND_SEED path="/dp/x.txt" data="dx"
+BACKEND_SEED path="/dp/sub/y.txt" data="dy"
+BACKEND_SEED path="/dp/sub/deep/z.txt" data="dz"
+MOUNT use_fmbed=true
+BACKEND_SLEEP ms=500
+STATS_RESET
+
+# 打开目录句柄不拉取 /sc 自身目录项(entry_miss=1 是解析 /sc 时拉取的根目录项)
+FMBED_OPEN path="/sc" flags=DIRECTORY handle=dh
+STATS name=entry_miss expect=1
+STATS name=meta_miss expect=0
+# 错误分支: 目录不带 O_DIRECTORY / 文件带 O_DIRECTORY / advice 与句柄类型不符
+FMBED_OPEN path="/sc" expect_error=EISDIR
+FMBED_OPEN path="/sc/a.txt" flags=DIRECTORY expect_error=ENOTDIR
+FMBED_ADVISE handle=dh advice=will_read expect_error=EINVAL
+FMBED_ADVISE handle=dh advice=will_push expect_error=EINVAL
+FMBED_OPEN path="/sc/a.txt" flags=RDONLY handle=fh
+FMBED_ADVISE handle=fh advice=will_scan expect_error=EINVAL
+FMBED_READ handle=fh size=3 expect_data="aaa"
+FMBED_CLOSE handle=fh
+# 目录句柄不可读写
+FMBED_READ handle=dh size=4 expect_error=EISDIR
+FMBED_WRITE handle=dh data="x" expect_error=EISDIR
+FMBED_TRUNCATE handle=dh length=0 expect_error=EISDIR
+# O_DIRECTORY 组合: 不存在路径+O_CREAT 不允许建目录; 已存在+O_CREAT|O_EXCL 报 EEXIST
+FMBED_OPEN path="/sc/newdir" flags=DIRECTORY|CREAT expect_error=ENOTDIR
+FMBED_OPEN path="/sc" flags=DIRECTORY|CREAT|EXCL expect_error=EEXIST
+
+# 触发 scan(off=-1 无限): 解析 a.txt 已顺带拉过 /sc 目录项(根+/sc 共2次 miss),
+# scan 补齐 sub/deep 两级
+FMBED_ADVISE handle=dh advice=will_scan offset=-1
+BACKEND_SLEEP ms=1000
+STATS name=entry_miss expect=4
+STATS name=meta_miss expect=0
+STATS name=entry_hit expect=0
+STATS name=meta_hit expect=0
+# 深层路径已就绪: 后续访问不再产生任何 miss
+FMBED_STAT path="/sc/sub/deep/c.txt" expect_type=file expect_size=5
+FMBED_LISTDIR path="/sc/sub" expect_names="b.txt,deep"
+STATS name=entry_miss expect=4
+STATS name=meta_miss expect=0
+# 幂等: 重复 scan 不再拉取
+FMBED_ADVISE handle=dh advice=will_scan offset=-1
+BACKEND_SLEEP ms=500
+STATS name=entry_miss expect=4
+STATS name=meta_miss expect=0
+# 对照: scan 范围外的目录访问仍会新增 miss
+FMBED_LISTDIR path="/ns" expect_names="x.txt"
+STATS name=entry_miss expect=5
+
+# mem-only drop_cache 需先关目录句柄(打开中返回 EBUSY), drop 后重开重扫:
+# 目录项全部命中 sqlite(entry_hit=3),
+# 重建的 KEY_ONLY 占位条目(a.txt/sub/b.txt/deep/c.txt)各自命中 files 表(meta_hit=5)
+FMBED_CLOSE handle=dh
+SETXATTR path="/sc" name="user.drop_cache" value="2"
+FMBED_OPEN path="/sc" flags=DIRECTORY handle=dh
+FMBED_ADVISE handle=dh advice=will_scan offset=-1
+BACKEND_SLEEP ms=1000
+STATS name=entry_miss expect=5
+STATS name=meta_miss expect=0
+STATS name=entry_hit expect=3
+STATS name=meta_hit expect=5
+FMBED_STAT path="/sc/sub/deep/c.txt" expect_type=file expect_size=5
+STATS name=meta_hit expect=5
+FMBED_CLOSE handle=dh
+# 深度限制: off=0 只拉本层(/dp 目录项一次 miss), 子目录目录项不动
+FMBED_OPEN path="/dp" flags=DIRECTORY handle=dh3
+FMBED_ADVISE handle=dh3 advice=will_scan offset=0
+# /dp 目录项未拉取, scan 任务含网络往返, 紧接着重复必在途 → EBUSY
+FMBED_ADVISE handle=dh3 advice=will_scan offset=0 expect_error=EBUSY
+BACKEND_SLEEP ms=1000
+STATS name=entry_miss expect=6
+STATS name=entry_hit expect=3
+# off=-1 补齐剩余两层(sub/deep 各一次 miss), 全树就绪
+FMBED_ADVISE handle=dh3 advice=will_scan offset=-1
+BACKEND_SLEEP ms=1000
+STATS name=entry_miss expect=8
+STATS name=entry_hit expect=3
+FMBED_STAT path="/dp/sub/deep/z.txt" expect_type=file expect_size=2
+STATS name=entry_miss expect=8
+FMBED_CLOSE handle=dh3
+# 留一个目录句柄不关: UNMOUNT 应兜底 close 目录句柄
+FMBED_OPEN path="/ns" flags=DIRECTORY handle=dh2
+UNMOUNT
+BACKEND_CLEAR_CACHE

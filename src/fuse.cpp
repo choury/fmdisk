@@ -131,8 +131,7 @@ int fm_fuse_readdir(const char* path, void *buf, fuse_fill_dir_t filler,
 
 int fm_fuse_fsyncdir (const char *, int dataonly, struct fuse_file_info *fi) {
     auto entry_ptr = (std::shared_ptr<entry_t>*)fi->fh;
-    auto entry = std::dynamic_pointer_cast<dir_t>(*entry_ptr);
-    return entry->sync(dataonly);
+    return (*entry_ptr)->sync(dataonly);
 }
 
 int fm_fuse_releasedir(const char*, struct fuse_file_info *fi){

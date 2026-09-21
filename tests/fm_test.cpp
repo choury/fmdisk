@@ -263,7 +263,8 @@ json_object* resolve_json_path(json_object* root, const std::string& path) {
 const std::unordered_map<std::string, int> kErrnoMap = {
     {"EACCES", EACCES}, {"EAGAIN", EAGAIN}, {"EBADF", EBADF}, {"EBUSY", EBUSY}, {"EEXIST", EEXIST},
     {"EINTR", EINTR}, {"EINVAL", EINVAL}, {"EIO", EIO}, {"EISDIR", EISDIR}, {"EMFILE", EMFILE},
-    {"ENAMETOOLONG", ENAMETOOLONG}, {"ENOENT", ENOENT}, {"ENOSYS", ENOSYS}, {"ENOTDIR", ENOTDIR},
+    {"ENAMETOOLONG", ENAMETOOLONG}, {"ENODATA", ENODATA}, {"ENOENT", ENOENT}, {"ENOSYS", ENOSYS},
+    {"ENOTDIR", ENOTDIR},
     {"ENOTEMPTY", ENOTEMPTY}, {"ENOTSUP", ENOTSUP}, {"EOPNOTSUPP", EOPNOTSUPP}, {"EOVERFLOW", EOVERFLOW},
     {"ERANGE", ERANGE}, {"EROFS", EROFS}, {"EXDEV", EXDEV}
 };
@@ -565,6 +566,11 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         backend_seed_file(path, data);
         return;
     }
+    if(cmd.name == "BACKEND_UNLINK") {
+        std::string path = require_arg(cmd, "path");
+        backend_unlink(path);
+        return;
+    }
     if(cmd.name == "BACKEND_EXPECT") {
         std::string path = require_arg(cmd, "path");
         std::optional<std::string> expected_opt = optional_arg(cmd, "data");
@@ -822,6 +828,9 @@ int flags_from_string(const std::string& value) {
     }
     if(value == "DSYNC") {
         return O_DSYNC;
+    }
+    if(value == "DIRECTORY") {
+        return O_DIRECTORY;
     }
     throw std::runtime_error("unknown flag '" + value + "'");
 }
@@ -1392,6 +1401,42 @@ void exec_setxattr(ExecutionContext& ctx, const Command& cmd) {
     validate_errno(ret, expected_errno, ctx, cmd, "setxattr");
 }
 
+// 取值后的共性校验(expect/contains/expect_len), FUSE 与 fmbed 两种 getxattr 入口共用
+void check_xattr_result(ExecutionContext& ctx, const Command& cmd, int ret,
+                        const std::vector<char>& buffer, const char* step) {
+    if(ret < 0) {
+        fail(ctx, cmd, std::string(step) + " failed with " + std::to_string(ret));
+        return;
+    }
+    // size=0 是查询所需长度的调用形态, 返回值即长度, 无内容可取
+    std::string actual;
+    if(!buffer.empty() && ret > 0) {
+        actual.assign(buffer.data(), buffer.data() + ret);
+    }
+    if(auto expect = optional_arg(cmd, "expect"); expect.has_value()) {
+        std::string expected = decode_escapes(expect.value());
+        if(expected != actual) {
+            fail(ctx, cmd, std::string(step) + " expected '" + expected + "' got '" + actual + "'");
+            return;
+        }
+    }
+    if(auto contains = optional_arg(cmd, "contains"); contains.has_value()) {
+        if(actual.find(contains.value()) == std::string::npos) {
+            fail(ctx, cmd, std::string(step) + " result missing '" + contains.value() + "'");
+            return;
+        }
+    }
+    if(auto expect_len = optional_arg(cmd, "expect_len"); expect_len.has_value()) {
+        long want = parse_long(expect_len.value(), 0);
+        if(ret != want) {
+            fail(ctx, cmd, std::string(step) + " expected length " + std::to_string(want)
+                           + " got " + std::to_string(ret));
+            return;
+        }
+    }
+    std::cout << "[fmtest] " << step << " " << require_arg(cmd, "name") << " -> " << ret << " bytes" << std::endl;
+}
+
 void exec_getxattr(ExecutionContext& ctx, const Command& cmd) {
     ensure_mounted(ctx, cmd);
     std::string path = require_arg(cmd, "path");
@@ -1411,34 +1456,7 @@ void exec_getxattr(ExecutionContext& ctx, const Command& cmd) {
         validate_errno(ret, expected_errno, ctx, cmd, "getxattr");
         return;
     }
-    if(ret < 0) {
-        fail(ctx, cmd, "getxattr failed with " + std::to_string(ret));
-        return;
-    }
-    // size=0 是查询所需长度的调用形态, 返回值即长度, 无内容可取
-    std::string actual;
-    if(size > 0 && ret > 0) {
-        actual.assign(buffer.data(), ret);
-    }
-    if(auto expect = optional_arg(cmd, "expect"); expect.has_value()) {
-        std::string expected = decode_escapes(expect.value());
-        if(expected != actual) {
-            fail(ctx, cmd, "getxattr expected '" + expected + "' got '" + actual + "'");
-        }
-    }
-    if(auto contains = optional_arg(cmd, "contains"); contains.has_value()) {
-        if(actual.find(contains.value()) == std::string::npos) {
-            fail(ctx, cmd, "getxattr result missing '" + contains.value() + "'");
-        }
-    }
-    if(auto expect_len = optional_arg(cmd, "expect_len"); expect_len.has_value()) {
-        long want = parse_long(expect_len.value(), 0);
-        if(ret != want) {
-            fail(ctx, cmd, "getxattr expected length " + std::to_string(want)
-                           + " got " + std::to_string(ret));
-        }
-    }
-    std::cout << "[fmtest] getxattr " << name << " -> " << ret << " bytes" << std::endl;
+    check_xattr_result(ctx, cmd, ret, buffer, "getxattr");
 }
 
 // fmbed 嵌入式接口的脚本命令(不经内核 fuse 的进程内路径)
@@ -1666,6 +1684,18 @@ void exec_fmbed_stat(ExecutionContext& ctx, const Command& cmd) {
             fail(ctx, cmd, "fmbed_stat expected size " + std::to_string(want) + " got " + std::to_string(st.st_size));
         }
     }
+    if(auto expect_mtime = optional_arg(cmd, "expect_mtime"); expect_mtime.has_value()) {
+        long want = parse_long(expect_mtime.value(), 0);
+        if(st.st_mtime != static_cast<time_t>(want)) {
+            fail(ctx, cmd, "fmbed_stat expected mtime " + std::to_string(want) + " got " + std::to_string(st.st_mtime));
+        }
+    }
+    if(auto expect_atime = optional_arg(cmd, "expect_atime"); expect_atime.has_value()) {
+        long want = parse_long(expect_atime.value(), 0);
+        if(st.st_atime != static_cast<time_t>(want)) {
+            fail(ctx, cmd, "fmbed_stat expected atime " + std::to_string(want) + " got " + std::to_string(st.st_atime));
+        }
+    }
 }
 
 void exec_fmbed_simple(ExecutionContext& ctx, const Command& cmd, const std::function<int(const char*)>& fn, const char* step) {
@@ -1730,6 +1760,63 @@ void exec_fmbed_rename(ExecutionContext& ctx, const Command& cmd) {
     }
 }
 
+void exec_fmbed_utimens(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    struct timespec tv[2] {};
+    tv[0].tv_sec = parse_long(require_arg(cmd, "atime_sec"), 0);
+    tv[0].tv_nsec = parse_long(require_arg(cmd, "atime_nsec"), 0);
+    tv[1].tv_sec = parse_long(require_arg(cmd, "mtime_sec"), 0);
+    tv[1].tv_nsec = parse_long(require_arg(cmd, "mtime_nsec"), 0);
+    std::string path = require_arg(cmd, "path");
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_utimens(path.c_str(), tv);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_utimens");
+    }
+}
+
+void exec_fmbed_setxattr(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::string name = require_arg(cmd, "name");
+    auto value_opt = optional_arg(cmd, "value");
+    std::string value_decoded;
+    const void* value_ptr = nullptr;
+    size_t size = 0;
+    if(value_opt.has_value()) {
+        value_decoded = decode_escapes(value_opt.value());
+        value_ptr = value_decoded.data();
+        size = value_decoded.size();
+    }
+    int flags = 0;
+    if(auto flags_opt = optional_arg(cmd, "flags"); flags_opt.has_value()) {
+        flags = static_cast<int>(parse_long(flags_opt.value(), 0));
+    }
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_setxattr(path.c_str(), name.c_str(), value_ptr, size, flags);
+    if(expected_errno.has_value() || ret < 0) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_setxattr");
+    }
+}
+
+void exec_fmbed_getxattr(ExecutionContext& ctx, const Command& cmd) {
+    ensure_mounted(ctx, cmd);
+    std::string path = require_arg(cmd, "path");
+    std::string name = require_arg(cmd, "name");
+    size_t size = 4096;
+    if(auto size_opt = optional_arg(cmd, "size"); size_opt.has_value()) {
+        size = static_cast<size_t>(parse_long(size_opt.value(), 0));
+    }
+    std::vector<char> buffer(size);
+    auto expected_errno = parse_expected_errno(cmd, "expect_error");
+    int ret = fmbed_getxattr(path.c_str(), name.c_str(), buffer.data(), size);
+    if(expected_errno.has_value()) {
+        validate_errno(ret, expected_errno, ctx, cmd, "fmbed_getxattr");
+        return;
+    }
+    check_xattr_result(ctx, cmd, ret, buffer, "fmbed_getxattr");
+}
+
 void exec_fmbed_advise(ExecutionContext& ctx, const Command& cmd) {
     ensure_mounted(ctx, cmd);
     fmbed_file* file = require_fmbed_handle(ctx, cmd);
@@ -1739,6 +1826,8 @@ void exec_fmbed_advise(ExecutionContext& ctx, const Command& cmd) {
         code = FMBED_WILL_READ;
     } else if(advice == "will_push") {
         code = FMBED_WILL_PUSH;
+    } else if(advice == "will_scan") {
+        code = FMBED_WILL_SCAN;
     }
     if(code < 0) {
         fail(ctx, cmd, "unknown advice '" + advice + "'");
@@ -1907,6 +1996,18 @@ void exec_command(ExecutionContext& ctx, const Command& cmd) {
     }
     if(cmd.name == "FMBED_RENAME") {
         exec_fmbed_rename(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_UTIMENS") {
+        exec_fmbed_utimens(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_SETXATTR") {
+        exec_fmbed_setxattr(ctx, cmd);
+        return;
+    }
+    if(cmd.name == "FMBED_GETXATTR") {
+        exec_fmbed_getxattr(ctx, cmd);
         return;
     }
     if(cmd.name == "FMBED_ADVISE") {

@@ -455,6 +455,7 @@ int file_t::pull_wlocked() {
     meta.mode = this->mode;
     std::vector<filekey> fblocks;
     load_file_from_db(key.path, meta, fblocks);
+    fm_stat_add(meta.blksize ? FM_STAT_META_HIT : FM_STAT_META_MISS);
     if(flags & ENTRY_CHUNCED_F){
         if(meta.blksize == 0){
             filekey metakey{METANAME, 0};
@@ -1333,7 +1334,7 @@ static int _set_storage_class(filekey file, enum storage_class storage){
     case STORAGE_ACTION_INVALID: default:
         return -EINVAL;
     case STORAGE_ACTION_RESTORED:
-        return -EEXIST;
+        return 0; // 已有恢复副本, 无需操作(幂等); 后端 409 映射的 EEXIST 是真实错误, 不在此列
     case STORAGE_ACTION_NONE:
         return 0; // 无需更改
     case STORAGE_ACTION_CHANGE:
@@ -1362,7 +1363,8 @@ static int _set_storage_class_to_standard(filekey file) {
     return HANDLE_EAGAIN(fm_change_storage_class(file, STORAGE_STANDARD));
 }
 
-int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
+int file_t::submit_storage_op(TrdPool* pool, std::vector<std::future<int>>& futures,
+                              const std::function<int(filekey)>& backend_op) {
     auto_rlock(this);
     if(flags & (ENTRY_DELETED_F | FILE_DIRTY_F)) {
         return -EAGAIN; // 已删除或有未同步的更改，跳过
@@ -1375,8 +1377,8 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
         }
     }
     if((flags & ENTRY_CHUNCED_F) == 0) {
-        futures.emplace_back(pool->submit([file = getkey(), storage] {
-            return _set_storage_class(file, storage);
+        futures.emplace_back(pool->submit([file = getkey(), backend_op] {
+            return backend_op(file);
         }));
         return 0;
     }
@@ -1386,15 +1388,15 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
         if (fblock.path.empty() || fblock.path == "x") {
             continue; // 跳过空或占位块
         }
-        futures.emplace_back(pool->submit([fblock, storage, pwd]() mutable {
+        futures.emplace_back(pool->submit([fblock, pwd, backend_op]() mutable {
             if(opt.flags & FM_RENAME_NOTSUPPRTED) {
                 fblock.path = pathjoin(".objs", fblock.path);
             } else {
                 fblock.path = pathjoin(pwd, fblock.path);
             }
-            int ret = _set_storage_class(fblock, storage);
-            if (ret < 0 && ret != -EEXIST) {
-                errorlog("set_storage_class failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
+            int ret = backend_op(fblock);
+            if (ret < 0) {
+                errorlog("storage op failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
                 return ret;
             }
             return 0;
@@ -1403,46 +1405,15 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
     return 0;
 }
 
+int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) {
+    return submit_storage_op(pool, futures,
+        [storage](filekey key) { return _set_storage_class(key, storage); });
+}
+
 
 int file_t::to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
-    auto_rlock(this);
-    if(flags & (ENTRY_DELETED_F | FILE_DIRTY_F)) {
-        return -EAGAIN;
-    }
-    if((flags & ENTRY_INITED_F) == 0) {
-        __r.upgrade();
-        int ret = pull_wlocked();
-        if(ret < 0) {
-            return ret;
-        }
-    }
-    if((flags & ENTRY_CHUNCED_F) == 0) {
-        futures.emplace_back(pool->submit([file = getkey()]() -> int {
-            return _set_storage_class_to_standard(file);
-        }));
-        return 0;
-    }
-    auto fblocks = getfblocks();
-    std::string pwd = getkey().path;
-    for(auto& fblock : fblocks) {
-        if (fblock.path.empty() || fblock.path == "x") {
-            continue;
-        }
-        futures.emplace_back(pool->submit([fblock, pwd]() mutable -> int {
-            if(opt.flags & FM_RENAME_NOTSUPPRTED) {
-                fblock.path = pathjoin(".objs", fblock.path);
-            } else {
-                fblock.path = pathjoin(pwd, fblock.path);
-            }
-            int ret = _set_storage_class_to_standard(fblock);
-            if(ret < 0) {
-                errorlog("to_standard failed for block %s: %s\n", fblock.path.c_str(), strerror(-ret));
-                return ret;
-            }
-            return 0;
-        }));
-    }
-    return 0;
+    return submit_storage_op(pool, futures,
+        [](filekey key) { return _set_storage_class_to_standard(key); });
 }
 
 int file_t::get_etag(std::string& etag) {

@@ -137,13 +137,35 @@ void entry_t::pull(std::weak_ptr<entry_t> entry_){
     entry->flags &= ~ENTRY_PULLING_F;
 }
 
-int entry_t::set_storage_class(enum storage_class storage) {
+void entry_t::submit_pull() {
+    {
+        auto_rlock(this);
+        if((flags & ENTRY_INITED_F) || (flags & ENTRY_PULLING_F)){
+            return;
+        }
+        __r.upgrade();
+        flags |= ENTRY_PULLING_F;
+    }
+    dpool->submit_fire_and_forget([entry = std::weak_ptr<entry_t>(shared_from_this())]{
+        pull(entry);
+    });
+}
+
+// 冷缓存下同步递归的目录发现是串行的: 先并发预热子树, 递归走到即命中; 文件目标无事可做
+void entry_t::warm_subtree() {
+    if(auto dir = std::dynamic_pointer_cast<dir_t>(shared_from_this())) {
+        dir->submit_prefetch_tree(-1);
+    }
+}
+
+int entry_t::run_storage_op(const std::function<int(TrdPool*, std::vector<std::future<int>>&)>& op) {
     if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
         return -ENODATA; // 不支持
     }
+    warm_subtree();
     std::vector<std::future<int>> futures;
     TrdPool pool(UPLOADTHREADS * 2);
-    int ret = set_storage_class(storage, &pool, futures);
+    int ret = op(&pool, futures);
     if(ret < 0) {
         return ret;
     }
@@ -158,26 +180,18 @@ int entry_t::set_storage_class(enum storage_class storage) {
     return failed ? -EIO : 0;
 }
 
-int entry_t::to_standard() {
-    if((opt.flags & FM_HAS_STORAGE_CLASS) == 0) {
-        return -ENODATA;
-    }
-    std::vector<std::future<int>> futures;
-    TrdPool pool(UPLOADTHREADS * 2);
-    int ret = to_standard(&pool, futures);
-    if(ret < 0) {
-        return ret;
-    }
-    pool.wait_all();
-    bool failed = false;
-    for(auto& f: futures) {
-        ret = f.get();
-        if(ret < 0) {
-            failed = true;
-        }
-    }
-    return failed ? -EIO : 0;
+int entry_t::set_storage_class(enum storage_class storage) {
+    return run_storage_op([this, storage](TrdPool* pool, std::vector<std::future<int>>& futures) {
+        return set_storage_class(storage, pool, futures);
+    });
 }
+
+int entry_t::to_standard() {
+    return run_storage_op([this](TrdPool* pool, std::vector<std::future<int>>& futures) {
+        return to_standard(pool, futures);
+    });
+}
+
 
 static void merge_storage_info(storage_class_info& dst, const storage_class_info& src) {
     for(size_t i = 0; i < sizeof(dst.size_store) / sizeof(dst.size_store[0]); ++i) {
@@ -194,6 +208,7 @@ int entry_t::get_storage_classes(storage_class_info& info) {
         return -ENODATA; // 不支持
     }
     memset(&info, 0, sizeof(info));
+    warm_subtree();
     std::vector<std::future<std::pair<int, storage_class_info>>> futures;
     TrdPool pool(DOWNLOADTHREADS * 10);
     int ret = collect_storage_classes(&pool, futures);

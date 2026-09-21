@@ -1,0 +1,56 @@
+# fmbed 暴露的 utimens / setxattr / getxattr(与 FUSE 挂载同名操作同义)
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT use_fmbed=true
+# --- utimens: 显式 atime/mtime, 经 FMBED_STAT 回读(atime 统一呈现为 mtime, 只断言 mtime) ---
+FMBED_OPEN path="/cache.txt" flags=RDWR|CREAT handle=ft
+FMBED_WRITE handle=ft data="attr-data"
+FMBED_CLOSE handle=ft sync=true
+FMBED_UTIMENS path="/cache.txt" atime_sec=1 atime_nsec=0 mtime_sec=123456789 mtime_nsec=0
+FMBED_STAT path="/cache.txt" expect_type=file expect_size=9 expect_mtime=123456789
+# UTIME_OMIT(nsec=1073741822): mtime 保持不变
+FMBED_UTIMENS path="/cache.txt" atime_sec=5 atime_nsec=0 mtime_sec=0 mtime_nsec=1073741822
+FMBED_STAT path="/cache.txt" expect_mtime=123456789
+FMBED_UTIMENS path="/none.txt" atime_sec=1 atime_nsec=0 mtime_sec=1 mtime_nsec=0 expect_error=ENOENT
+# 目录时间戳
+FMBED_MKDIR path="/d" mode=0755
+FMBED_UTIMENS path="/d" atime_sec=0 atime_nsec=1073741822 mtime_sec=777777777 mtime_nsec=0
+FMBED_STAT path="/d" expect_type=dir expect_mtime=777777777
+# --- getxattr: user.stats 不依赖路径, 三种调用形态 ---
+FMBED_GETXATTR path="/" name="user.stats" size=0
+FMBED_GETXATTR path="/" name="user.stats" contains="read_miss_rate"
+FMBED_GETXATTR path="/" name="user.stats" size=8 expect_error=ERANGE
+# mock 后端不回 etag, inline 文件退化为 base64(inline_data)
+FMBED_GETXATTR path="/cache.txt" name="user.etag" size=0 expect_len=12
+FMBED_GETXATTR path="/cache.txt" name="user.etag" expect="YXR0ci1kYXRh"
+FMBED_GETXATTR path="/cache.txt" name="user.unknown" expect_error=ENODATA
+FMBED_GETXATTR path="/none.txt" name="user.etag" expect_error=ENOENT
+# --- setxattr ---
+FMBED_SETXATTR path="/none.txt" name="user.drop_cache" value="1" expect_error=ENOENT
+FMBED_SETXATTR path="/cache.txt" name="user.unknown" value="1" expect_error=ENODATA
+# 空 value / 非法转存值: 参数校验分支即失败
+FMBED_SETXATTR path="/cache.txt" name="user.storage_class" expect_error=ERANGE
+FMBED_SETXATTR path="/cache.txt" name="user.storage_class" value="XX" expect_error=EINVAL
+# 句柄打开期间 drop_cache 全量清理 → EBUSY
+FMBED_OPEN path="/cache.txt" flags=RDONLY handle=fb
+FMBED_SETXATTR path="/cache.txt" name="user.drop_cache" value="1" expect_error=EBUSY
+FMBED_CLOSE handle=fb
+BACKEND_SLEEP ms=500
+# "2" 仅清内存: db 行仍在
+FMBED_SETXATTR path="/cache.txt" name="user.drop_cache" value="2"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/Y2FjaGUudHh0.def') THEN 1 ELSE 0 END" expect="1"
+# 重新打开使条目重新 INITED: mem-only 清理后未 INITED 的条目对全量清理是空操作
+FMBED_OPEN path="/cache.txt" flags=RDONLY handle=fb
+FMBED_READ handle=fb size=32 expect_data="attr-data"
+FMBED_CLOSE handle=fb
+BACKEND_SLEEP ms=300
+# "1" 全清: db 行消失, 其后数据仍可从 mock 远端取回
+FMBED_SETXATTR path="/cache.txt" name="user.drop_cache" value="1"
+BACKEND_EXEC_SQL sql="SELECT CASE WHEN EXISTS (SELECT 1 FROM files WHERE path='/Y2FjaGUudHh0.def') THEN 1 ELSE 0 END" expect="0"
+FMBED_OPEN path="/cache.txt" flags=RDONLY handle=fb
+FMBED_READ handle=fb size=32 expect_data="attr-data"
+FMBED_CLOSE handle=fb
+FMBED_UNLINK path="/cache.txt"
+FMBED_RMDIR path="/d"
+UNMOUNT
+BACKEND_CLEAR_CACHE

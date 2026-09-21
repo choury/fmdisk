@@ -40,6 +40,9 @@ class file_t: public entry_t {
     virtual int remove_wlocked(bool skip_entry) override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
     virtual int to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) override;
+    // 对文件自身(非分块)或每个块(分块)并发提交 backend_op
+    int submit_storage_op(TrdPool* pool, std::vector<std::future<int>>& futures,
+                          const std::function<int(filekey)>& backend_op);
 public:
     file_t(std::shared_ptr<dir_t> parent, const filemeta& meta);
     virtual ~file_t();

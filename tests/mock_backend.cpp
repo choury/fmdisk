@@ -525,6 +525,35 @@ void backend_set_mount_option(const struct fmoption* opt_) {
     opt = *opt_;
 }
 
+void backend_unlink(const std::string& path) {
+    std::lock_guard<std::mutex> guard(remote_lock);
+    RemoteEntry* parent = find_entry_unlocked(dirname(path));
+    if(parent == nullptr || !parent->is_dir) {
+        throw std::runtime_error("BACKEND_UNLINK: parent path '" + dirname(path) + "' does not exist");
+    }
+    const std::string name = basename(path);
+    auto child_it = parent->children.find(name);
+    if(child_it == parent->children.end()) {
+        throw std::runtime_error("BACKEND_UNLINK: path '" + path + "' does not exist");
+    }
+    // 模拟另一客户端在远端删除: 递归摘除子树, 后续 fm_list 不再返回
+    std::vector<uint64_t> pending{child_it->second};
+    while(!pending.empty()) {
+        uint64_t id = pending.back();
+        pending.pop_back();
+        auto it = id_map.find(id);
+        if(it == id_map.end()) {
+            continue;
+        }
+        for(const auto& [child_name, grandchild_id] : it->second.children) {
+            pending.push_back(grandchild_id);
+        }
+        id_map.erase(it);
+    }
+    parent->children.erase(child_it);
+    parent->mtime = time(nullptr);
+}
+
 bool backend_path_exists(const std::string& path) {
     std::lock_guard<std::mutex> guard(remote_lock);
     return find_entry_unlocked(path) != nullptr;

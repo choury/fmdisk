@@ -83,7 +83,8 @@ void fmbed_destroy(void) {
 
 // 句柄即核心对象引用: 不包 fuse_file_info, 数据面直连 entry/file 层
 struct fmbed_file {
-    std::shared_ptr<file_t> file;
+    std::shared_ptr<file_t> file; // 文件句柄有效
+    std::shared_ptr<dir_t> dir;   // O_DIRECTORY 目录句柄有效
     int accmode;   // O_ACCMODE, read/write 的 EBADF 检查用
 };
 
@@ -103,6 +104,26 @@ fmbed_file* fmbed_open(const char* path, int flags) {
             errno = ELOOP;
             return nullptr;
         }
+        if((flags & O_DIRECTORY) != 0) {
+            if((flags & O_CREAT) && (flags & O_EXCL)) {
+                errno = EEXIST;
+                return nullptr;
+            }
+            auto dir = std::dynamic_pointer_cast<dir_t>(entry);
+            if(dir == nullptr) {
+                errno = ENOTDIR;
+                return nullptr;
+            }
+            int ret = dir->open();
+            if(ret != 0) {
+                errno = -ret;
+                return nullptr;
+            }
+            if(flags & (O_SYNC | O_DSYNC)) {
+                dir->sync(1); //忽略错误
+            }
+            return new fmbed_file{nullptr, std::move(dir), flags & O_ACCMODE};
+        }
         file = std::dynamic_pointer_cast<file_t>(entry);
         if(file == nullptr) {
             errno = EISDIR;
@@ -113,6 +134,11 @@ fmbed_file* fmbed_open(const char* path, int flags) {
             return nullptr;
         }
     } else {
+        if((flags & O_DIRECTORY) != 0) {
+            // open 无法创建目录
+            errno = (flags & O_CREAT) ? ENOTDIR : ENOENT;
+            return nullptr;
+        }
         if((flags & O_CREAT) == 0) {
             errno = ENOENT;
             return nullptr;
@@ -142,7 +168,7 @@ fmbed_file* fmbed_open(const char* path, int flags) {
         errno = -ret;
         return nullptr;
     }
-    return new fmbed_file{std::move(file), flags & O_ACCMODE};
+    return new fmbed_file{std::move(file), nullptr, flags & O_ACCMODE};
 }
 
 int64_t fmbed_read(fmbed_file* f, void* buf, size_t len, uint64_t off) {
@@ -151,6 +177,9 @@ int64_t fmbed_read(fmbed_file* f, void* buf, size_t len, uint64_t off) {
     }
     if(f == nullptr) {
         return -EBADF;
+    }
+    if(f->dir != nullptr) {
+        return -EISDIR;
     }
     if(f->accmode == O_WRONLY) {
         return -EBADF;
@@ -167,6 +196,9 @@ int64_t fmbed_write(fmbed_file* f, const void* buf, size_t len, uint64_t off) {
     if(f == nullptr) {
         return -EBADF;
     }
+    if(f->dir != nullptr) {
+        return -EISDIR;
+    }
     if(f->accmode == O_RDONLY) {
         return -EBADF;
     }
@@ -180,6 +212,9 @@ int fmbed_truncate(fmbed_file* f, uint64_t size) {
     if(f == nullptr) {
         return -EBADF;
     }
+    if(f->dir != nullptr) {
+        return -EISDIR;
+    }
     // 必须是打开状态: 未打开条目的 fi.fd<0, truncate_wlocked 对其有断言
     return f->file->truncate((off_t)size);
 }
@@ -190,6 +225,11 @@ int fmbed_close(fmbed_file* f, int flags) {
     }
     if(f == nullptr) {
         return -EBADF;
+    }
+    if(f->dir != nullptr) {
+        f->dir->release(false);
+        delete f;
+        return 0;
     }
     // FMBED_CLOSE_SYNC: 对齐 fm_fuse_release 的 waitsync 语义
     bool waitsync = (flags & FMBED_CLOSE_SYNC) != 0;
@@ -289,6 +329,13 @@ int fmbed_statfs(const char* path, struct statvfs* sf) {
     return fm_fuse_statfs(path, sf);
 }
 
+int fmbed_utimens(const char* path, const struct timespec tv[2]) {
+    if(!fmbed_inited) {
+        return -ENODEV;
+    }
+    return fm_fuse_utimens(path, tv, nullptr);
+}
+
 struct fmbed_list_ctx {
     fmbed_list_cb cb;
     void* ud;
@@ -330,6 +377,28 @@ int fmbed_listdir(const char* path, fmbed_list_cb cb, void* ud) {
     return ctx.stopped ? 1 : 0;
 }
 
+int fmbed_setxattr(const char* path, const char* name, const void* value, size_t size, int flags) {
+    if(!fmbed_inited) {
+        return -ENODEV;
+    }
+#ifdef __APPLE__
+    return fm_fuse_setxattr(path, name, (const char*)value, size, flags, 0);
+#else
+    return fm_fuse_setxattr(path, name, (const char*)value, size, flags);
+#endif
+}
+
+int fmbed_getxattr(const char* path, const char* name, void* value, size_t size) {
+    if(!fmbed_inited) {
+        return -ENODEV;
+    }
+#ifdef __APPLE__
+    return fm_fuse_getxattr(path, name, (char*)value, size, 0);
+#else
+    return fm_fuse_getxattr(path, name, (char*)value, size);
+#endif
+}
+
 int fmbed_advise(fmbed_file* f, uint64_t off, uint64_t len, int advice) {
     if(!fmbed_inited) {
         return -ENODEV;
@@ -339,9 +408,20 @@ int fmbed_advise(fmbed_file* f, uint64_t off, uint64_t len, int advice) {
     }
     switch(advice) {
     case FMBED_WILL_READ:
+        if(f->file == nullptr) {
+            return -EINVAL;
+        }
         return f->file->prefetch_range((off_t)off, (size_t)len);
     case FMBED_WILL_PUSH:
+        if(f->file == nullptr) {
+            return -EINVAL;
+        }
         return f->file->writeback_range((off_t)off, (size_t)len);
+    case FMBED_WILL_SCAN:
+        if(f->dir == nullptr) {
+            return -EINVAL;
+        }
+        return f->dir->submit_prefetch_tree((int)off);
     default:
         return -EINVAL;
     }

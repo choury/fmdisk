@@ -28,6 +28,10 @@ enum fm_stat_id {
     // 目录条目缓存(load_entry_from_db)
     FM_STAT_ENTRY_HIT,
     FM_STAT_ENTRY_MISS,
+    // 文件元数据缓存(pull_wlocked 决定是否走网络的探测点, 探测性 load 不计入;
+    // no_cache 下无本地库, 每次 pull 都计 miss, 与 entry 计数对称)
+    FM_STAT_META_HIT,
+    FM_STAT_META_MISS,
     FM_STAT_MAX
 };
 
