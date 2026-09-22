@@ -753,6 +753,14 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         backend_set_fail_upload(parse_bool(require_arg(cmd, "state")));
         return;
     }
+    if(cmd.name == "BACKEND_UPLOAD_DELAY") {
+        long ms = parse_long(require_arg(cmd, "ms"), 0);
+        if(ms < 0 || ms > 60000) {
+            fail(ctx, cmd, "upload delay must be within [0, 60000] ms");
+        }
+        backend_set_upload_delay(static_cast<int>(ms));
+        return;
+    }
     if(cmd.name == "BACKEND_SLEEP") {
         long ms = parse_long(require_arg(cmd, "ms"));
         if(ms < 0) {

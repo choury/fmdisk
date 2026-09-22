@@ -428,19 +428,23 @@ int file_t::release(bool waitsync){
         blocks.clear();
         return 0;
     }
-    if(waitsync && (flags & FILE_DIRTY_F)) {
-        //如果不等待的话，这个流程会在clean -> sync_wlocked 触发
-        for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
-            it->second->sync(getblockdir(), true);
-        }
-    }
 
     flags |= ENTRY_REASEWAIT_F;
     if(waitsync){
+        if(flags & FILE_DIRTY_F) {
+            //非同步分支，这个流程会在clean -> sync_wlocked 触发
+            for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
+                it->second->sync(getblockdir(), true);
+            }
+        }
         __w.unlock();
         clean(std::weak_ptr<file_t>(shared_file_from_this()));
         return 0;
     } else {
+        //close 即落库: clean 在 delay 队列里可能积压，不落库进程重启会丢失数据
+        if(flags & FILE_DIRTY_F) {
+            sync_wlocked(true, false);
+        }
         submit_delay_job([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
             file_t::clean(file);
         }, 0);
@@ -960,6 +964,9 @@ int file_t::getmeta(filemeta& meta) {
     return 0;
 }
 
+// lockfree 只有后台定时触发会设置，语义是不加锁上传一个meta当前快照，脏的也上传
+// forcedirty 语义是调用方刚刚写了数据，直接当有脏块处理，只触发一次写db操作
+//如果都是false,语义是，同步触发刷脏块流程，如果脏块刷完，则上传meta
 bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     if(flags & ENTRY_DELETED_F) {
         flags &= ~FILE_DIRTY_F;
@@ -982,7 +989,6 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     meta.key = basename(getmetakey());
     std::vector<filekey> fblocks = getfblocks();
     if((!forcedirty && dirty) ||(forcedirty && !lockfree)){
-        version++;
         save_file_to_db(key.path, meta, fblocks);
         return true;
     }
@@ -999,6 +1005,10 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     }
     if(ret){
         errorlog("upload_meta IO Error: %s, inode=%ju, err=%s\n", key.path.c_str(), fi.inode, strerror(errorno));
+        //失败也落当前快照: 行落后于已写数据时, 重启恢复按行 ftruncate 本地缓存并重传 meta
+        if(version_snapshot == version.load()) {
+            save_file_to_db(key.path, meta, fblocks);
+        }
         return true;
     }
     private_key = meta.key.private_key;
@@ -1012,7 +1022,6 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
         flags &= ~FILE_DIRTY_F;
         meta.flags = flags;
     }
-    version++;
     save_file_to_db(key.path, meta, fblocks);
     return dirty;
 }
@@ -1078,7 +1087,6 @@ int file_t::update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> m
             return ret;
         }
     }
-    version++;
     save_file_to_db(key.path, meta, fblocks);
     return 0;
 }

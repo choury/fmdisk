@@ -245,12 +245,22 @@ int fm_mkdir(const filekey& fileat, struct filekey& file) {
 }
 
 static std::atomic<bool> g_fail_upload{false};
+static std::atomic<int> g_upload_delay_ms{0};
 
 void backend_set_fail_upload(bool fail) {
     g_fail_upload.store(fail);
 }
 
+void backend_set_upload_delay(int ms) {
+    g_upload_delay_ms.store(ms);
+}
+
 int fm_upload(const filekey& fileat, filekey& file, const char* data, size_t len, bool override) {
+    //模拟慢网络: 构造 delay 队列积压(每次上传耗时, 上传最终仍成功)
+    int delay = g_upload_delay_ms.load();
+    if(delay > 0) {
+        usleep(delay * 1000);
+    }
     if(g_fail_upload.load()) {
         errno = EACCES; // 模拟会话失效/风控: 上传被拒
         return -errno;
@@ -483,6 +493,7 @@ void backend_reset_state() {
     }
     g_backend_download_calls.store(0);
     g_fail_upload.store(false);
+    g_upload_delay_ms.store(0);
 }
 
 void backend_seed_file(const std::string& path, const std::string& content) {

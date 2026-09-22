@@ -1,0 +1,69 @@
+# 38_close_persist_under_backlog.fmtest
+# 验证: close 返回即落库, 行快照不依赖 delay 队列里 clean 的调度。
+#
+# 背景(生产事故): delay 队列单线程串行内联执行 clean(网络 I/O), 批量 close
+# 的任务积压期间(clean 慢/失败 5s 重试堆积), files 行一直冻在 create 快照
+# (size 0/空 blocks/空 key), 崩溃即触发重启销毁链。release 同步落本地 db 后,
+# clean 慢只影响远端 meta.json 落地进度, 不再影响持久层正确性。
+#
+# 流程: 注入每次上传 500ms 的慢网络 -> 12 个小文件(inline, 无块)快速
+# create+write+close -> 立即断言 12 行全部真实 size(串行 clean 积压 6s,
+# 修复前此刻行全是 size 0) -> 等积压的 clean 跑完, 行转干净。
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+BACKEND_UPLOAD_DELAY ms=500
+
+CREATE path="/c00" mode=0644 handle=h00
+CREATE path="/c01" mode=0644 handle=h01
+CREATE path="/c02" mode=0644 handle=h02
+CREATE path="/c03" mode=0644 handle=h03
+CREATE path="/c04" mode=0644 handle=h04
+CREATE path="/c05" mode=0644 handle=h05
+CREATE path="/c06" mode=0644 handle=h06
+CREATE path="/c07" mode=0644 handle=h07
+CREATE path="/c08" mode=0644 handle=h08
+CREATE path="/c09" mode=0644 handle=h09
+CREATE path="/c10" mode=0644 handle=h10
+CREATE path="/c11" mode=0644 handle=h11
+
+WRITE handle=h00 data="d" repeat=1024
+WRITE handle=h01 data="d" repeat=1024
+WRITE handle=h02 data="d" repeat=1024
+WRITE handle=h03 data="d" repeat=1024
+WRITE handle=h04 data="d" repeat=1024
+WRITE handle=h05 data="d" repeat=1024
+WRITE handle=h06 data="d" repeat=1024
+WRITE handle=h07 data="d" repeat=1024
+WRITE handle=h08 data="d" repeat=1024
+WRITE handle=h09 data="d" repeat=1024
+WRITE handle=h10 data="d" repeat=1024
+WRITE handle=h11 data="d" repeat=1024
+
+RELEASE handle=h00
+RELEASE handle=h01
+RELEASE handle=h02
+RELEASE handle=h03
+RELEASE handle=h04
+RELEASE handle=h05
+RELEASE handle=h06
+RELEASE handle=h07
+RELEASE handle=h08
+RELEASE handle=h09
+RELEASE handle=h10
+RELEASE handle=h11
+
+# close 返回即落库: 不等积压的 clean(串行 12*500ms=6s)。行 path 是编码名, c00-c11 -> Yz*
+# (exec_backend_sql 不解码转义, 匹配 ": 1024," 避开双引号)
+BACKEND_EXEC_SQL sql="SELECT count(*) FROM files WHERE path LIKE '/Yz%.def' AND meta LIKE '%: 1024,%'" expect="12"
+
+# 积压的 clean 最终全部完成, 行转干净(8s 覆盖串行 6s)
+BACKEND_SLEEP ms=8000
+BACKEND_EXEC_SQL sql="SELECT count(*) FROM files WHERE dirty=1" expect="0"
+BACKEND_PATH_EXISTS path="/YzAw.def/meta.json" expected=true
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+BACKEND_RESET

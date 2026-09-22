@@ -1,0 +1,66 @@
+# 37_dirty_snapshot_restart_loss.fmtest
+# 验证: 冻结在 create 快照的 dirty 行(size 0/空 blocks/空 private_key)重启后不得丢数据。
+#
+# 背景(生产事故): 新建文件的 files 行在 mknod 当场落库(size 0, ENTRY_CREATE_F 的
+# private_key 为空)。writeback 先把块全部推净后, clean 的 sync_wlocked 走
+# "块全净 -> 跳过中间落库 -> upload_meta" 路径, upload_meta 持续失败(配额/风控)
+# 时该路径不落库直接返回 —— 行永远冻结在 create 快照, 而本地缓存文件与远端块里
+# 是真实数据(线上表现: files 里 size:0 + blocks:[] + dirty:1, ls 却正常)。
+# 重启后 recover_dirty_data 信任冻结行: open() 用 length=0 ftruncate 本地缓存
+# 文件(唯一完整副本被毁), clean 把空 meta.json 传上远端, 文件永久变 0 字节。
+#
+# 流程: 写入后等 writeback stale 推送(块全部上远端, 行未动) -> 注入上传失败 ->
+# release(块全净+meta 失败 => 不落库, 行冻结) -> 卸载 -> 解除注入重启挂载 ->
+# 断言数据完好。修复前红灯: 重启后 GETATTR size=0。
+
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+MOUNT no_cache=false
+
+CREATE path="/ghost.bin" mode=0644 handle=v
+WRITE handle=v data="x" repeat=20971520
+
+# 会话内内存态是权威的, 数据完好(与线上 ls 正常一致)
+GETATTR path="/ghost.bin" expect_size=20971520
+
+# 等 writeback stale 推送: dblocks 存量 >= UPLOADTHREADS(10) 且上传队列空时阈值降 5s;
+# 单轮最多提交 10 块且提交即摘出 dblocks, 尾部存量 <10 会回落 30s 阈值,
+# 故写 20 块保证两轮都在快车道
+BACKEND_SLEEP ms=7000
+# 块已全部推净: blocks 表 20 条记录全 clean
+BACKEND_EXEC_SQL sql="SELECT count(*), coalesce(sum(dirty),0) FROM blocks" expect="20|0"
+# 远端 .def 目录已建, 但 meta.json 从未上过(线上同状)
+BACKEND_PATH_EXISTS path="/Z2hvc3QuYmlu.def" expected=true
+BACKEND_PATH_EXISTS path="/Z2hvc3QuYmlu.def/meta.json" expected=false
+
+# 注入持续上传故障(生产: 配额/风控), 再关闭文件:
+# release 同步落库 + clean 的失败路径落库, 双保险后行不再冻在 create 快照
+BACKEND_FAIL_UPLOAD state=true
+RELEASE handle=v
+
+# close 返回即落库: 不等 delay 队列里的 clean
+# 空.private_key + dirty=1: key 回填发生在 upload_meta 成功后, 与落库时机无关
+BACKEND_EXEC_SQL sql="SELECT length(private_key), dirty FROM files WHERE path='/Z2hvc3QuYmlu.def'" expect="0|1"
+# 观察行内容(必须已是真实 size)
+BACKEND_EXEC_SQL sql="SELECT substr(meta,1,16) FROM files WHERE path='/Z2hvc3QuYmlu.def'" dump=true
+
+# 卸载 = 崩溃: 冻结行 + 装着完整数据的本地缓存文件一起落盘
+UNMOUNT
+
+# 故障解除(如次日配额恢复), 重启挂载: recover_dirty_data 接管
+BACKEND_FAIL_UPLOAD state=false
+MOUNT no_cache=false
+BACKEND_SLEEP ms=2000
+
+# === 修复前红灯: 已写入并推净的文件在重启后必须完好 ===
+# 当前实际: open() 以 length=0 ftruncate 本地缓存, clean 上传空 meta.json,
+# GETATTR 得 0
+GETATTR path="/ghost.bin" expect_size=20971520
+OPEN path="/ghost.bin" flags=RDONLY handle=r
+READ handle=r size=32 expect_data="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+RELEASE handle=r
+BACKEND_EXPECT_META path="/ghost.bin" field="size" value="20971520"
+
+UNMOUNT
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
