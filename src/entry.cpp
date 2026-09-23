@@ -55,11 +55,13 @@ std::shared_ptr<dir_t> cache_root() {
 void cache_destroy(){
     if(!opt.no_cache) {
         writeback_done = true;
+        //先停延迟线程再删 upool: 延迟任务到期后是丢进 upool 执行的,
+        //顺序反了会在销毁窗口内向已释放的池派任务
+        stop_delay_thread();
         delete upool;
     }
     delete dpool;
     if(!opt.no_cache) {
-        stop_delay_thread();
         clear_opened_files(); //测试需要重入
     }
     if(!opt.no_cache) sqldeinit();

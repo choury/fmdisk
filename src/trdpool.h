@@ -105,6 +105,10 @@ public:
         return pool_ ? taskinqueu(pool_) : 0;
     }
 
+    struct thrdpool* handle() const {
+        return pool_;
+    }
+
     bool setblock(bool block) {
         return setpoolblock(pool_, block);
     }
@@ -117,10 +121,10 @@ public:
     }
 };
 
-inline void submit_delay_job(std::function<void()> func, unsigned int delay_sec) {
+inline void submit_delay_job(std::function<void()> func, unsigned int delay_sec, TrdPool* pool) {
     using TaskWrapper = TrdPool::TaskWrapper<void>;
     auto wrapper = new TaskWrapper(std::move(func));
-    if(!add_delay_job(TrdPool::execute_task<void>, wrapper, delay_sec)) {
+    if(!add_delay_job(TrdPool::execute_task<void>, wrapper, delay_sec, pool->handle())) {
         delete wrapper;
     }
 }

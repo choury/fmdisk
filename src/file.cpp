@@ -403,7 +403,7 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
         //脏块由 writeback 按 staled 阈值推送, 重试间隔对齐它
         submit_delay_job([file_]() {
             file_t::clean(file_);
-        }, 5);
+        }, 5, upool);
         return;
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
@@ -441,13 +441,13 @@ int file_t::release(bool waitsync){
         clean(std::weak_ptr<file_t>(shared_file_from_this()));
         return 0;
     } else {
-        //close 即落库: clean 在 delay 队列里可能积压，不落库进程重启会丢失数据
+        //close 即落库: clean 异步执行可能积压，不落库进程重启会丢失数据
         if(flags & FILE_DIRTY_F) {
             sync_wlocked(true, false);
         }
-        submit_delay_job([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
+        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
             file_t::clean(file);
-        }, 0);
+        });
         return 0;
     }
 }

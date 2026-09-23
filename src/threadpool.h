@@ -30,7 +30,8 @@ int taskinqueu(struct thrdpool* pool);
 
 void start_delay_thread();
 void stop_delay_thread();
-bool add_delay_job(taskfunc func, void* param, unsigned int delaySec);
+//到期的任务不内联执行, 丢给 pool 执行
+bool add_delay_job(taskfunc func, void* param, unsigned int delaySec, struct thrdpool* pool);
 #ifdef  __cplusplus
 }
 #endif  /* end of __cplusplus */

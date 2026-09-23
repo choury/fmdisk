@@ -16,6 +16,7 @@ struct task_t {
     void*        param;
     unsigned int flags;
     timespec     until;
+    struct thrdpool* pool;    //延迟任务到期后执行所在线程池
 };
 
 struct val_t{
@@ -221,7 +222,8 @@ std::atomic<bool> delay_task_stop(false);
 pthread_mutex_t delay_task_lock = PTHREAD_MUTEX_INITIALIZER;
 std::list<task_t*> delay_tasks;
 
-//调度线程，按照先进先出的队列来调度
+//调度线程，按照先进先出的队列来调度；只负责定时，到期任务丢给提交方指定
+//的线程池执行(调度线程只有一条, 内联执行会把所有延迟任务串成一条)
 static void do_delay_task() {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
@@ -252,7 +254,7 @@ static void do_delay_task() {
         }
         pthread_mutex_unlock(&delay_task_lock);
         if(task){
-            task->func(task->param);
+            addtask(task->pool, task->func, task->param, 0);
             free(task);
         }
     }
@@ -285,7 +287,7 @@ void stop_delay_thread() {
 }
 
 
-bool add_delay_job(taskfunc func, void* param, unsigned int delaySec){
+bool add_delay_job(taskfunc func, void* param, unsigned int delaySec, struct thrdpool* pool){
     task_t* task = nullptr;
     pthread_mutex_lock(&delay_task_lock);
     if (delay_task_stop) {
@@ -304,6 +306,7 @@ bool add_delay_job(taskfunc func, void* param, unsigned int delaySec){
         task->func = func;
         task->param = param;
     }
+    task->pool = pool;
     clock_gettime(CLOCK_REALTIME, &task->until);
     task->until.tv_sec += delaySec;
     delay_tasks.emplace_back(task);
