@@ -1077,6 +1077,12 @@ int file_t::update_meta_wlocked(filemeta& meta, std::function<void(filemeta&)> m
     version++;
     if(flags & ENTRY_CHUNCED_F){
         meta.key = basename(getmetakey());
+        if(flags & FILE_DIRTY_F){
+            //脏块的 meta 由 clean 循环/600s 兜底任务随数据收敛一起推,
+            //此时推也只是"新属性+旧块布局"的混合快照
+            save_file_to_db(key.path, meta, fblocks);
+            return 0;
+        }
         int ret = upload_meta(key, meta, fblocks);
         if(ret){
             return -errno;

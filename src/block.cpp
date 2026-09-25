@@ -476,7 +476,7 @@ retry:
     }
     auto stripfile = basename(file);
     auto_wlock(b);
-    if (version != b->version || (b->flags & BLOCK_STALE)) {
+    if (version != b->version || (b->flags & BLOCK_STALE) || (b->flags & BLOCK_DIRTY) == 0) {
         infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
         fm_stat_add(FM_STAT_PUSH_DISCARD_RACE);
         trim(file);
