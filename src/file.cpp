@@ -143,6 +143,11 @@ void recover_dirty_data() {
     infolog("Recovering %zu dirty files from previous session\n", dirty_files.size());
 
     for(const auto& file_path : dirty_files) {
+        if(!endwith(file_path, file_encode_suffix)) {
+            // 目录行: DIR_DIRTY_F 与 FILE_DIRTY_F 同位, 目录行会带脏落库,
+            // 但目录 dirty 只是 mtime 未推送, 无数据可恢复
+            continue;
+        }
         string path = decodepath(file_path, file_encode_suffix);
         auto file = std::dynamic_pointer_cast<file_t>(find_entry(path));
         if(file == nullptr) {

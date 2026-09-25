@@ -384,6 +384,14 @@ int fm_rename(const filekey& oldat, const filekey& file, const filekey& newat, f
         errno = EBADF;
         return -errno;
     }
+    const std::string new_bname = basename(newfile.path);
+    if((opt.flags & FM_RENAME_NO_OVERWRITE) &&
+       (new_bname != bname || new_parent_id != old_parent_id) &&
+       id_map[new_parent_id].children.contains(new_bname)) {
+        // 模拟撞名报 EEXIST 的后端; 同名同父(改名前后是同一条目)不视为冲突
+        errno = EEXIST;
+        return -errno;
+    }
     old_parent.children.erase(bname);
     old_parent.mtime = time(nullptr);
 

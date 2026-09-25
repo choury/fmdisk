@@ -877,6 +877,7 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     log_set_level(FUSE_LOG_DEBUG);
     bool no_cache = false;
     bool rename_not_supported = false;
+    bool rename_no_overwrite = false;
     bool use_fmbed = false;
     long long cache_size = -1;
     if(auto opt_no_cache = optional_arg(cmd, "no_cache"); opt_no_cache.has_value()) {
@@ -884,6 +885,9 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     }
     if(auto opt_rename = optional_arg(cmd, "rename_not_supported"); opt_rename.has_value()) {
         rename_not_supported = parse_bool(opt_rename.value());
+    }
+    if(auto opt_rename_ow = optional_arg(cmd, "rename_no_overwrite"); opt_rename_ow.has_value()) {
+        rename_no_overwrite = parse_bool(opt_rename_ow.value());
     }
     if(auto opt_fmbed = optional_arg(cmd, "use_fmbed"); opt_fmbed.has_value()) {
         use_fmbed = parse_bool(opt_fmbed.value());
@@ -894,6 +898,9 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     uint flags = FM_DELETE_NEED_PURGE;
     if(rename_not_supported) {
         flags |= FM_RENAME_NOTSUPPRTED;
+    }
+    if(rename_no_overwrite) {
+        flags |= FM_RENAME_NO_OVERWRITE;
     }
     if(cache_dir.empty()) {
         cache_dir = std::filesystem::temp_directory_path() / "fmdisk_itest_XXXXXX";

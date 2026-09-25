@@ -1,0 +1,93 @@
+# rename_no_overwrite backend (fm_rename reports EEXIST on conflict):
+# framework pre-deletes the remote target so RENAME still implements POSIX overwrite
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/plain/target.txt" data="old-data"
+BACKEND_SEED path="/plain/source.txt" data="new-data"
+MOUNT rename_no_overwrite=true
+
+# Scenario 1: non-chunk source overwrites non-chunk target; stale handle keeps old data
+OPEN path="/plain/target.txt" handle=plain_old
+READ handle=plain_old size=8 expect_data="old-data"
+RENAME old="/plain/source.txt" new="/plain/target.txt"
+READ handle=plain_old size=8 expect_data="old-data"
+OPEN path="/plain/target.txt" handle=plain_new
+READ handle=plain_new size=8 expect_data="new-data"
+RELEASE handle=plain_new
+GETATTR path="/plain/source.txt" expect_error=ENOENT
+RELEASE handle=plain_old
+BACKEND_EXPECT path="/plain/target.txt" data="new-data"
+
+# Scenario 2: chunk-encoded target pre-delete goes through the fm_batchdelete purge path
+CREATE path="/plain/target2.txt" mode=0644 handle=t2_writer
+WRITE handle=t2_writer data="purge-me!"
+RELEASE handle=t2_writer sync=true
+CREATE path="/plain/source2.txt" mode=0644 handle=s2_writer
+WRITE handle=s2_writer data="winner---"
+RELEASE handle=s2_writer sync=true
+RENAME old="/plain/source2.txt" new="/plain/target2.txt"
+OPEN path="/plain/target2.txt" handle=t2_reader
+READ handle=t2_reader size=9 expect_data="winner---"
+RELEASE handle=t2_reader
+GETATTR path="/plain/source2.txt" expect_error=ENOENT
+
+# Scenario 3: dirty (unflushed) source overwrites target, release without sync
+CREATE path="/plain/source.txt" mode=0644 handle=chunk_writer
+WRITE handle=chunk_writer data="REPLACED!"
+RENAME old="/plain/source.txt" new="/plain/target.txt"
+RELEASE handle=chunk_writer
+BACKEND_SLEEP ms=1500
+OPEN path="/plain/target.txt" handle=chunk_reader
+READ handle=chunk_reader size=9 expect_data="REPLACED!"
+RELEASE handle=chunk_reader
+GETATTR path="/plain/source.txt" expect_error=ENOENT
+
+UNMOUNT
+BACKEND_EXPECT_META path="/plain/target.txt" field="size" value="9"
+BACKEND_EXPECT_META path="/plain/target.txt" field="encoding" value="xor"
+
+# Scenario 4: dir over empty dir, source keeps its children
+MOUNT rename_no_overwrite=true
+# 预热根目录: MKDIR 直调无内核 LOOKUP 前置, 需先 pull
+GETATTR path="/plain/target.txt"
+MKDIR path="/d1" mode=0755
+MKDIR path="/d2" mode=0755
+CREATE path="/d1/inner.txt" mode=0644 handle=inner_writer
+WRITE handle=inner_writer data="inner-data"
+RELEASE handle=inner_writer sync=true
+RENAME old="/d1" new="/d2"
+GETATTR path="/d1" expect_error=ENOENT
+OPEN path="/d2/inner.txt" handle=inner_reader
+READ handle=inner_reader size=10 expect_data="inner-data"
+RELEASE handle=inner_reader
+UNMOUNT
+BACKEND_EXPECT_META path="/d2/inner.txt" field="size" value="10"
+
+# Scenario 5: crash between journal write and pre-delete -> recovery rolls back via local cache.
+# 排在目录 rename 之后: 重挂载同时回归"目录 rename 后重启"(rename 留下带脏的目录
+# files 行, recover_dirty_data 须按后缀跳过而非 decodepath 断言崩)
+MOUNT rename_no_overwrite=true
+# 预热父目录: find() 对最终层目录不 pull, 真实内核 CREATE 前的 LOOKUP 承担此职责
+GETATTR path="/plain/target.txt"
+CREATE path="/plain/src5.txt" mode=0644 handle=s5_writer
+WRITE handle=s5_writer data="scenario5-source"
+RELEASE handle=s5_writer sync=true
+CREATE path="/plain/dst5.txt" mode=0644 handle=d5_writer
+WRITE handle=d5_writer data="scenario5-target-longer"
+RELEASE handle=d5_writer sync=true
+UNMOUNT
+BACKEND_EXEC_SQL sql="INSERT OR REPLACE INTO journals(op,state,src_path,dst_path,dst_private_key) VALUES ('rename',0,'/plain/src5.txt','/plain/dst5.txt',NULL)"
+# 伪造旧库遗留的带脏目录行: recovery 必须跳过而非 decodepath 断言崩
+BACKEND_EXEC_SQL sql="INSERT OR REPLACE INTO files(path,private_key,meta,dirty) VALUES('/d4','11','{}',1)"
+# Remount must succeed (without the local-cache rollback branch recovery aborts with EIO),
+# both files stay intact and the journal is dropped
+MOUNT rename_no_overwrite=true
+OPEN path="/plain/src5.txt" flags=RDONLY handle=s5_reader
+READ handle=s5_reader size=16 expect_data="scenario5-source"
+RELEASE handle=s5_reader
+OPEN path="/plain/dst5.txt" flags=RDONLY handle=d5_reader
+READ handle=d5_reader size=23 expect_data="scenario5-target-longer"
+RELEASE handle=d5_reader
+BACKEND_EXEC_SQL sql="SELECT COUNT(*) FROM journals" expect="0"
+UNMOUNT
+BACKEND_CLEAR_CACHE

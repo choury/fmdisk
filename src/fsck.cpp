@@ -292,6 +292,10 @@ static int sync_all_dirty_files() {
     int failed = 0;
 
     for(const auto& file_path : dirty_files) {
+        if(!endwith(file_path, file_encode_suffix)) {
+            // 目录行无数据可恢复, 跳过
+            continue;
+        }
         if (sync_dirty_file(file_path) != 0) {
             failed++;
         }else{

@@ -19,6 +19,7 @@ extern "C" {
 #define FM_DONOT_REQUIRE_MKDIR 2
 #define FM_RENAME_NOTSUPPRTED  4
 #define FM_HAS_STORAGE_CLASS   8
+#define FM_RENAME_NO_OVERWRITE 16
 
 struct fmoption{
     const char* cache_dir;

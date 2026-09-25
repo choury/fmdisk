@@ -782,6 +782,14 @@ int dir_t::moveto(std::shared_ptr<dir_t> newparent, const string& oldname, const
             }
         }
     } else {
+        //要防止  mv /path/to/a /path/to/a 的情况导致覆盖自身
+        if((opt.flags & FM_RENAME_NO_OVERWRITE) && existing && existing.get() != entry.get()) {
+            ret = existing->remove_wlocked(false);
+            if(ret < 0) {
+                return ret;
+            }
+            newparent->entrys.erase(newname);
+        }
         filekey newfile{(entry->flags & ENTRY_CHUNCED_F)?encodepath(newname, file_encode_suffix):newname, 0};
         ret = HANDLE_EAGAIN(fm_rename(this->getkey(), entry->getkey(), newparent->getkey(), newfile));
         new_private_key = newfile.private_key;
@@ -1047,11 +1055,20 @@ int recover_journals() {
             oldmeta.flags = meta.flags;
             if(fetchmeta(sparent->getkey(), oldfile, oldmeta) == 0){
                 if(!is_meta_equal(oldmeta, newmeta)) {
+                    if((opt.flags & FM_RENAME_NO_OVERWRITE) && dir_t::find(dparent, newname)) {
+                        // remove_wlocked 先删远端后清本地, 目标本地 entry 仍在说明预删除未生效,
+                        // rename 未开工, 回滚放弃 (源/目标都完好)
+                        infolog("dst %s still in local cache, rename not started, cancel rename\n",
+                                jr.dst_path.c_str());
+                        delete_journal_entry(jr.op, jr.src_path);
+                        continue;
+                    }
                     errorlog("src file %s and dst file %s are different, cannot resume rename\n",
                              jr.src_path.c_str(), jr.dst_path.c_str());
                     return -EIO;
                 }
                 if(!is_meta_equal(meta, oldmeta)) {
+                    //本地cache和远端 meta 不一致
                     errorlog("inconsistent meta for %s, cannot resume rename\n", jr.src_path.c_str());
                     return -EIO;
                 }
