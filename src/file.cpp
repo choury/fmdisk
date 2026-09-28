@@ -404,11 +404,11 @@ void file_t::clean(std::weak_ptr<file_t> file_) {
         opened_inodes.erase(file->fi.inode);
         return;
     }
-    if (file->flags & FILE_DIRTY_F && file->sync_wlocked(false, false)) {
+    if ((file->flags & FILE_UPMETA_F) || (file->flags & FILE_DIRTY_F && file->sync_wlocked(false, false))) {
         //脏块由 writeback 按 staled 阈值推送, 重试间隔对齐它
         submit_delay_job([file_]() {
             file_t::clean(file_);
-        }, 5, upool);
+        }, 30, upool);
         return;
     }
     file->flags &= ~ENTRY_REASEWAIT_F;
@@ -433,27 +433,27 @@ int file_t::release(bool waitsync){
         blocks.clear();
         return 0;
     }
-
-    flags |= ENTRY_REASEWAIT_F;
-    if(waitsync){
-        if(flags & FILE_DIRTY_F) {
-            //非同步分支，这个流程会在clean -> sync_wlocked 触发
+    if((flags & FILE_DIRTY_F) == 0 ){
+        clean(std::weak_ptr<file_t>(shared_file_from_this()));
+        return 0;
+    }else {
+        flags |= ENTRY_REASEWAIT_F;
+        if(waitsync){
+            //clean -> sync_wlocked 的调用不会等待，所以在这里等
             for(auto it = blocks.rbegin(); it != blocks.rend(); ++it) {
                 it->second->sync(getblockdir(), true);
             }
-        }
-        __w.unlock();
-        clean(std::weak_ptr<file_t>(shared_file_from_this()));
-        return 0;
-    } else {
-        //close 即落库: clean 异步执行可能积压，不落库进程重启会丢失数据
-        if(flags & FILE_DIRTY_F) {
+            __w.unlock();
+            clean(std::weak_ptr<file_t>(shared_file_from_this()));
+            return 0;
+        } else {
+            //close 即落库: clean 异步执行可能积压，不落库进程重启会丢失数据
             sync_wlocked(true, false);
+            upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
+                file_t::clean(file);
+            });
+            return 0;
         }
-        upool->submit_fire_and_forget([file = std::weak_ptr<file_t>(shared_file_from_this())]() {
-            file_t::clean(file);
-        });
-        return 0;
     }
 }
 
@@ -1010,10 +1010,6 @@ bool file_t::sync_wlocked(bool forcedirty, bool lockfree) {
     }
     if(ret){
         errorlog("upload_meta IO Error: %s, inode=%ju, err=%s\n", key.path.c_str(), fi.inode, strerror(errorno));
-        //失败也落当前快照: 行落后于已写数据时, 重启恢复按行 ftruncate 本地缓存并重传 meta
-        if(version_snapshot == version.load()) {
-            save_file_to_db(key.path, meta, fblocks);
-        }
         return true;
     }
     private_key = meta.key.private_key;

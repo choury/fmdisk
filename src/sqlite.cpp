@@ -135,8 +135,9 @@ int sqlinit(){
             errorlog("set journal_mode failed: %s\n", err_msg);
             if(err_msg) sqlite3_free(err_msg);
         }
-        //set synchronous=full
-        if(sqlite3_exec(cachedb, "PRAGMA synchronous=FULL", nullptr, nullptr, &err_msg)){
+        // WAL 下 NORMAL 提交不 fdatasync(仅 checkpoint 同步): 进程崩溃不丢, 断电才
+        // 回滚最近提交。FULL 每提交在持连接锁状态下刷盘, 是串行回写的吞吐瓶颈
+        if(sqlite3_exec(cachedb, "PRAGMA synchronous=NORMAL", nullptr, nullptr, &err_msg)){
             errorlog("set synchronous failed: %s\n", err_msg);
             if(err_msg) sqlite3_free(err_msg);
         }

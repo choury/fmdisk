@@ -431,10 +431,10 @@ int block_t::push(std::weak_ptr<block_t> wb, filekey fileat) {
     {
         auto_rlock(b);
         version = b->version;
-        if((b->flags & BLOCK_DIRTY) == 0 ){
+        if((b->flags & BLOCK_DIRTY) == 0 || (b->flags & BLOCK_STALE)){
             return 0;
         }
-        if((b->flags & (BLOCK_STALE | BLOCK_PULLING)) || !b->full_cached()){
+        if((b->flags & BLOCK_PULLING) || !b->full_cached()){
             return -EAGAIN;
         }
         int ret = TEMP_FAILURE_RETRY(pread(b->fi.fd, buff, b->size, b->offset));
@@ -476,11 +476,16 @@ retry:
     }
     auto stripfile = basename(file);
     auto_wlock(b);
-    if (version != b->version || (b->flags & BLOCK_STALE) || (b->flags & BLOCK_DIRTY) == 0) {
+    if (version != b->version) {
         infolog("%s version: %zd vs %zd, flags: %x\n", stripfile.path.c_str(), version, b->version.load(), b->flags);
         fm_stat_add(FM_STAT_PUSH_DISCARD_RACE);
         trim(file);
         return -EAGAIN;
+    }
+    if ((b->flags & BLOCK_STALE) || (b->flags & BLOCK_DIRTY) == 0) {
+        fm_stat_add(FM_STAT_PUSH_DISCARD_RACE);
+        trim(file);
+        return 0;
     }
     if (len == 0 && b->fi.fd >= 0) {
         fallocate(b->fi.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, b->offset, b->size);
