@@ -7,6 +7,7 @@
 #include "fmdisk.h"
 #include "log.h"
 #include "stats.h"
+#include "sqlite.h"
 
 #include <errno.h>
 #include <string.h>
@@ -420,7 +421,12 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
         }
         std::string_view value_str(value, size);
         if(value_str == "1") {
-            return entry->drop_cache(false);
+            int ret = entry->drop_cache(false);
+            if(ret == 0 && !opt.no_cache){
+                //子树已整体落到内存外, 持久化行只在此处做一次前缀删除
+                ret = delete_entry_prefix_from_db(strcmp(path, "/") == 0 ? "" : path);
+            }
+            return ret;
         }
         if(value_str == "2"){
             return entry->drop_cache(true);

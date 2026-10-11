@@ -831,6 +831,7 @@ int dir_t::sync(int dataonly) {
                 continue;
             }
             delete_entry_from_db(it->second->getkey().path);
+            delete_entry_prefix_from_db(it->second->getkey().path);
             it = entrys.erase(it);
         }
         return 0;
@@ -930,10 +931,8 @@ int dir_t::drop_cache_wlocked(bool mem_only, time_t before){
     }
     entrys.clear();
     flags &= ~DIR_PULLED_F;
-    if((flags & ENTRY_INITED_F) == 0 || opt.no_cache || mem_only) {
-        return 0;
-    }
-    return delete_entry_prefix_from_db(parent.lock() ? getkey().path: "");
+    //持久化行不在递归里逐层前缀删除(祖先会重复覆盖后代行), 由顶层调用方对整个子树删一次
+    return 0;
 }
 
 int dir_t::foreach_child_storage_op(const std::function<int(entry_t*)>& op) {
