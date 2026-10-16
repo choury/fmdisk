@@ -954,9 +954,12 @@ int dir_t::foreach_child_storage_op(const std::function<int(entry_t*)>& op) {
     }
     int ret = 0;
     for(auto& entry: childs){
-        ret |= op(entry.get());
+        int err = op(entry.get());
+        if(err < 0 && ret == 0) {
+            ret = err;
+        }
     }
-    return ret == 0 ? 0 : -EIO;
+    return ret;
 }
 
 int dir_t::collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) {
@@ -975,6 +978,12 @@ int dir_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::vec
 int dir_t::to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
     return foreach_child_storage_op([pool, &futures](entry_t* entry){
         return entry->to_standard(pool, futures);
+    });
+}
+
+int dir_t::refresh_restore(TrdPool* pool, std::vector<std::future<int>>& futures) {
+    return foreach_child_storage_op([pool, &futures](entry_t* entry){
+        return entry->refresh_restore(pool, futures);
     });
 }
 

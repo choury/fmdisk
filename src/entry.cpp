@@ -172,14 +172,14 @@ int entry_t::run_storage_op(const std::function<int(TrdPool*, std::vector<std::f
         return ret;
     }
     pool.wait_all();
-    bool failed = false;
+    int first_err = 0;
     for(auto& f: futures) {
         ret = f.get();
-        if(ret < 0) {
-            failed = true;
+        if(ret < 0 && first_err == 0) {
+            first_err = ret;
         }
     }
-    return failed ? -EIO : 0;
+    return first_err;
 }
 
 int entry_t::set_storage_class(enum storage_class storage) {
@@ -191,6 +191,12 @@ int entry_t::set_storage_class(enum storage_class storage) {
 int entry_t::to_standard() {
     return run_storage_op([this](TrdPool* pool, std::vector<std::future<int>>& futures) {
         return to_standard(pool, futures);
+    });
+}
+
+int entry_t::refresh_restore() {
+    return run_storage_op([this](TrdPool* pool, std::vector<std::future<int>>& futures) {
+        return refresh_restore(pool, futures);
     });
 }
 

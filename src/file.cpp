@@ -1378,6 +1378,23 @@ static int _set_storage_class_to_standard(filekey file) {
     return HANDLE_EAGAIN(fm_change_storage_class(file, STORAGE_STANDARD));
 }
 
+static int _refresh_restore(filekey file) {
+    filemeta meta = initfilemeta(file);
+    if(HANDLE_EAGAIN(fm_getattr(file, meta))) {
+        return -EAGAIN;
+    }
+    if(meta.storage != STORAGE_ARCHIVE && meta.storage != STORAGE_DEEP_ARCHIVE) {
+        return 0; // 非归档无副本可续期
+    }
+    if(meta.restore_in_progress) {
+        return 0; // 已发起未完成, 副本生成中, 无需续期
+    }
+    if(!meta.restore_expiry_date) {
+        return -ENOENT; // 从未发起过恢复
+    }
+    return HANDLE_EAGAIN(fm_restore_archive(file, 3, 2));
+}
+
 int file_t::submit_storage_op(TrdPool* pool, std::vector<std::future<int>>& futures,
                               const std::function<int(filekey)>& backend_op) {
     auto_rlock(this);
@@ -1429,6 +1446,11 @@ int file_t::set_storage_class(enum storage_class storage, TrdPool* pool, std::ve
 int file_t::to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
     return submit_storage_op(pool, futures,
         [](filekey key) { return _set_storage_class_to_standard(key); });
+}
+
+int file_t::refresh_restore(TrdPool* pool, std::vector<std::future<int>>& futures) {
+    return submit_storage_op(pool, futures,
+        [](filekey key) { return _refresh_restore(key); });
 }
 
 int file_t::get_etag(std::string& etag) {

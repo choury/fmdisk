@@ -449,6 +449,8 @@ int fm_fuse_setxattr(const char *path, const char *name, const char *value, size
             storage = STORAGE_DEEP_ARCHIVE;
         } else if(storage_str == "TS") {
             return entry->to_standard();
+        } else if(storage_str == "RS") {
+            return entry->refresh_restore();
         } else {
             return -EINVAL;
         }

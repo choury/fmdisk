@@ -24,11 +24,17 @@ struct RemoteEntry {
     std::string content;
     time_t ctime = 0;
     time_t mtime = 0;
+    enum storage_class storage = STORAGE_STANDARD;
+    bool restore_in_progress = false; // 已发起恢复, 副本未生成
+    time_t restore_expiry = 0;        // 非0表示已恢复副本的过期时间(恢复即时完成)
 };
 
 static uint64_t next_id = 1;
 static std::unordered_map<uint64_t, RemoteEntry> id_map;
 std::mutex remote_lock;
+
+static std::atomic<long long> g_backend_restore_calls{0};
+static std::atomic<int> g_backend_last_restore_days{0};
 
 std::shared_ptr<void> make_private_key(uint64_t id) {
     return std::shared_ptr<void>( reinterpret_cast<void*>(id), [](void*) {});
@@ -152,6 +158,9 @@ int fm_getattr(const filekey& file, filemeta& meta) {
     meta.blksize = opt.block_len;
     meta.ctime = entry.ctime;
     meta.mtime = entry.mtime;
+    meta.storage = entry.storage;
+    meta.restore_in_progress = entry.restore_in_progress;
+    meta.restore_expiry_date = entry.restore_expiry;
     if(entry.is_dir) {
         meta.size = 0;
         meta.blocks = 1;
@@ -187,6 +196,9 @@ int fm_list(const filekey& file, std::vector<filemeta>& flist) {
         meta.blksize = opt.block_len;
         meta.ctime = child.ctime;
         meta.mtime = child.mtime;
+        meta.storage = child.storage;
+        meta.restore_in_progress = child.restore_in_progress;
+        meta.restore_expiry_date = child.restore_expiry;
         if(child.is_dir) {
             meta.size = 0;
             meta.blocks = 1;
@@ -460,6 +472,38 @@ int fm_utime(const filekey& file, const time_t tv[2]) {
     return 0;
 }
 
+int fm_restore_archive(const filekey& file, int days, unsigned int mode) {
+    (void)mode;
+    std::lock_guard<std::mutex> guard(remote_lock);
+    uint64_t entry_id = get_entry_id(file);
+    if(!id_map.contains(entry_id)) {
+        errno = ENOENT;
+        return -errno;
+    }
+    RemoteEntry& entry = id_map[entry_id];
+    entry.restore_in_progress = false;
+    entry.restore_expiry = time(nullptr) + (time_t)days * 86400;
+    g_backend_restore_calls.fetch_add(1, std::memory_order_relaxed);
+    g_backend_last_restore_days.store(days);
+    return 0;
+}
+
+int fm_change_storage_class(const filekey& file, enum storage_class storage) {
+    std::lock_guard<std::mutex> guard(remote_lock);
+    uint64_t entry_id = get_entry_id(file);
+    if(!id_map.contains(entry_id)) {
+        errno = ENOENT;
+        return -errno;
+    }
+    RemoteEntry& entry = id_map[entry_id];
+    entry.storage = storage;
+    if(storage == STORAGE_STANDARD) {
+        entry.restore_in_progress = false;
+        entry.restore_expiry = 0;
+    }
+    return 0;
+}
+
 std::shared_ptr<void> fm_get_private_key(const char* key) {
     if(key == nullptr) {
         return nullptr;
@@ -494,12 +538,45 @@ long long backend_download_calls() {
     return g_backend_download_calls.load();
 }
 
+long long backend_restore_calls() {
+    return g_backend_restore_calls.load();
+}
+
+int backend_last_restore_days() {
+    return g_backend_last_restore_days.load();
+}
+
+void backend_set_storage(const std::string& path, enum storage_class storage) {
+    std::lock_guard<std::mutex> guard(remote_lock);
+    RemoteEntry* entry = find_entry_unlocked(path);
+    if(entry == nullptr) {
+        throw std::runtime_error("BACKEND_SET_STORAGE: path '" + path + "' does not exist");
+    }
+    entry->storage = storage;
+    if(storage == STORAGE_STANDARD) {
+        entry->restore_in_progress = false;
+        entry->restore_expiry = 0;
+    }
+}
+
+void backend_set_restoring(const std::string& path) {
+    std::lock_guard<std::mutex> guard(remote_lock);
+    RemoteEntry* entry = find_entry_unlocked(path);
+    if(entry == nullptr) {
+        throw std::runtime_error("BACKEND_SET_RESTORING: path '" + path + "' does not exist");
+    }
+    entry->restore_in_progress = true;
+    entry->restore_expiry = 0;
+}
+
 void backend_reset_state() {
     {
         std::lock_guard<std::mutex> guard(remote_lock);
         reset_remote_unlocked();
     }
     g_backend_download_calls.store(0);
+    g_backend_restore_calls.store(0);
+    g_backend_last_restore_days.store(0);
     g_fail_upload.store(false);
     g_upload_delay_ms.store(0);
 }

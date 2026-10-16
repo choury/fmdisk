@@ -533,6 +533,51 @@ void run_backend_command(ExecutionContext& ctx, const Command& cmd) {
         check_count_expect(ctx, cmd, "backend_download_calls", backend_download_calls());
         return;
     }
+    if(cmd.name == "BACKEND_RESTORE_CALLS") {
+        check_count_expect(ctx, cmd, "backend_restore_calls", backend_restore_calls());
+        if(auto days = optional_arg(cmd, "last_days"); days.has_value()) {
+            long long want = parse_long(days.value(), 0);
+            long long actual = backend_last_restore_days();
+            if(actual != want) {
+                std::ostringstream oss;
+                oss << "backend_last_restore_days expected " << want << " got " << actual;
+                fail(ctx, cmd, oss.str());
+            }
+        }
+        return;
+    }
+    if(cmd.name == "BACKEND_SET_STORAGE") {
+        std::string path = require_arg(cmd, "path");
+        std::string storage = require_arg(cmd, "storage");
+        enum storage_class cls;
+        if(storage == "S") {
+            cls = STORAGE_STANDARD;
+        } else if(storage == "IA") {
+            cls = STORAGE_IA;
+        } else if(storage == "AR") {
+            cls = STORAGE_ARCHIVE;
+        } else if(storage == "DR") {
+            cls = STORAGE_DEEP_ARCHIVE;
+        } else {
+            fail(ctx, cmd, "BACKEND_SET_STORAGE storage must be one of S/IA/AR/DR");
+            return;
+        }
+        try {
+            backend_set_storage(path, cls);
+        } catch(const std::exception& ex) {
+            fail(ctx, cmd, ex.what());
+        }
+        return;
+    }
+    if(cmd.name == "BACKEND_SET_RESTORING") {
+        std::string path = require_arg(cmd, "path");
+        try {
+            backend_set_restoring(path);
+        } catch(const std::exception& ex) {
+            fail(ctx, cmd, ex.what());
+        }
+        return;
+    }
     if(cmd.name == "DBLOCKS_COUNT") {
         check_count_expect(ctx, cmd, "dblocks_live", count_live_dblocks());
         return;
@@ -879,6 +924,7 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     bool rename_not_supported = false;
     bool rename_no_overwrite = false;
     bool use_fmbed = false;
+    bool has_storage_class = false;
     long long cache_size = -1;
     if(auto opt_no_cache = optional_arg(cmd, "no_cache"); opt_no_cache.has_value()) {
         no_cache = parse_bool(opt_no_cache.value());
@@ -892,6 +938,9 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     if(auto opt_fmbed = optional_arg(cmd, "use_fmbed"); opt_fmbed.has_value()) {
         use_fmbed = parse_bool(opt_fmbed.value());
     }
+    if(auto opt_storage = optional_arg(cmd, "has_storage_class"); opt_storage.has_value()) {
+        has_storage_class = parse_bool(opt_storage.value());
+    }
     if(auto opt_cache = optional_arg(cmd, "cache_size"); opt_cache.has_value()) {
         cache_size = parse_size_bytes(opt_cache.value());
     }
@@ -901,6 +950,9 @@ void exec_mount(ExecutionContext& ctx, const Command& cmd) {
     }
     if(rename_no_overwrite) {
         flags |= FM_RENAME_NO_OVERWRITE;
+    }
+    if(has_storage_class) {
+        flags |= FM_HAS_STORAGE_CLASS;
     }
     if(cache_dir.empty()) {
         cache_dir = std::filesystem::temp_directory_path() / "fmdisk_itest_XXXXXX";

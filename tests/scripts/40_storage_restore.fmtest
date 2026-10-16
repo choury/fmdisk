@@ -1,0 +1,46 @@
+# 存储类型与归档恢复: S 发起恢复(3天), RS 对已恢复副本续期3天, TS 提升为标准存储
+BACKEND_CLEAR_CACHE
+BACKEND_RESET
+BACKEND_SEED path="/arch.txt" data="archive-data"
+BACKEND_SEED path="/plain.txt" data="plain-data"
+BACKEND_SEED path="/d/one.txt" data="one-data"
+MOUNT use_fmbed=true has_storage_class=true
+# 远端下沉: arch.txt -> 归档, d/one.txt -> 深归档
+BACKEND_SET_STORAGE path="/arch.txt" storage="AR"
+BACKEND_SET_STORAGE path="/d/one.txt" storage="DR"
+# 下沉后无恢复副本
+FMBED_GETXATTR path="/arch.txt" name="user.storage_class" expect="S: 0 IA: 0 AR: 12B DR: 0 U: 0"
+# --- S: 发起恢复, mock 即时完成, 3天 ---
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="S"
+BACKEND_RESTORE_CALLS expect=1 last_days=3
+FMBED_GETXATTR path="/arch.txt" name="user.storage_class" expect="S: 0 IA: 0 AR: 12B (0/0) DR: 0 U: 0"
+# 已恢复状态下重复 S: 幂等空操作, 不再发 restore
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="S"
+BACKEND_RESTORE_CALLS expect=1
+# --- RS: 对已恢复副本续期(次数增加, 仍刷新为3天) ---
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="RS"
+BACKEND_RESTORE_CALLS expect=2 last_days=3
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="RS"
+BACKEND_RESTORE_CALLS expect=3 last_days=3
+# --- RS 空操作/报错分支 ---
+# 标准存储: 无副本可续期
+FMBED_SETXATTR path="/plain.txt" name="user.storage_class" value="RS"
+# 深归档未发起恢复: 报 ENOENT
+FMBED_SETXATTR path="/d/one.txt" name="user.storage_class" value="RS" expect_error="ENOENT"
+# 深归档恢复进行中: 副本生成中, 空操作
+BACKEND_SET_RESTORING path="/d/one.txt"
+FMBED_SETXATTR path="/d/one.txt" name="user.storage_class" value="RS"
+BACKEND_RESTORE_CALLS expect=3
+# --- 目录级 RS 递归: 先恢复 d/one.txt, 再对 /d 整体续期 ---
+FMBED_SETXATTR path="/d/one.txt" name="user.storage_class" value="S"
+BACKEND_RESTORE_CALLS expect=4 last_days=3
+FMBED_SETXATTR path="/d" name="user.storage_class" value="RS"
+BACKEND_RESTORE_CALLS expect=5 last_days=3
+# --- TS: 提升为标准存储, 恢复副本清除 ---
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="TS"
+FMBED_GETXATTR path="/arch.txt" name="user.storage_class" expect="S: 12B IA: 0 AR: 0 DR: 0 U: 0"
+# 转标准后 RS 空操作
+FMBED_SETXATTR path="/arch.txt" name="user.storage_class" value="RS"
+BACKEND_RESTORE_CALLS expect=5
+UNMOUNT
+BACKEND_CLEAR_CACHE

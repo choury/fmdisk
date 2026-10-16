@@ -28,6 +28,7 @@ class dir_t: public entry_t {
     virtual int remove_wlocked(bool skip_entry) override;
     virtual int set_storage_class(enum storage_class storage, TrdPool* pool, std::vector<std::future<int>>& futures) override;
     virtual int to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) override;
+    virtual int refresh_restore(TrdPool* pool, std::vector<std::future<int>>& futures) override;
     int foreach_child_storage_op(const std::function<int(entry_t*)>& op);
     virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>& futures) override;
 public:

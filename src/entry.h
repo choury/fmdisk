@@ -50,6 +50,9 @@ protected:
     virtual int to_standard(TrdPool* pool, std::vector<std::future<int>>& futures) {
         return -EINVAL;
     }
+    virtual int refresh_restore(TrdPool* pool, std::vector<std::future<int>>& futures) {
+        return -EINVAL;
+    }
     virtual int collect_storage_classes(TrdPool* pool, std::vector<std::future<std::pair<int, storage_class_info>>>&) {
         return -EINVAL;
     }
@@ -95,6 +98,7 @@ public:
     int run_storage_op(const std::function<int(TrdPool*, std::vector<std::future<int>>&)>& op);
     int set_storage_class(enum storage_class storage);
     int to_standard();
+    int refresh_restore();
     friend class dir_t;
 };
 

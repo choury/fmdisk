@@ -1,9 +1,15 @@
 #pragma once
 
+#include "utils.h"
+
 #include <string>
 
 void backend_note_download();
 long long backend_download_calls();
+long long backend_restore_calls();
+int backend_last_restore_days();
+void backend_set_storage(const std::string& path, enum storage_class storage);
+void backend_set_restoring(const std::string& path);
 void backend_set_fail_upload(bool fail);
 void backend_set_upload_delay(int ms);
 
